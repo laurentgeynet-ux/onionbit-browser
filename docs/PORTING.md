@@ -14,7 +14,7 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
-| `dlib/dlib.c` + `dlib.h` | `[common]::dlib` | not started | Dstr→String, Dlist→Vec, d_* alloc/str helpers |
+| `dlib/dlib.c` + `dlib.h` | `[common]::dlib` | ported | `Dstr`/`Dlist<T>`/`dStr*`/`dIs*`/`parse_rc_line`/`getline` ; `dMalloc`/`dClose`/`dUsleep`/`dGetcwd` non portés (std) |
 
 ## lout/ — utilitaires C++
 

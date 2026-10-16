@@ -19,3 +19,5 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   + `dillo-dw-proto` pour l'ADR-0005), `#![forbid(unsafe_code)]`,
   lints workspace (unsafe forbidden, clippy pedantic warn), CI
   GitHub Actions (fmt/clippy/test/doc + MSRV 1.85 sur ubuntu+windows).
+- `dillo-common::dlib` : port de `dlib/dlib.c` — `Dstr`, `Dlist<T>`,
+  helpers `dStr*`/`dIs*` ASCII, `parse_rc_line`, `getline` (14 tests).

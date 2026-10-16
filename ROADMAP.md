@@ -7,8 +7,8 @@ in `rapport` mode, then `apply`.
 ## Phase 0 — Scaffolding (fondations repo)
 
 - [x] Cargo workspace, `crates/` skeleton, CI (fmt/clippy/test/doc, MSRV)
-- [ ] `dillo-common` : port `dlib/dlib.c` (Dstr→String, Dlist→Vec,
-      d_* helpers), `lout/{misc,unicode,container,identity,object,signal}`
+- [~] `dillo-common` : port `dlib/dlib.c` (Dstr→String, Dlist→Vec,
+      d_* helpers) **[fait : `dlib.rs`]**, `lout/{misc,unicode,container,identity,object,signal}`
 - [ ] Headless golden-render harness (tiny-skia offscreen target +
       image diff) — prerequisite for all later verification
 - [ ] **`dillo-dw-proto`** (ADR-0005) : prototype du modèle de
