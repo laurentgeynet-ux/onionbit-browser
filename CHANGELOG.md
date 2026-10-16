@@ -122,3 +122,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Déviation corrigée vs BUG amont : le double-close de la race Abort
   disparaît par ownership. Dep : `socket2` 0.6.5. Test de régression
   `shared_fd_survives_writer_close` sur vraie socket loopback.
+- `dillo-net::mime` : port de `src/IO/mime.c` — `MimeRegistry`
+  (listes minor/major ordonnées), `get_viewer` verbatim : scan unique
+  MinSize/MajSize avec le quirk du `'/'` initial (`MajSize` = 2e
+  slash), `dStrnAsciiCasecmp` préfixe dans les deux sens ; `Viewer_t`
+  → enum `ViewerId` en attendant les vrais modules (4 tests dont
+  quirks). `src/IO/proto.c` = won't port (stub vide amont).
+- `dillo-net::about` : `ABOUT_SPLASH` verbatim (VERSION 3.3.0-rc1).

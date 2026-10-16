@@ -35,13 +35,13 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 |---|---|---|---|
 | `src/IO/IO.c` + `IO.h` | `[net]::io` | ported | `a_IO_ccc` verbatim (1B/1F/2B/2F) ; `IOData`→`IoEngine` ; fd = `sock_id` table + clones `socket2` (fd partagé lecteur/écrivain — `IO_StopRd|Wr` ne ferment pas, seul `StopRdWr` fait `dClose`+shutdown) |
 | `src/IO/Url.h` | `[net]::url` (types) | ported | voir `src/url.c` — un seul type `DilloUrl` |
-| `src/IO/about.c` | `[net]::about` | not started | schéma about:* |
+| `src/IO/about.c` | `[net]::about` | ported | `ABOUT_SPLASH` verbatim (VERSION=3.3.0-rc1 interpolée) |
 | `src/IO/control.c` + `.h` | `[net]::control` | not started | contrôle shell → UI |
 | `src/IO/dpi.c` | `[net]::dpi` | not started | client dpi:// |
 | `src/IO/http.c` | `[net]::http` | not started | client HTTP/1.1 maison — wire exact |
 | `src/IO/iowatch.cc` + `.hh` | `[net]::io` | ported | `Fl::add_fd` → tâches tokio (`ready`+`try_read`/`try_write` = `read(2)`/`write(2)` non-bloquants) ; callbacks `IO_fd_*_cb` → `IoEvent` mpsc + `poll_io` (thread principal, single-writer) |
-| `src/IO/mime.c` + `.h` | `[net]::mime` | not started | MIME type dispatch |
-| `src/IO/proto.c` | `[net]::proto` | not started | dispatch schémas locaux |
+| `src/IO/mime.c` + `.h` | `[net]::mime` | ported | `MimeRegistry` (2 listes ordonnées), `get_viewer` verbatim — scan unique MinSize/MajSize, quirk `/` initial → 2e slash, `dStrnAsciiCasecmp` préfixe dans les 2 sens ; `Viewer_t` → enum `ViewerId` (dispatch réel quand html/dicache portés) |
+| `src/IO/proto.c` | — | won't port | stub vide amont (commentaire seul, aucun code) |
 | `src/IO/tls.c` + `tls.h` | `[net]::tls` | not started | trait Tls → rustls (ADR-0003) |
 | `src/IO/tls_mbedtls.c` + `.h` | — | won't port | remplacé par rustls |
 | `src/IO/tls_openssl.c` + `.h` | — | won't port | remplacé par rustls |
