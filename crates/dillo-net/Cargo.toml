@@ -18,5 +18,5 @@ rustls = { version = "0.23", features = ["logging", "std", "tls12"] }
 rustls-native-certs = "0.8.5"
 socket2 = "0.6.5"
 thiserror.workspace = true
-tokio = { version = "1.53.3", features = ["rt", "sync", "net", "time", "io-util"] }
+tokio = { version = "1.53.3", features = ["rt", "sync", "net", "time", "io-util", "macros"] }
 tracing.workspace = true

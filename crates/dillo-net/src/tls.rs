@@ -43,12 +43,18 @@ pub const TLS_CONNECT_NEVER: i32 = -1;
 pub const TLS_CONNECT_NOT_YET: i32 = 0;
 pub const TLS_CONNECT_READY: i32 = 1;
 
-// `CERT_STATUS_*` (tls_mbedtls.c) — NONE = 0 est implicite.
-const CERT_STATUS_NONE: i32 = 0;
-const CERT_STATUS_RECEIVING: i32 = 1;
-const CERT_STATUS_CLEAN: i32 = 2;
-const CERT_STATUS_BAD: i32 = 3;
-const CERT_STATUS_USER_ACCEPTED: i32 = 4;
+// `CERT_STATUS_*` (tls_mbedtls.c) — pub : `cert_status`/`connect_ready`
+// les exposent (http.c teste `RECEIVING`/`USER_ACCEPTED`).
+/// `CERT_STATUS_NONE` — aucun certificat reçu pour ce serveur.
+pub const CERT_STATUS_NONE: i32 = 0;
+/// `CERT_STATUS_RECEIVING` — handshake en cours / premier cert reçu.
+pub const CERT_STATUS_RECEIVING: i32 = 1;
+/// `CERT_STATUS_CLEAN` — certificat vérifié sans warning.
+pub const CERT_STATUS_CLEAN: i32 = 2;
+/// `CERT_STATUS_BAD` — certificat refusé (warnings non acceptés).
+pub const CERT_STATUS_BAD: i32 = 3;
+/// `CERT_STATUS_USER_ACCEPTED` — warnings acceptés par l'utilisateur.
+pub const CERT_STATUS_USER_ACCEPTED: i32 = 4;
 
 /// `Server_t` amont (clé = hostname insensible casse + port).
 #[derive(Debug, Default)]
@@ -257,6 +263,18 @@ impl TlsConn {
         Ok(n)
     }
 
+    /// `mbedtls_ssl_close_notify` seul — le fd reste ouvert
+    /// (≙ `Tls_close_by_key` hors `connecting` : le `dClose` est
+    /// laissé au teardown IO amont).
+    pub fn close_notify(&self) {
+        let mut conn = self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        conn.send_close_notify();
+        let _ = conn.write_tls(&mut SockWrite(&self.sock));
+    }
+
     /// `mbedtls_ssl_close_notify` + shutdown socket.
     ///
     /// # Errors
@@ -280,9 +298,28 @@ impl TlsConn {
 pub enum TlsEvent {
     /// Handshake TLS terminé — la décision cert reste à prendre
     /// (`Tls_check_certificate` ≙ [`TlsEngine::after_handshake`]).
-    Handshook { sock_id: i32 },
+    Handshook {
+        sock_id: i32,
+        /// ≙ `conn->ssl` a reçu un certificat pair (vérif. possible).
+        has_cert: bool,
+        /// ≙ log `version, cipher` amont (`MBEDTLS_SSL_HANDSHAKE_OVER`
+        /// + `CERT_STATUS_RECEIVING` → affichage du cipher négocié).
+        cipher: Option<String>,
+    },
     /// Échec IO/protocole avant complétion.
     Failed { sock_id: i32 },
+}
+
+/// `Conn_t` côté engine — `conn_list` + `Tls_fd_map` amont : clé
+/// « fd » (`sock_id`), statut `connecting` et clé serveur pour
+/// `reset_server_state` au `Tls_close_by_key`.
+struct TlsConnEntry {
+    /// `c->url` réduit à la clé `Server_t` (host-ci, port).
+    key: (String, u16),
+    /// Tâche handshake en cours (abort ≙ `a_IOwatch_remove_fd`).
+    abort: Option<tokio::task::AbortHandle>,
+    /// `conn->connecting` — handshake pas terminé.
+    connecting: bool,
 }
 
 /// `TlsEngine` — `servers` + `conn_list` amont + config rustls.
@@ -292,6 +329,8 @@ pub struct TlsEngine {
     verifier: Arc<DilloVerifier>,
     /// `servers` amont (find/insert « sorted » → Vec triée à l'insert).
     servers: Vec<((String, u16), TlsServer)>,
+    /// `conn_list` amont : `sock_id` → entrée connexion.
+    connections: HashMap<i32, TlsConnEntry>,
     /// `a_Dialog_choice` injecté.
     dialog: CertDialog,
     rt: tokio::runtime::Handle,
@@ -368,6 +407,7 @@ impl TlsEngine {
             config: build_config(&verifier),
             verifier,
             servers: Vec::new(),
+            connections: HashMap::new(),
             dialog,
             rt,
             event_tx,
@@ -454,13 +494,26 @@ impl TlsEngine {
         }
     }
 
+    /// `Tls_user_said_no` — cert `BAD` → refus immédiat
+    /// (≙ `success = FALSE` → `reset_server_state` + `connect_done`).
+    #[must_use]
+    pub fn user_said_no(&mut self, url: &mut DilloUrl) -> bool {
+        self.cert_status(url) == CERT_STATUS_BAD
+    }
+
     /// `a_Tls_connect` — crée la `ClientConnection`, wrap le stream en
-    /// `IoStream::Tls` (`Rc` ≙ fd/conn partagé) et arme la tâche de
-    /// handshake postant [`TlsEvent`] sur `sock_id`.
+    /// `IoStream::Tls` (`Arc` ≙ fd/conn partagé) et enregistre l'entrée
+    /// `conn_list`. `Err` ≙ `success = FALSE` amont (`Tls_user_said_no`,
+    /// `mbedtls_ssl_setup`/`set_hostname` échoués) — l'appelant fait
+    /// alors `reset_server_state` + `connect_done(fd, FALSE)`.
+    /// Le handshake démarre à [`TlsEngine::begin_handshake`] (permis à
+    /// l'appelant de swapper le stream dans la table I/O avant tout
+    /// trafic — ≙ ordre `Tls_conn_new` → premier `mbedtls_ssl_handshake`).
     ///
     /// # Errors
     /// `Err` si `stream` n'est pas `Plain`, si le hostname n'est pas
-    /// un `ServerName` valide, ou si la connexion rustls échoue.
+    /// un `ServerName` valide, si le cert serveur est `BAD`, ou si la
+    /// connexion rustls échoue.
     pub fn connect(
         &mut self,
         sock_id: i32,
@@ -473,6 +526,12 @@ impl TlsEngine {
                 "Tls connect expects a plain stream",
             ));
         };
+        if self.user_said_no(url) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "certificate previously rejected by user",
+            ));
+        }
         let host = url
             .hostname()
             .map(|h| String::from_utf8_lossy(h).into_owned())
@@ -484,9 +543,61 @@ impl TlsEngine {
             conn: Mutex::new(conn),
             sock,
         });
-        self.rt
-            .spawn(handshake_task(sock_id, tls.clone(), self.event_tx.clone()));
+        self.connections.insert(
+            sock_id,
+            TlsConnEntry {
+                key: server_key(url),
+                abort: None,
+                connecting: true,
+            },
+        );
         Ok(IoStream::Tls(tls))
+    }
+
+    /// Arme la tâche de handshake (`Tls_handshake` amont armé par
+    /// `a_IOwatch_add_fd(fd, want, Tls_handshake_cb)`).
+    pub fn begin_handshake(&mut self, sock_id: i32, tls: &Arc<TlsConn>) {
+        let h = self
+            .rt
+            .spawn(handshake_task(sock_id, tls.clone(), self.event_tx.clone()));
+        if let Some(e) = self.connections.get_mut(&sock_id) {
+            e.abort = Some(h.abort_handle());
+        }
+    }
+
+    /// `conn->connecting = FALSE` — appelé sur [`TlsEvent::Handshook`]
+    /// ou [`TlsEvent::Failed`] avant la décision `connect_done`.
+    pub fn mark_established(&mut self, sock_id: i32) {
+        if let Some(e) = self.connections.get_mut(&sock_id) {
+            e.connecting = false;
+            e.abort = None;
+        }
+    }
+
+    /// `Tls_close_by_key` — `reset_server_state` + (`connecting` →
+    /// abort handshake) + retrait de l'entrée. Retourne
+    /// `Some(connecting)` si une connexion existait : l'appelant
+    /// applique alors `IoEngine::remove_socket` (`dClose` amont) si
+    /// `true`, `IoEngine::close_notify` sinon (le fd vit dans
+    /// `IoEngine` — hors `connecting` le `dClose` reste au teardown IO).
+    pub fn close_by_fd(&mut self, sock_id: i32) -> Option<bool> {
+        let e = self.connections.remove(&sock_id)?;
+        self.reset_server_state_by_key(&e.key);
+        if e.connecting {
+            if let Some(h) = e.abort {
+                h.abort();
+            }
+        }
+        Some(e.connecting)
+    }
+
+    /// `a_Tls_reset_server_state` par clé serveur (usage `close_by_fd`).
+    fn reset_server_state_by_key(&mut self, key: &(String, u16)) {
+        if let Some((_, s)) = self.servers.iter_mut().find(|(k, _)| k == key) {
+            if s.cert_status == CERT_STATUS_RECEIVING {
+                s.cert_status = CERT_STATUS_NONE;
+            }
+        }
     }
 
     /// `Tls_check_certificate` — sur [`TlsEvent::Handshook`] : lit les
@@ -571,7 +682,17 @@ async fn handshake_task(sock_id: i32, tls: Arc<TlsConn>, tx: mpsc::UnboundedSend
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !c.is_handshaking() {
-                let _ = tx.send(TlsEvent::Handshook { sock_id });
+                // ≙ `HANDSHAKE_OVER` : cert pair + cipher pour le
+                // chemin `Tls_examine_certificate` / le log amont.
+                let has_cert = c.peer_certificates().is_some();
+                let cipher = c
+                    .negotiated_cipher_suite()
+                    .map(|cs| format!("{:?}", cs.suite()));
+                let _ = tx.send(TlsEvent::Handshook {
+                    sock_id,
+                    has_cert,
+                    cipher,
+                });
                 return;
             }
         }

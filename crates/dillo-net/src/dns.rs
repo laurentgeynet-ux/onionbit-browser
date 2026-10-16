@@ -6,13 +6,15 @@
 //!   [`Dns::new_sync`] = chemin `!D_DNS_THREADED` pour les tests).
 //! - Thread `Dns_server` → `tokio::task::spawn_blocking` +
 //!   `std::net::ToSocketAddrs` (getaddrinfo via std).
-//! - `dns_notify_pipe` + `Dns_timeout_client` → `mpsc` interne + [`Dns::poll`]
+//! - `dns_notify_pipe` + `Dns_timeout_client` → `mpsc` interne + [`poll_dns`]
 //!   appelé par la boucle d'événements (single-writer préservé).
 //! - `DilloHost {af, alen, data[16]}` → [`IpAddr`] (`dillohost_to_string`
 //!   → `Display` ; les chaînes d'erreur `inet_ntop` sont inatteignables
 //!   en Rust — divergence documentée).
-//! - `cb_func(status, addr_list, cb_data)` → `FnOnce(i32, Option<Vec<IpAddr>>)`
-//!   ; le `void* cb_data` devient la capture de la closure.
+//! - `cb_func(status, addr_list, cb_data)` → [`DnsCallback`] recevant
+//!   `&mut Chain` (les callbacks amont continuent le flux CCC — ex.
+//!   `Http_dns_cb`) ; invoqués depuis [`dns_resolve`]/[`poll_dns`]
+//!   sur le thread principal, jamais sur la tâche de résolution.
 //!
 //! Quirks amont préservés : cache sans TTL ni éviction, scan linéaire
 //! ASCII-insensible, partage de canal par hostname, file d'attente `−2`
@@ -23,15 +25,21 @@ use std::net::{IpAddr, ToSocketAddrs};
 
 use dillo_common::dlib;
 use tokio::sync::mpsc;
+
+use crate::chain::Chain;
 use tracing::{debug, trace};
 
 /// `D_DNS_MAX_SERVERS` — build threaded amont.
 pub const MAX_SERVERS: usize = 4;
 
-/// `DnsCallback_t` — `(status, addr_list)` invoquée sur le thread
-/// principal (`poll`), jamais sur la tâche de résolution.
+/// `DnsCallback_t` — `(status, addr_list)` + `&mut Chain` pour
+/// poursuivre le flux CCC depuis le thread principal
+/// ([`poll_dns`]/[`dns_resolve`]), jamais sur la tâche de résolution.
 /// `status` = 0 succès, sinon code `getaddrinfo` amont (≙ errno/std).
-pub type DnsCallback = Box<dyn FnOnce(i32, Option<Vec<IpAddr>>)>;
+pub type DnsCallback = Box<dyn FnOnce(&mut Chain, i32, Option<Vec<IpAddr>>)>;
+
+/// Callback collecté prêt à invoquer (`cb`, `status`, `addr_list`).
+type DnsCall = (DnsCallback, i32, Option<Vec<IpAddr>>);
 
 /// `GDnsQueue` — entrée de file ; `channel == -2` = en attente.
 struct QueueEntry {
@@ -148,22 +156,22 @@ impl Dns {
         }
     }
 
-    /// `a_Dns_resolve` — hit cache → callback immédiat ; doublon en file →
+    /// `a_Dns_resolve` — hit cache → `Some((0, addrs))` pour invocation
+    /// immédiate par l'appelant ([`dns_resolve`]) ; doublon en file →
     /// partage du canal ; nouveau → canal libre ou file `−2`.
-    pub fn resolve(&mut self, hostname: &str, cb: DnsCallback) {
+    fn resolve(&mut self, hostname: &str, cb: DnsCallback) -> Option<DnsCall> {
         // cache : scan linéaire ascii-insensible (amont)
         if let Some((_, addrs)) = self
             .cache
             .iter()
             .find(|(h, _)| dlib::str_ascii_casecmp(h.as_bytes(), hostname.as_bytes()) == 0)
         {
-            cb(0, Some(addrs.clone()));
-            return;
+            return Some((cb, 0, Some(addrs.clone())));
         }
         if let Some(i) = self.queue_find(hostname) {
             let channel = self.queue[i].channel;
             self.queue_add(channel, hostname, cb);
-            return;
+            return None;
         }
         if let Some(channel) = self
             .servers
@@ -175,6 +183,7 @@ impl Dns {
         } else {
             self.queue_add(-2, hostname, cb);
         }
+        None
     }
 
     /// `Dns_queue_add`.
@@ -233,8 +242,15 @@ impl Dns {
         self.cache.push((hostname, addrs));
     }
 
-    /// `Dns_serve_channel` — sert tous les callbacks du canal.
-    fn serve_channel(&mut self, channel: usize, result: &Result<Vec<IpAddr>, i32>) {
+    /// `Dns_serve_channel` — collecte tous les callbacks du canal dans
+    /// `calls` (invocation différée hors emprunt du module — les
+    /// callbacks peuvent toucher `Chain`).
+    fn serve_channel(
+        &mut self,
+        channel: usize,
+        result: &Result<Vec<IpAddr>, i32>,
+        calls: &mut Vec<DnsCall>,
+    ) {
         let (status, addrs) = match result {
             Ok(v) => (0, Some(v.clone())),
             Err(e) => (*e, None),
@@ -245,7 +261,7 @@ impl Dns {
                 let cb = self.queue[i].cb.take();
                 self.queue_remove(i);
                 if let Some(cb) = cb {
-                    cb(status, addrs.clone());
+                    calls.push((cb, status, addrs.clone()));
                 }
             } else {
                 i += 1;
@@ -277,10 +293,12 @@ impl Dns {
 
     /// `Dns_timeout_client` — à appeler depuis la boucle d'événements :
     /// vide le canal de notification, sert les canaux résolus, réassigne.
+    /// Retourne les callbacks collectés (invoqués par [`poll_dns`]).
     ///
     /// En mode sync, joue aussi les résolutions en attente (`poll` sert
     /// de point de progression, comme le pipe amont sert de wakeup).
-    pub fn poll(&mut self) {
+    fn poll(&mut self) -> Vec<DnsCall> {
+        let mut calls = Vec::new();
         let mut done: Vec<DnsDone> = Vec::new();
         while let Ok(d) = self.done_rx.try_recv() {
             done.push(d);
@@ -293,61 +311,99 @@ impl Dns {
             if let Ok(addrs) = &d.result {
                 self.cache_add(d.hostname.clone(), addrs.clone());
             }
-            self.serve_channel(ch, &d.result);
+            self.serve_channel(ch, &d.result, &mut calls);
             self.servers[ch].state = ServerState::Idle;
             debug!(channel = ch, host = %d.hostname, "dns resolved");
         }
         self.assign_channels();
+        calls
+    }
+}
+
+/// `a_Dns_resolve` — enregistre `cb` ; un hit cache l'invoque aussitôt
+/// (dans l'appel, comme amont — `Http_dns_cb` fil vers le CCC).
+pub fn dns_resolve(chain: &mut Chain, hostname: &str, cb: DnsCallback) {
+    let hit = chain
+        .module_mut::<Dns>()
+        .and_then(|dns| dns.resolve(hostname, cb));
+    if let Some((cb, status, addrs)) = hit {
+        cb(chain, status, addrs);
+    }
+}
+
+/// `Dns_timeout_client` — draine les résolutions et invoque les
+/// callbacks avec `&mut Chain` (thread principal, single-writer).
+pub fn poll_dns(chain: &mut Chain) {
+    let calls = chain
+        .module_mut::<Dns>()
+        .map_or_else(Vec::new, |dns| dns.poll());
+    for (cb, status, addrs) in calls {
+        cb(chain, status, addrs);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chain::Chain;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     type Recorder = Rc<RefCell<Vec<Option<usize>>>>;
-    fn rec() -> (impl Fn(i32, Option<Vec<IpAddr>>) + 'static, Recorder) {
+    fn rec() -> (DnsCallback, Recorder) {
         let hits = Rc::new(RefCell::new(Vec::new()));
         let h2 = hits.clone();
         (
-            move |_st, addrs| h2.borrow_mut().push(addrs.map(|a| a.len())),
+            Box::new(move |_ch, _st, addrs| {
+                h2.borrow_mut().push(addrs.map(|a| a.len()));
+            }),
             hits,
         )
     }
 
+    fn dns_chain() -> Chain {
+        let mut ch = Chain::new();
+        ch.set_module(Dns::new_sync());
+        ch
+    }
+
     #[test]
     fn sync_resolve_localhost() {
-        let mut dns = Dns::new_sync();
+        let mut ch = dns_chain();
         let (cb, hits) = rec();
-        dns.resolve("localhost", Box::new(cb));
-        dns.poll();
+        dns_resolve(&mut ch, "localhost", cb);
+        poll_dns(&mut ch);
         assert_eq!(hits.borrow().len(), 1);
         assert!(hits.borrow()[0].is_some_and(|n| n >= 1));
     }
 
     #[test]
     fn cache_hit_is_immediate() {
-        let mut dns = Dns::new_sync();
-        dns.cache_add("example.com".to_string(), vec!["1.2.3.4".parse().unwrap()]);
+        let mut ch = dns_chain();
+        {
+            let dns = ch.module_mut::<Dns>().unwrap();
+            dns.cache_add("example.com".to_string(), vec!["1.2.3.4".parse().unwrap()]);
+        }
         let (cb, hits) = rec();
-        dns.resolve("EXAMPLE.COM", Box::new(cb)); // ascii-ci
+        dns_resolve(&mut ch, "EXAMPLE.COM", cb); // ascii-ci
         assert_eq!(*hits.borrow(), vec![Some(1)]);
         // rien dans la file
-        assert!(dns.queue.is_empty());
+        assert!(ch.module_mut::<Dns>().unwrap().queue.is_empty());
     }
 
     #[test]
     fn queue_shares_channel_same_hostname() {
-        let mut dns = Dns::new_sync();
+        let mut ch = dns_chain();
         let (cb1, h1) = rec();
         let (cb2, h2) = rec();
-        dns.resolve("localhost", Box::new(cb1));
-        dns.resolve("LOCALHOST", Box::new(cb2)); // même canal (ascii-ci)
-        assert_eq!(dns.queue.len(), 2);
-        assert_eq!(dns.queue[0].channel, dns.queue[1].channel);
-        dns.poll();
+        dns_resolve(&mut ch, "localhost", cb1);
+        dns_resolve(&mut ch, "LOCALHOST", cb2); // même canal (ascii-ci)
+        {
+            let dns = ch.module_mut::<Dns>().unwrap();
+            assert_eq!(dns.queue.len(), 2);
+            assert_eq!(dns.queue[0].channel, dns.queue[1].channel);
+        }
+        poll_dns(&mut ch);
         assert_eq!(h1.borrow().len(), 1);
         assert_eq!(h2.borrow().len(), 1);
     }
@@ -355,28 +411,34 @@ mod tests {
     #[test]
     fn waiting_queue_minus2_is_fifo() {
         // forcer 5 requêtes distinctes > MAX_SERVERS → la 5e attend en −2
-        let mut dns = Dns::new_sync();
-        // simuler canaux occupés : on injecte directement
-        for (i, s) in dns.servers.iter_mut().enumerate() {
-            s.state = ServerState::Processing;
-            s.hostname = format!("h{i}");
+        let mut ch = dns_chain();
+        {
+            let dns = ch.module_mut::<Dns>().unwrap();
+            // simuler canaux occupés : on injecte directement
+            for (i, s) in dns.servers.iter_mut().enumerate() {
+                s.state = ServerState::Processing;
+                s.hostname = format!("h{i}");
+            }
         }
         let (cb, _h) = rec();
-        dns.resolve("queued.example", Box::new(cb));
-        assert_eq!(dns.queue[0].channel, -2);
-        // libère le canal 0 → assign_channels le reprend
-        dns.servers[0].state = ServerState::Idle;
-        dns.assign_channels();
-        assert_eq!(dns.queue[0].channel, 0);
+        dns_resolve(&mut ch, "queued.example", cb);
+        {
+            let dns = ch.module_mut::<Dns>().unwrap();
+            assert_eq!(dns.queue[0].channel, -2);
+            // libère le canal 0 → assign_channels le reprend
+            dns.servers[0].state = ServerState::Idle;
+            dns.assign_channels();
+            assert_eq!(dns.queue[0].channel, 0);
+        }
     }
 
     #[test]
     fn failed_resolution_status() {
-        let mut dns = Dns::new_sync();
+        let mut ch = dns_chain();
         let (cb, hits) = rec();
         // nom invalide pour to_socket_addrs → Err
-        dns.resolve("not a host name!!", Box::new(cb));
-        dns.poll();
+        dns_resolve(&mut ch, "not a host name!!", cb);
+        poll_dns(&mut ch);
         assert_eq!(*hits.borrow(), vec![None]);
     }
 }

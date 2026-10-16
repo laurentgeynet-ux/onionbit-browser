@@ -57,9 +57,9 @@ vraies phases. Sert aussi de banc d'essai au choix ADR-0005.
       `brotli` + `encoding_rs`, gzip header/trailer à la main)
 - [x] `dns.c` → `net::dns` (tokio `spawn_blocking`), `chain.c`/`IO.c`/
       `iowatch.cc` → `net::chain` + `net::io` (CCC verbatim, reactor tokio)
-- [ ] `mime.c`, `http.c` → HTTP/1.1 client (request fmt, redirects,
+- [x] `mime.c`, `http.c` → HTTP/1.1 client (request fmt, redirects,
       proxy) + `tls` via rustls
-- [ ] `about.c`/`proto.c` internal schemes
+- [x] `about.c`/`proto.c` internal schemes
 
 **Audit** : `audit-01-io-http`, `audit-02-url-cookies` (partiel)
 

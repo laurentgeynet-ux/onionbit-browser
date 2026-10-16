@@ -9,6 +9,7 @@ pub mod chain;
 pub mod decode;
 pub mod dns;
 pub mod fetch;
+pub mod http;
 pub mod io;
 pub mod mime;
 pub mod tls;

@@ -149,3 +149,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   documentée ADR-0003, `rustls-rustcrypto` alpha-only), `rustls-
   native-certs` 0.8. `tls_openssl.c` → won't port (backend
   alternatif). 4 tests (b64, state machine, cert clean, dialog).
+- `dillo-net::http` : port de `src/IO/http.c` — transport pur (la
+  lecture/parse de réponse reste chez `cache.c`, pas porté).
+  `HttpEngine` = `ValidSocks` (zombies `TO_BE_FREED` en file ≙
+  `dFree` différé) + `servers` par (host-ci, port, https) + `fd_map`.
+  `Http_socket_enqueue` verbatim (non-images devant le 1er
+  `WEB_Image` valide — la socket entrante testée sans `valid`,
+  zombies de file visibles comme amont). `connect_queued_sockets` :
+  balayage zombies, `TLS_CONNECT_*` par socket TLS, `active_conns`
+  ≤ `http_max_conns`, `running_the_queue` anti-réentrance, retrait
+  du serveur vide. Proxy : env `http_proxy` > prefs, `no_proxy`
+  suffix-match ascii-ci avec quirk `dStrsep` (token vide = match
+  tout), `CONNECT host[:443]` + `Proxy-Authorization` base64,
+  réponse accumulée jusqu'à `\r\n\r\n` avec statut à l'index 9.
+  `make_query_str` verbatim : URI absolue proxy ( '#' tronqué),
+  Accept par type (`WEB_*`), referer `host`/`path`/masqué, E2E →
+  `Pragma`+`Cache-Control: no-cache`, boundary multipart extrait
+  de `data[2..'\r')`, POST `Content-Length` = `data.len`.
+  `reply_complete` → keep-alive reuse (fd transféré au socket en
+  file, `active_conns` déplacé, `fd_map` retiré puis re-rempli,
+  `connect_done(TRUE)`) ; `reuse_compatible` : TLS+proxy exige même
+  host:port. `a_Http_ccc` 4 branches verbatim + `"FD"` ; connect
+  non-bloquant + retry `addr_list` → `connect_task` tokio ≙
+  `Http_connect_socket_cb` + `SO_ERROR` ; upgrade TLS = swap du
+  stream `IoStream` dans `IoEngine` + `begin_handshake` ≙
+  `a_Tls_connection` + `Tls_handshake_cb` ; `Tls_check_certificate`
+  (USER_ACCEPTED court-circuite) puis `connect_done`. `DilloWeb` →
+  `HttpWeb` (url/requester/flags/valid/MSG_BW) ; `cookies`/`auth`/
+  `prefs` injectés (deps descendantes — défauts build `!HAVE_COOKIES`
+  amont). Infra associée : `IoMsg::Swap` + `take`/`swap`/`remove`/
+  `close_notify` dans `IoEngine`, `close_by_fd → Option<connecting>`
+  (emprunts modules séquentiels), `DnsCallback` chain-aware +
+  `dns_resolve`/`poll_dns`. 11 tests : goldens GET/POST/proxy/
+  CONNECT, quirks `no_proxy`, priorité de file, zombie+sweep,
+  reuse_compatible, wire loopback end-to-end (requête octet-pour-
+  octet), limite `max_conns` en vrai.

@@ -127,9 +127,20 @@ struct IoData {
     buf: Vec<u8>,
     /// `Info` — lien CCC propriétaire.
     info: LinkId,
-    /// tâche reactor + canal d'écriture (remplace le watch FLTK).
+    /// tâche reactor (remplace le watch FLTK).
     task: Option<JoinHandle<()>>,
-    wr_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    /// Canal vers la tâche writer (`io->Buf` amont) — `Data`/`Swap`.
+    wr_tx: Option<mpsc::UnboundedSender<IoMsg>>,
+    /// Canal de contrôle vers la tâche reader (swap TLS).
+    ctl_tx: Option<mpsc::UnboundedSender<IoMsg>>,
+}
+
+/// Message vers les tâches I/O armées — `Data` ≙ `dStr_append_l(io->Buf)`
+/// (writer), `Swap` ≙ re-résolution `a_Tls_connection(fd)` (upgrade TLS
+/// sur tunnel CONNECT — reader comme writer).
+enum IoMsg {
+    Data(Vec<u8>),
+    Swap(IoStream),
 }
 
 /// Événement reactor → thread principal (callbacks `IO_fd_*_cb` amont).
@@ -207,6 +218,58 @@ impl IoEngine {
         self.socks.get(&id).and_then(|s| s.try_clone(&self.rt))
     }
 
+    /// Retire l'entrée du « fd » sans le fermer — préalable au wrap
+    /// TLS (`a_Tls_connect` re-prend possession du descripteur amont).
+    pub fn take_socket(&mut self, id: i32) -> Option<IoStream> {
+        self.socks.remove(&id)
+    }
+
+    /// `dClose(fd)` explicite : l'entrée disparaît et le socket meurt
+    /// pour tous les clones (lecteur+écrivain partagés).
+    pub fn remove_socket(&mut self, id: i32) {
+        if let Some(s) = self.socks.remove(&id) {
+            let _ = s.shutdown_both();
+        }
+    }
+
+    /// `a_Tls_close_by_fd` (hors `connecting`) : `close_notify` envoyé,
+    /// le fd reste ouvert — le `dClose` relève du teardown IO amont.
+    pub fn close_notify(&mut self, id: i32) {
+        if let Some(IoStream::Tls(t)) = self.socks.get(&id) {
+            t.close_notify();
+        }
+    }
+
+    /// `a_Tls_connection(fd)` : remplace le stream d'un « fd » (wrap
+    /// TLS après tunnel CONNECT) et pousse le nouveau handle aux ios
+    /// déjà armés — ≙ re-lookup par-fd à chaque `read`/`write` amont.
+    pub fn swap_socket(&mut self, id: i32, s: IoStream) {
+        self.socks.insert(id, s);
+        let keys: Vec<IoKey> = self
+            .ios
+            .iter()
+            .filter(|(_, io)| io.sock_id == id)
+            .map(|(k, _)| *k)
+            .collect();
+        for key in keys {
+            let fresh = self.clone_socket(id);
+            let Some(io) = self.ios.get_mut(&key) else {
+                continue;
+            };
+            if let Some(tx) = &io.ctl_tx {
+                if let Some(s) = fresh {
+                    let _ = tx.send(IoMsg::Swap(s));
+                }
+            } else if let Some(tx) = &io.wr_tx {
+                if let Some(s) = fresh {
+                    let _ = tx.send(IoMsg::Swap(s));
+                }
+            } else {
+                io.stream = fresh;
+            }
+        }
+    }
+
     /// `IO_new` + `IO_ins` — crée et enregistre un `IoData`.
     fn io_new(&mut self, op: i32, info: LinkId) -> IoKey {
         let key = self.next_key;
@@ -219,11 +282,12 @@ impl IoEngine {
                 op,
                 sock_id: -1,
                 stream: None,
+                wr_tx: None,
+                ctl_tx: None,
                 status: 0,
                 buf: Vec::with_capacity(IO_BUFLEN),
                 info,
                 task: None,
-                wr_tx: None,
             },
         );
         key
@@ -243,23 +307,37 @@ impl IoEngine {
 
     /// `IO_submit` — spawn de la tâche reactor sur `io->FD`.
     /// Upstream exige `FD >= 0` (sinon `MSG_ERR` + abandon silencieux).
+    /// Le handle pris est re-cloné depuis `socks` (≙ `io->FD` re-résolu
+    /// au moment de l'armement : un upgrade TLS intermédiaire est couvert).
     fn submit(&mut self, key: IoKey) {
         let Some(io) = self.ios.get_mut(&key) else {
             return;
         };
-        if io.stream.is_none() {
-            error!("IO_submit: FD not initialized");
-            return;
-        }
         if io.task.is_some() {
             return; // watch déjà armée
         }
+        let (op, sock_id, stored, staged) = (
+            io.op,
+            io.sock_id,
+            io.stream.take(),
+            std::mem::take(&mut io.buf),
+        );
+        let stream = self.clone_socket(sock_id).or(stored);
+        if stream.is_none() {
+            error!("IO_submit: FD not initialized");
+            if let Some(io) = self.ios.get_mut(&key) {
+                io.stream = stream;
+            }
+            return;
+        }
         let tx = self.event_tx.clone();
-        let stream = io.stream.take();
-        let op = io.op;
-        let staged = std::mem::take(&mut io.buf);
+        let Some(io) = self.ios.get_mut(&key) else {
+            return;
+        };
         io.task = Some(if op == IO_READ {
-            self.rt.spawn(read_task(key, stream, tx))
+            let (ctl_tx, ctl_rx) = mpsc::unbounded_channel();
+            io.ctl_tx = Some(ctl_tx);
+            self.rt.spawn(read_task(key, stream, tx, ctl_rx))
         } else {
             let (wr_tx, wr_rx) = mpsc::unbounded_channel();
             io.wr_tx = Some(wr_tx);
@@ -280,6 +358,7 @@ impl IoEngine {
             t.abort();
         }
         io.wr_tx = None;
+        io.ctl_tx = None;
         if close_code == IO_STOP_RDWR {
             // `dClose(fd)` : le numéro devient invalide et le socket
             // meurt pour tous les clones (lecteur+écrivain partagés).
@@ -296,7 +375,7 @@ impl IoEngine {
     fn write_data(&mut self, key: IoKey, bytes: Vec<u8>) {
         if let Some(io) = self.ios.get_mut(&key) {
             if let Some(tx) = &io.wr_tx {
-                let _ = tx.send(bytes);
+                let _ = tx.send(IoMsg::Data(bytes));
             } else {
                 // FD pas encore fixé ou tâche morte : stage dans io->Buf
                 io.buf.extend_from_slice(&bytes);
@@ -420,13 +499,21 @@ pub fn poll_io(chain: &mut Chain) {
 /// `IO_read` + `IO_fd_read_cb` — boucle `read()` jusqu'à `EAGAIN`
 /// *avant* d'attendre la readiness (ordre amont) — couvre aussi le
 /// plaintext TLS déjà bufferisé dans la connexion rustls.
+/// `IoMsg::Swap` ≙ `a_Tls_connection(io->FD)` re-résolu : le handle est
+/// remplacé en vol (upgrade après tunnel CONNECT).
 /// Poste `ReadData` par morceau, `Eof`/`ReadErr`.
-async fn read_task(key: IoKey, mut stream: Option<IoStream>, tx: mpsc::UnboundedSender<IoEvent>) {
+async fn read_task(
+    key: IoKey,
+    mut stream: Option<IoStream>,
+    tx: mpsc::UnboundedSender<IoEvent>,
+    mut ctl_rx: mpsc::UnboundedReceiver<IoMsg>,
+) {
     let Some(s) = stream.as_mut() else {
         return;
     };
     let mut out = Vec::with_capacity(IO_BUFLEN);
     let mut buf = [0u8; IO_BUFLEN];
+    let mut ctl_open = true;
     loop {
         // `IO_read` : drain jusqu'à EAGAIN/EOF/erreur
         enum Stop {
@@ -467,7 +554,24 @@ async fn read_task(key: IoKey, mut stream: Option<IoStream>, tx: mpsc::Unbounded
             None => {}
         }
         // EAGAIN → ret=TRUE amont (watch conservée) : attendre l'activité
-        if s.ready(Interest::READABLE).await.is_err() {
+        // — ou un swap de stream (upgrade TLS).
+        if ctl_open {
+            tokio::select! {
+                r = s.ready(Interest::READABLE) => {
+                    if r.is_err() {
+                        let _ = tx.send(IoEvent::ReadErr { key, status: -1 });
+                        return;
+                    }
+                }
+                m = ctl_rx.recv() => {
+                    match m {
+                        Some(IoMsg::Swap(ns)) => *s = ns,
+                        Some(IoMsg::Data(_)) => {}
+                        None => ctl_open = false,
+                    }
+                }
+            }
+        } else if s.ready(Interest::READABLE).await.is_err() {
             let _ = tx.send(IoEvent::ReadErr { key, status: -1 });
             return;
         }
@@ -480,29 +584,65 @@ async fn write_task(
     key: IoKey,
     mut stream: Option<IoStream>,
     tx: mpsc::UnboundedSender<IoEvent>,
-    mut wr_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut wr_rx: mpsc::UnboundedReceiver<IoMsg>,
     staged: Vec<u8>,
 ) {
     let Some(s) = stream.as_mut() else {
         return;
     };
     let mut buf: Vec<u8> = staged;
+    let mut wr_open = true;
     'outer: loop {
         // drainer les données en attente
-        while let Ok(b) = wr_rx.try_recv() {
-            buf.extend_from_slice(&b);
+        if wr_open {
+            loop {
+                match wr_rx.try_recv() {
+                    Ok(IoMsg::Data(b)) => buf.extend_from_slice(&b),
+                    Ok(IoMsg::Swap(ns)) => *s = ns,
+                    Err(_) => break,
+                }
+            }
         }
         if buf.is_empty() {
+            if !wr_open {
+                break 'outer;
+            }
             match wr_rx.recv().await {
-                Some(b) => {
+                Some(IoMsg::Data(b)) => {
                     buf.extend_from_slice(&b);
                     continue;
                 }
-                None => break 'outer, // canal fermé + vide → fin
+                Some(IoMsg::Swap(ns)) => {
+                    *s = ns;
+                    continue;
+                }
+                None => {
+                    wr_open = false;
+                    continue;
+                }
             }
         }
         loop {
-            if s.ready(Interest::WRITABLE).await.is_err() {
+            // attendre writable — ou un message (données supplémentaires
+            // ou swap TLS ≙ `a_Tls_connection` re-résolu).
+            if wr_open {
+                tokio::select! {
+                    r = s.ready(Interest::WRITABLE) => {
+                        if r.is_err() {
+                            let _ = tx.send(IoEvent::WriteErr { key, status: -1 });
+                            break 'outer;
+                        }
+                    }
+                    m = wr_rx.recv() => {
+                        match m {
+                            Some(IoMsg::Data(b)) => buf.extend_from_slice(&b),
+                            Some(IoMsg::Swap(ns)) => *s = ns,
+                            None => wr_open = false,
+                        }
+                        continue 'outer;
+                    }
+                }
+            } else if s.ready(Interest::WRITABLE).await.is_err() {
                 let _ = tx.send(IoEvent::WriteErr { key, status: -1 });
                 break 'outer;
             }

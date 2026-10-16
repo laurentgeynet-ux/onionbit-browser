@@ -33,12 +33,12 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
-| `src/IO/IO.c` + `IO.h` | `[net]::io` | ported | `a_IO_ccc` verbatim (1B/1F/2B/2F) ; `IOData`→`IoEngine` ; fd = `sock_id` table + clones `socket2` (fd partagé lecteur/écrivain — `IO_StopRd|Wr` ne ferment pas, seul `StopRdWr` fait `dClose`+shutdown) |
+| `src/IO/IO.c` + `IO.h` | `[net]::io` | ported | `a_IO_ccc` verbatim (1B/1F/2B/2F) ; `IOData`→`IoEngine` ; fd = `sock_id` table + clones `socket2` (fd partagé lecteur/écrivain — `IO_StopRd|Wr` ne ferment pas, seul `StopRdWr` fait `dClose`+shutdown) ; canal `IoMsg` (`Data`/`Swap`) vers tâches armées ≙ `a_Tls_connection(fd)` par-fd (upgrade TLS en place) |
 | `src/IO/Url.h` | `[net]::url` (types) | ported | voir `src/url.c` — un seul type `DilloUrl` |
 | `src/IO/about.c` | `[net]::about` | ported | `ABOUT_SPLASH` verbatim (VERSION=3.3.0-rc1 interpolée) |
 | `src/IO/control.c` + `.h` | `[net]::control` | not started | contrôle shell → UI |
 | `src/IO/dpi.c` | `[net]::dpi` | not started | client dpi:// |
-| `src/IO/http.c` | `[net]::http` | not started | client HTTP/1.1 maison — wire exact |
+| `src/IO/http.c` | `[net]::http` | ported | transport pur (le parsing réponse vit dans `cache.c` — pas porté) : `SocketData`/`Server`/`fd_map` verbatim, file par (host-ci,port,https) avec priorité non-images, `max_conns`+zombies `TO_BE_FREED` balayés, proxy env>prefs + `no_proxy` suffix-match (tokens vides matchent — quirk `dStrsep`), tunnel `CONNECT` + `:443`, query builder verbatim (Accept par type, referer host/path, E2E→no-cache, multipart boundary `data[2..'\r')`), keep-alive `reply_complete`→reuse avec transfert de fd, CCC 4 branches + `"FD"`, upgrade TLS par swap de stream ; `connect` non-bloquant + retry IP → `connect_task` tokio ; `DilloWeb`/`cookies`/`auth`/`prefs` injectés (deps descendantes) |
 | `src/IO/iowatch.cc` + `.hh` | `[net]::io` | ported | `Fl::add_fd` → tâches tokio (`ready`+`try_read`/`try_write` = `read(2)`/`write(2)` non-bloquants) ; callbacks `IO_fd_*_cb` → `IoEvent` mpsc + `poll_io` (thread principal, single-writer) |
 | `src/IO/mime.c` + `.h` | `[net]::mime` | ported | `MimeRegistry` (2 listes ordonnées), `get_viewer` verbatim — scan unique MinSize/MajSize, quirk `/` initial → 2e slash, `dStrnAsciiCasecmp` préfixe dans les 2 sens ; `Viewer_t` → enum `ViewerId` (dispatch réel quand html/dicache portés) |
 | `src/IO/proto.c` | — | won't port | stub vide amont (commentaire seul, aucun code) |
@@ -67,7 +67,7 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
 | `src/url.c` + `url.h` | `[net]::url` | ported | parse lenient + résolution relative (batterie RFC-3986), hostname/port lazy, encodage chars illégaux, heuristique `http:`, public-suffix/TLD, `cmp` ; switch HSTS isolé dans `switch_to_https` (branchement prefs/hsts reporté à leur port) |
-| `src/dns.c` + `dns.h` | `[net]::dns` | ported | cache + dédup insensible casse, file FIFO `-2`, `NUM_DNS_SERVERS`=4 canaux ; threads → `spawn_blocking`, callbacks main-thread via `Dns::poll` |
+| `src/dns.c` + `dns.h` | `[net]::dns` | ported | cache + dédup insensible casse, file FIFO `-2`, `NUM_DNS_SERVERS`=4 canaux ; threads → `spawn_blocking`, callbacks chain-aware main-thread via `dns_resolve`/`poll_dns` (`DnsCallback` reçoit `&mut Chain`) |
 | `src/decode.c` + `decode.h` | `[net]::decode` | ported | chunked (strtol hex non-borné, troncature `long`→`int`, quirks whitespace/`0x`), gzip (en-tête RFC1952 + CRC/ISIZE vérifiés à la main sur `flate2` rust_backend), deflate→raw fallback sur `Z_DATA_ERROR`, brotli (crate `brotli`), charset via `encoding_rs` (labels WHATWG — couvre iconv courant ; skip 1 octet/EILSEQ, pas WHATWG-maximal) |
 | `src/chain.c` + `chain.h` | `[net]::chain` | ported | CCC verbatim : arène `LinkId` (ADR-0005), FCB/BCB/BCFB, flags `Ended`/`Aborted`, `LocalKey`→`Any`, `void* Data1/2`→`ChainData` typé (`Buf`/`Int`/`Str`/`Handle`/`Owned` Rc) |
 | `src/cache.c` + `cache.h` | `[browser]::cache` | not started | cache doc + client queue |
