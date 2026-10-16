@@ -86,3 +86,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   avec les 12 types (BOOL/COLOR/STRING/STRINGS/URL/INT32/DOUBLE/
   FRACTION_100/GEOMETRY/PANEL_SIZE), sémantique « 1re occurrence
   vide le défaut » pour les listes, `strtod`/`strtol` lenients.
+- `dillo-net::decode` : port de `src/decode.c` — `DecodeTransfer`
+  (chunked : `strtol` hex sur buffer non-borné → whitespace C/`\n`,
+  signe, préfixe `0x`, troncature `long`→`int` ; fin sur longueur 0
+  ou garbage), `Decode` (gzip : en-tête RFC1952 + FHCRC + trailer
+  CRC32/ISIZE vérifiés à la main — `miniz_oxide` ne gère pas le
+  wbits=31 ; deflate : fallback raw sur `Z_DATA_ERROR` avec rejeu
+  de l'input ; brotli ; charset `encoding_rs` avec skip 1 octet
+  par `EILSEQ`). Deps : `flate2` (rust_backend), `brotli` 8.x,
+  `encoding_rs`, `crc32fast`.

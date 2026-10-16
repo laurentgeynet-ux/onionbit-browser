@@ -68,7 +68,7 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 |---|---|---|---|
 | `src/url.c` + `url.h` | `[net]::url` | ported | parse lenient + résolution relative (batterie RFC-3986), hostname/port lazy, encodage chars illégaux, heuristique `http:`, public-suffix/TLD, `cmp` ; switch HSTS isolé dans `switch_to_https` (branchement prefs/hsts reporté à leur port) |
 | `src/dns.c` + `dns.h` | `[net]::dns` | not started | thread → tokio lookup |
-| `src/decode.c` + `decode.h` | `[net]::decode` | not started | chunked/gzip/deflate (miniz_oxide) |
+| `src/decode.c` + `decode.h` | `[net]::decode` | ported | chunked (strtol hex non-borné, troncature `long`→`int`, quirks whitespace/`0x`), gzip (en-tête RFC1952 + CRC/ISIZE vérifiés à la main sur `flate2` rust_backend), deflate→raw fallback sur `Z_DATA_ERROR`, brotli (crate `brotli`), charset via `encoding_rs` (labels WHATWG — couvre iconv courant ; skip 1 octet/EILSEQ, pas WHATWG-maximal) |
 | `src/chain.c` + `chain.h` | `[net]::chain` | not started | chaîne callbacks → typed pipeline |
 | `src/cache.c` + `cache.h` | `[browser]::cache` | not started | cache doc + client queue |
 | `src/capi.c` + `capi.h` | `[browser]::capi` | not started | cache API côté client |

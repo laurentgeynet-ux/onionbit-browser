@@ -30,7 +30,6 @@ dillo-dw = { path = "crates/dillo-dw" }
 dillo-images = { path = "crates/dillo-images" }
 dillo-platform = { path = "crates/dillo-platform" }
 dillo-browser = { path = "crates/dillo-browser" }
-dillo-dpi = { path = "crates/dillo-dpi" }
 
 # Crates externes — pur Rust uniquement (AGENTS.md §4.2),
 # pin minor, ≥ 7 jours depuis publication.

@@ -53,7 +53,8 @@ vraies phases. Sert aussi de banc d'essai au choix ADR-0005.
       byte-compatible)
 - [x] `colors.c` (named colors → RGB), `misc.c`
 - [x] `url.c` → `net::url` (lenient parse, relative resolution)
-- [ ] `decode.c` (gzip/deflate/chunked via `flate2`-pure or miniz-oxide)
+- [x] `decode.c` (gzip/deflate/chunked — `flate2` rust_backend +
+      `brotli` + `encoding_rs`, gzip header/trailer à la main)
 - [ ] `dns.c` → tokio lookup, `chain.c`/`IO.c`/`iowatch` → `net` core
 - [ ] `mime.c`, `http.c` → HTTP/1.1 client (request fmt, redirects,
       proxy) + `tls` via rustls
