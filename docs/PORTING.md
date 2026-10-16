@@ -75,13 +75,13 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | `src/dicache.c` + `dicache.h` | `[img]::dicache` | not started | cache images décodage incrémental |
 | `src/web.cc` + `web.hh` | `[browser]::web` | not started | DilloWeb request wrapper |
 | `src/nav.c` + `nav.h` | `[browser]::nav` | not started | navigation stack |
-| `src/history.c` + `history.h` | `[browser]::history` | not started | |
+| `src/history.c` + `history.h` | `[net]::history` | ported | `History` en `thread_local` ≙ tableau global ; `add_url` dédup `url_cmp`+fragment → `idx`, `get_title(_by_url)` avec fallback `URL_STR` (`force`), `set_title_by_url` scan inverse + `MSG_ERR` ; `dReturn` → `Option` |
 | `src/auth.c` + `auth.h` | `[browser]::auth` | not started | basic/digest dialogs glue |
 | `src/digest.c` + `digest.h` | `[browser]::digest` | not started | digest auth (hash→md-5 crate) |
 | `src/md5.c` + `md5.h` | — | won't port | crate `md-5` |
 | `src/cookies.c` + `cookies.h` | `[browser]::cookies` | not started | fichier cookies byte-exact |
-| `src/domain.c` + `domain.h` | `[browser]::domain` | not started | règles domaines cookies |
-| `src/hsts.c` + `hsts.h` | `[browser]::hsts` | not started | + `hsts_preload` data |
+| `src/domain.c` + `domain.h` | `[net]::domain` | ported | `Domain` en `thread_local` ≙ globales ; `strtok` tokens, texte surnuméraire = warn mais règle ajoutée (quirk), `Domain_match` verbatim (`*`, exact ci, `.suffixe` avec `diff==-1`→compare sans le point) ; `permit` : short-circuit vide, `data:`/host vide, `same_organization`, match inverse `default_deny` |
+| `src/hsts.c` + `hsts.h` | `[net]::hsts` | ported | liste triée ci (insert-sorted ≙ `dList`), `future_time` saturé ≙ `tm_sec=INT_MAX`+mktime (2038) ; `hsts_set` verbatim : `parse_attr`/`parse_value`/`eat_value`, `max-age` digit+`strtol`+ERANGE→INT_MAX, `max-age=0`→remove, `preload` ignoré ; `require_https` exact + marche parents `strchr(h+1,'.')` + `subdomains`, expiré→retiré ; `cert_clean`/`enabled`/preload injectés (TlsEngine + prefs non globaux) ; `switch_to_https` amont = appelant (url.c:441) |
 | `src/bookmark.c` + `bookmark.h` | `[browser]::bookmark` | not started | bm file format |
 | `src/bw.c` + `bw.h` | `[browser]::bw` | not started | BrowserWindow glue |
 | `src/actions.c` + `actions.h` | `[browser]::actions` | not started | bookmarks/navigation actions |

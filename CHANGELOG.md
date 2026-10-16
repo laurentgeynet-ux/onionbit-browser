@@ -184,3 +184,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   CONNECT, quirks `no_proxy`, priorité de file, zombie+sweep,
   reuse_compatible, wire loopback end-to-end (requête octet-pour-
   octet), limite `max_conns` en vrai.
+- `dillo-net::{domain,hsts,history}` : pré-requis de `cache.c`/
+  `capi.c`. `domain.c` : `Domain` (règles `origine→destination` +
+  `default_deny`) — parsing `domainrc` verbatim (strtok, texte
+  surnuméraire = warn mais règle ajoutée), `Domain_match` (`*`,
+  exact ci, `.suffixe` frontière `diff==-1` sans le point),
+  `permit` : short-circuit, `data:`/hôtes vides, match qui inverse
+  `default_deny`. `hsts.c` : liste triée ci de politiques,
+  `hsts_set` (attr/value/eat_value verbatim, `max-age`
+  `strtol`+ERANGE→INT_MAX, `=0` retire, `preload` ignoré, garde
+  `cert_clean` injectée ≙ `a_Tls_certificate_is_clean`), marche des
+  domaines parents `strchr(host+1,'.')` + `subdomains`,
+  `future_time` saturé ≙ hack `tm_sec=INT_MAX`, `preload` fichier
+  `domain true|false` `ONE_YEAR`, `enabled` injecté ≙ pref.
+  `history.c` : `History` thread_local ≙ globales, `add_url` dédup
+  `url_cmp`+fragment → idx, titres avec fallback `URL_STR`,
+  `set_title_by_url` scan inverse. 18 tests. Registres
+  `thread_local` = globales amont (single-writer main).
