@@ -55,7 +55,8 @@ vraies phases. Sert aussi de banc d'essai au choix ADR-0005.
 - [x] `url.c` → `net::url` (lenient parse, relative resolution)
 - [x] `decode.c` (gzip/deflate/chunked — `flate2` rust_backend +
       `brotli` + `encoding_rs`, gzip header/trailer à la main)
-- [ ] `dns.c` → tokio lookup, `chain.c`/`IO.c`/`iowatch` → `net` core
+- [x] `dns.c` → `net::dns` (tokio `spawn_blocking`), `chain.c`/`IO.c`/
+      `iowatch.cc` → `net::chain` + `net::io` (CCC verbatim, reactor tokio)
 - [ ] `mime.c`, `http.c` → HTTP/1.1 client (request fmt, redirects,
       proxy) + `tls` via rustls
 - [ ] `about.c`/`proto.c` internal schemes

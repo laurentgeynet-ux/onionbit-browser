@@ -95,3 +95,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   de l'input ; brotli ; charset `encoding_rs` avec skip 1 octet
   par `EILSEQ`). Deps : `flate2` (rust_backend), `brotli` 8.x,
   `encoding_rs`, `crc32fast`.
+- `dillo-net::chain` : port de `src/chain.c`/`chain.h` — CCC
+  (`Concomitant Control Chain`) verbatim : arène `LinkId` + free-list
+  (ADR-0005), `new_link`/`link_new`/`unlink`/`free`, callbacks FWD/BCK
+  + `bfcb` (flag end/abort effacé entre les deux sens comme amont),
+  flags `CCC_Stopped`/`Ended`/`Aborted`, `LocalKey`→`Box<dyn Any>`,
+  `void* Data1/Data2`→`ChainData` (`None`/`Buf`/`Int`/`Str`/`Handle`/
+  `Owned` partagé par `Rc`), `check` + log d'avertissement verbatim.
+  Callbacks `Rc<dyn Fn>` clonés avant appel → réentrance/unlink-safe.
+- `dillo-net::dns` : port de `src/dns.c` — cache d'adresses, file FIFO
+  avec déduplication insensible à la casse, `NUM_DNS_SERVERS` = 4
+  canaux de résolution, serve/channel `-1`/`-2` verbatim ; threads
+  amont → `tokio::task::spawn_blocking`, notification → mpsc +
+  `Dns::poll` (callbacks non-`Send`, tout reste sur le thread
+  principal). 5 tests (cache, dédup, FIFO, échec, sync).
+- `dillo-net::io` : port de `src/IO/IO.c` + `iowatch.cc`/`IO.h` —
+  `a_IO_ccc` verbatim (branches 1B/1F/2B/2F : write par `OpSend`
+  buffer/`"FD"`, read par events), `IoEngine` = `ValidIOs` +
+  `ValidSocks` (table fd entiers ≙ numéros amont). `Fl::add_fd` →
+  tâches tokio (`ready().await` + `try_read`/`try_write`), callbacks
+  `IO_fd_*_cb` → `IoEvent` mpsc dispatchés par `poll_io` (garde
+  `IO_get` reproduite contre la réentrance — un `OpSend` peut avoir
+  aborté la chaîne). Fidélité fd partagé : `"FD"` → `clone_socket`
+  (≙ `dup` via `socket2`), `IO_StopRd`/`IO_StopWr` retirent la watch
+  sans fermer, seul `IO_StopRdWr` fait `dClose` (`shutdown(Both)`).
+  Déviation corrigée vs BUG amont : le double-close de la race Abort
+  disparaît par ownership. Dep : `socket2` 0.6.5. Test de régression
+  `shared_fd_survives_writer_close` sur vraie socket loopback.
