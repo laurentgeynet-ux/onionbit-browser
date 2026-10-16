@@ -1,0 +1,14 @@
+[package]
+name = "dillo-dw"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dillo-common.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

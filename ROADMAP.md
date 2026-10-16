@@ -6,7 +6,7 @@ in `rapport` mode, then `apply`.
 
 ## Phase 0 — Scaffolding (fondations repo)
 
-- [ ] Cargo workspace, `crates/` skeleton, CI (fmt/clippy/test/doc, MSRV)
+- [x] Cargo workspace, `crates/` skeleton, CI (fmt/clippy/test/doc, MSRV)
 - [ ] `dillo-common` : port `dlib/dlib.c` (Dstr→String, Dlist→Vec,
       d_* helpers), `lout/{misc,unicode,container,identity,object,signal}`
 - [ ] Headless golden-render harness (tiny-skia offscreen target +

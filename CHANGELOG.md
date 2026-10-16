@@ -15,3 +15,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   subsystem, widget-tree ownership (open, prototype-gated).
 - 12 parity-audit skills in `.devin/skills/` (report/apply two-mode
   protocol, `docs/audits/` outputs).
+- Cargo workspace : 11 crates squelettes (`dillo-common` → `dillo`,
+  + `dillo-dw-proto` pour l'ADR-0005), `#![forbid(unsafe_code)]`,
+  lints workspace (unsafe forbidden, clippy pedantic warn), CI
+  GitHub Actions (fmt/clippy/test/doc + MSRV 1.85 sur ubuntu+windows).

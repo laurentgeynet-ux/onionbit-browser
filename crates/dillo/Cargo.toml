@@ -1,0 +1,20 @@
+[package]
+name = "dillo"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dillo-browser.workspace = true
+dillo-common.workspace = true
+dillo-net.workspace = true
+dillo-platform.workspace = true
+tracing.workspace = true
+
+[[bin]]
+name = "dillo"
+path = "src/main.rs"
