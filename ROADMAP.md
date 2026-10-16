@@ -52,7 +52,7 @@ vraies phases. Sert aussi de banc d'essai au choix ADR-0005.
 - [ ] `prefsparser.cc` + `prefs.c` → `dillo-browser::prefs` (dillorc
       byte-compatible)
 - [x] `colors.c` (named colors → RGB), `misc.c`
-- [ ] `url.c` → `net::url` (lenient parse, relative resolution)
+- [x] `url.c` → `net::url` (lenient parse, relative resolution)
 - [ ] `decode.c` (gzip/deflate/chunked via `flate2`-pure or miniz-oxide)
 - [ ] `dns.c` → tokio lookup, `chain.c`/`IO.c`/`iowatch` → `net` core
 - [ ] `mime.c`, `http.c` → HTTP/1.1 client (request fmt, redirects,

@@ -34,7 +34,7 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
 | `src/IO/IO.c` + `IO.h` | `[net]::io` | not started | cœur fd + callbacks → tokio |
-| `src/IO/Url.h` | `[net]::url` (types) | not started | voir `src/url.c` |
+| `src/IO/Url.h` | `[net]::url` (types) | ported | voir `src/url.c` — un seul type `DilloUrl` |
 | `src/IO/about.c` | `[net]::about` | not started | schéma about:* |
 | `src/IO/control.c` + `.h` | `[net]::control` | not started | contrôle shell → UI |
 | `src/IO/dpi.c` | `[net]::dpi` | not started | client dpi:// |
@@ -66,7 +66,7 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
-| `src/url.c` + `url.h` | `[net]::url` | not started | parse lenient + résolution relative |
+| `src/url.c` + `url.h` | `[net]::url` | ported | parse lenient + résolution relative (batterie RFC-3986), hostname/port lazy, encodage chars illégaux, heuristique `http:`, public-suffix/TLD, `cmp` ; switch HSTS isolé dans `switch_to_https` (branchement prefs/hsts reporté à leur port) |
 | `src/dns.c` + `dns.h` | `[net]::dns` | not started | thread → tokio lookup |
 | `src/decode.c` + `decode.h` | `[net]::decode` | not started | chunked/gzip/deflate (miniz_oxide) |
 | `src/chain.c` + `chain.h` | `[net]::chain` | not started | chaîne callbacks → typed pipeline |

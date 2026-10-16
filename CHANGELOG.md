@@ -67,3 +67,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `EXTENDED_COLOR` verbatim (147 entrées triées), `color_parse`
   (`#`/`0x`/nom/hex nu + statut err 0/1/2), `color_vc` avec scores
   `distance2`/`distance3` verbatim (4 tests).
+- `dillo-net::url` : port de `src/url.c`/`url.h`/`src/IO/Url.h` —
+  `DilloUrl` (champs owned au lieu de vues NUL), parse lenient,
+  `resolve_relative` RFC-3986 avec les mêmes hacks amont (dot-
+  segments, hack `/` pré-authority, truncate `query_sep`), encodage
+  `%XX` des chars illégaux, heuristique `http:`/`//` par défaut,
+  `hostname`/`port` lazy (ipv6 `[]`, défauts 80/443), `url_cmp`
+  (ordre amont), `decode`/`encode_hex_str`, `strip_delimiters`,
+  `host_type`, `host_public_suffix` + liste TLD, `set_ismap_coords`.
+  Switch HSTS isolé : `switch_to_https` reproduit la transform
+  (`:80`→`:443`, port, scheme) — le déclencheur `prefs`/`hsts` se
+  branchera avec leurs ports. 18 tests dont la batterie RFC-3986
+  §5.4 complète (normal + abnormal).
