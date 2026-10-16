@@ -60,7 +60,7 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | `src/css.cc` + `css.hh` | `[css]::css` | not started | decl sets, matching, specificity |
 | `src/cssparser.cc` + `cssparser.hh` | `[css]::parser` | not started | tokenizer CSS tolérant |
 | `src/styleengine.cc` + `styleengine.hh` | `[css]::styleengine` | not started | cascade → dw::core::style |
-| `src/utf8.cc` + `utf8.hh` | `[common]::utf8` | not started | decode lenient UTF-8 |
+| `src/utf8.cc` + `utf8.hh` | `[common]::utf8` | ported | end_of_char/decode/encode(1-6 octets)/test/ideographic/combining/char_count ; constantes U+FFFD & U+200B |
 
 ## src/ — réseau & services document
 
@@ -87,8 +87,8 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | `src/actions.c` + `actions.h` | `[browser]::actions` | not started | bookmarks/navigation actions |
 | `src/bitvec.c` + `bitvec.h` | `[common]::bitvec` | not started | → bitvec/std |
 | `src/klist.c` + `klist.h` | `[common]::klist` | not started | |
-| `src/misc.c` + `misc.h` | `[common]::misc` | not started | a_Misc_* helpers |
-| `src/colors.c` + `colors.h` | `[common]::colors` | not started | table named colors |
+| `src/misc.c` + `misc.h` | `[common]::misc` | ported | escape/tabs/sniff Content-Type/parse type+cmp+check/geometry/search_url/base64/disposition/file2dstr ; quirks amont documentés (check -1 inatteignable, sniff UTF-8 écrase binaire ASCII) |
+| `src/colors.c` + `colors.h` | `[common]::colors` | ported | table 147 couleurs verbatim (EXTENDED), parse `#`/`0x`/nom/hex nu + err 0/1/2, `color_vc` scores verbatim |
 | `src/prefs.c` + `prefs.h` | `[browser]::prefs` | not started | dillorc runtime |
 | `src/prefsparser.cc` + `.hh` | `[browser]::prefsparser` | not started | parser dillorc byte-compatible |
 | `src/paths.cc` + `paths.hh` | `[browser]::paths` | not started | chemins ~/.dillo → dirs |

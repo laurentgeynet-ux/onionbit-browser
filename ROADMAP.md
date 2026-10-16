@@ -48,10 +48,10 @@ vraies phases. Sert aussi de banc d'essai au choix ADR-0005.
 
 ## Phase 1 — Parsing foundations
 
-- [ ] `utf8.cc` → `common::utf8` (lenient decode semantics)
+- [x] `utf8.cc` → `common::utf8` (lenient decode semantics)
 - [ ] `prefsparser.cc` + `prefs.c` → `dillo-browser::prefs` (dillorc
       byte-compatible)
-- [ ] `colors.c` (named colors → RGB), `misc.c`
+- [x] `colors.c` (named colors → RGB), `misc.c`
 - [ ] `url.c` → `net::url` (lenient parse, relative resolution)
 - [ ] `decode.c` (gzip/deflate/chunked via `flate2`-pure or miniz-oxide)
 - [ ] `dns.c` → tokio lookup, `chain.c`/`IO.c`/`iowatch` → `net` core

@@ -49,3 +49,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (winit+softbuffer+pixmap blit). `ControlFlow::Wait` sans spin.
   Deps : `winit` 0.30, `softbuffer` 0.4, `cosmic-text` 0.12
   (ADR-0002). Pilote — remplacé par dw phase 4.
+- `dillo-common::utf8` : port de `src/utf8.cc`/`utf8.hh` —
+  `end_of_char`, `decode` lenient (fallback octet brut type
+  ISO-8859-1), `encode` aux formes historiques 1–6 octets de
+  `fl_utf8encode`, `test` (catégories 0–4), `ideographic`,
+  `combining_char`, `char_count`, constantes U+FFFD/U+200B (8 tests).
+- `dillo-common::misc` : port de `src/misc.c`/`misc.h` —
+  `escape_chars`, `expand_tabs` (taquets 8 + queue de diacritiques
+  combinants), sniffing `get_content_type_from_data`,
+  `parse_content_type`/`cmp`/`check`, `parse_geometry`,
+  `parse_search_url`, `encode_base64`, `parse_content_disposition`
+  (filename sanitizé), `file_to_vec`. Quirks amont reproduits et
+  documentés : `content_type_check` `-1` inatteignable ; le sniffing
+  classe `text/plain` tout buffer UTF-8-valide (même octets de
+  contrôle) (12 tests).
+- `dillo-common::colors` : port de `src/colors.c` — table
+  `EXTENDED_COLOR` verbatim (147 entrées triées), `color_parse`
+  (`#`/`0x`/nom/hex nu + statut err 0/1/2), `color_vc` avec scores
+  `distance2`/`distance3` verbatim (4 tests).
