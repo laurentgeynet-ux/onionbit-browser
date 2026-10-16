@@ -10,8 +10,10 @@ in `rapport` mode, then `apply`.
 - [x] `dillo-common` : `dlib/dlib.c` **[`dlib.rs`]** +
       `lout/{misc,unicode,object,signal,identity}` **[`lout/`]** —
       `container`/`debug`/`msg` → won't port justifiés (std/tracing)
-- [ ] Headless golden-render harness (tiny-skia offscreen target +
-      image diff) — prerequisite for all later verification
+- [x] Headless golden-render harness **[`dillo-platform::golden`]**
+      — `Pixmap` offscreen tiny-skia, `diff_pixmaps` (compte + bbox +
+      delta canal), PNG load/save, `assert_golden` +
+      `DILLO_UPDATE_GOLDEN=1` pour régénérer
 - [x] **`dillo-dw-proto`** (ADR-0005) : prototype options A/B/D sur
       3 widgets → **option D retenue** (arène+`enum`+`LayoutCtx`) —
       B a paniqué `BorrowMutError` au 1er essai puis exigé

@@ -13,3 +13,5 @@ dillo-common.workspace = true
 dillo-dw.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tiny-skia.workspace = true
+png.workspace = true

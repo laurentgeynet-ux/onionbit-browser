@@ -36,3 +36,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   exigé try_borrow+defer partout ; A (`dyn`) paie take/replace +
   downcast sans gain. ADR-0005 amendé `accepté` + règles de port
   `dw/` (liens en ids, take/copy avant récursion, events drainés).
+- `dillo-platform::golden` : harness golden-render headless —
+  `Pixmap` offscreen tiny-skia, diff pixel-à-pixel (compte, bbox,
+  delta canal), PNG load/save, `assert_golden` avec régénération
+  via `DILLO_UPDATE_GOLDEN=1`. Deps : `tiny-skia` 0.11 (ADR-0002),
+  `png` 0.17 (pur Rust — stockage des images de référence).

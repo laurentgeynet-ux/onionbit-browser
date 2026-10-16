@@ -36,6 +36,10 @@ dillo-dpi = { path = "crates/dillo-dpi" }
 # pin minor, ≥ 7 jours depuis publication.
 thiserror = "2.0"
 tracing = "0.1"
+# ADR-0002 : stack de rendu validée — raster CPU 2D.
+tiny-skia = "0.11"
+# Sérialisation PNG des golden renders (pur Rust, dev/test).
+png = "0.17"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
