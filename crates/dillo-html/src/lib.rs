@@ -4,3 +4,5 @@
 //! `html_charrefs.h`, `doctree.hh`, `plain.cc`, `table.cc`,
 //! `form.cc`.
 #![forbid(unsafe_code)]
+
+pub mod minidoc;

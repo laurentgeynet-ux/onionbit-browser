@@ -15,3 +15,6 @@ thiserror.workspace = true
 tracing.workspace = true
 tiny-skia.workspace = true
 png.workspace = true
+winit.workspace = true
+softbuffer.workspace = true
+cosmic-text.workspace = true

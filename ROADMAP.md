@@ -28,15 +28,20 @@ Jalon de dé-risquage et de motivation : une tranche verticale
 minimale qui valide l'intégration winit↔tokio↔dw **avant** les
 gros chantiers. Ne vise pas la parité — vise l'affichage.
 
-- [ ] Fenêtre `winit` + `softbuffer` + `tiny-skia` (1er pixel à l'écran)
-- [ ] `dillo-platform` minimal : trait `Platform` (drawText/Rect seulement)
-- [ ] Parseur HTML minimaliste : `<h1>`, `<p>`, `<a>` → doctree
-- [ ] Textblock minimal : wrap simple, sans hyphenation
-- [ ] Clic sur lien → `dillo-net` fetch → re-render
-- [ ] Boucle events : clic souris, resize, scroll
-- [ ] **Idle/layout progressif** : `Fl::add_idle` amont →
-      `ControlFlow`/`AboutToWait` winit (tranches de layout sans
-      bloquer l'event loop, sans spin CPU — ADR-0003)
+- [x] Fenêtre `winit` + `softbuffer` + `tiny-skia` (1er pixel) —
+      `dillo-platform::surface` (Pixmap → blit 0RGB → present)
+- [x] `dillo-platform` minimal : `PlatformSurface` (fenêtre+surface)
+      — le trait `Platform` complet viendra avec dw
+- [x] Parseur HTML minimaliste **`dillo-html::minidoc`** : `<h1-6>`,
+      `<p>`, `<a href>`, entités de base, tolérance tag-soup
+- [x] Textblock minimal : wrap `Wrap::Word` cosmic-text, hitboxes de
+      liens via `Attrs::metadata` (pilote — sera remplacé par dw)
+- [x] Clic sur lien → `dillo-net::fetch` (`file://` + `resolve_href`
+      URL-semantics) → re-render ; `http(s)` = phase 1
+- [x] Boucle events : clic, resize, scroll molette, curseur
+- [x] **Idle/layout progressif** : `ControlFlow::Wait` +
+      `request_redraw` ciblé — pas de spin (mapping `Fl::add_idle`
+      documenté ADR-0003)
 
 **Audits** : none — jetable/pilote, le code sera repris dans les
 vraies phases. Sert aussi de banc d'essai au choix ADR-0005.

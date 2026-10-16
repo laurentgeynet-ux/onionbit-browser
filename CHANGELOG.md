@@ -41,3 +41,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   delta canal), PNG load/save, `assert_golden` avec régénération
   via `DILLO_UPDATE_GOLDEN=1`. Deps : `tiny-skia` 0.11 (ADR-0002),
   `png` 0.17 (pur Rust — stockage des images de référence).
+- **Phase 0.5 — tranche verticale** : `dillo` bin ouvre une fenêtre
+  winit, rend blocs+liens via tiny-skia/cosmic-text, navigue par
+  clic (`file://`). Modules : `dillo-html::minidoc` (parseur
+  tolérant h1-6/p/a/entités), `dillo-net::fetch` (`file://` +
+  `resolve_href` URL-semantics), `dillo-platform::surface`
+  (winit+softbuffer+pixmap blit). `ControlFlow::Wait` sans spin.
+  Deps : `winit` 0.30, `softbuffer` 0.4, `cosmic-text` 0.12
+  (ADR-0002). Pilote — remplacé par dw phase 4.

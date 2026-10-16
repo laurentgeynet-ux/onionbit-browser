@@ -11,9 +11,13 @@ workspace = true
 [dependencies]
 dillo-browser.workspace = true
 dillo-common.workspace = true
+dillo-html.workspace = true
 dillo-net.workspace = true
 dillo-platform.workspace = true
 tracing.workspace = true
+winit.workspace = true
+tiny-skia.workspace = true
+cosmic-text.workspace = true
 
 [[bin]]
 name = "dillo"
