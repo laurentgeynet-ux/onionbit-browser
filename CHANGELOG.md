@@ -21,3 +21,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   GitHub Actions (fmt/clippy/test/doc + MSRV 1.85 sur ubuntu+windows).
 - `dillo-common::dlib` : port de `dlib/dlib.c` — `Dstr`, `Dlist<T>`,
   helpers `dStr*`/`dIs*` ASCII, `parse_rc_line`, `getline` (14 tests).
+- `dillo-common::lout` : port de `lout/` —
+  `misc` (`SimpleVector`, `NotSoSimpleVector` fidèle avec extra-
+  arrays, `StringBuffer`, `BitSet` avec sa sur-allocation amont,
+  `round_int`), `unicode` (décodeur UTF-8 lenient + table alpha
+  verbatim), `object` (traits + enum `Value`), `signal` (`Emitter<R>`
+  sur `Weak<RefCell<R>>`, `emit_bool` sans court-circuit),
+  `identity` (trait `Identifiable`). `container`/`debug`/`msg` →
+  won't port (collections std / `tracing`). 15 tests ajoutés.

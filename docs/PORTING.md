@@ -20,14 +20,14 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
-| `lout/container.cc` + `.hh` | `[common]::container` | not started | typed containers (NotSoSimpleVector…) |
-| `lout/debug.hh` + `debug_rtfl.hh` | `[common]::debug` | not started | debug macros → tracing/debug_assert |
-| `lout/identity.cc` + `.hh` | `[common]::identity` | not started | IdentifiableObject |
-| `lout/misc.cc` + `.hh` | `[common]::misc` | not started | |
-| `lout/msg.h` | — (intra-lout) | not started | macros MSG → tracing |
-| `lout/object.cc` + `.hh` | `[common]::object` | not started | Object base → trait/Any |
-| `lout/signal.cc` + `.hh` | `[common]::signal` | not started | Signal/Receiver → typed events |
-| `lout/unicode.cc` + `.hh` | `[common]::unicode` | not started | tables unicode → char/std |
+| `lout/container.cc` + `.hh` | collections std | won't port | containers non-typés → `Vec`/`HashMap`/`VecDeque` |
+| `lout/debug.hh` + `debug_rtfl.hh` | `tracing`/`debug_assert` | won't port | macros debug → `tracing`, `_MSG` → `debug!` |
+| `lout/identity.cc` + `.hh` | `[common]::lout::identity` | ported | `Identifiable` trait (`class_name`/`ancestors`/`instance_of`) |
+| `lout/misc.cc` + `.hh` | `[common]::lout::misc` | ported | `SimpleVector`/`NotSoSimpleVector`/`StringBuffer`/`BitSet`/`round_int` ; `ZoneAllocator` non porté (propriété Rust) ; sur-allocation BitSet reproduite |
+| `lout/msg.h` | `tracing` | won't port | macros MSG → `tracing::{debug,info,error}` |
+| `lout/object.cc` + `.hh` | `[common]::lout::object` | ported | `Object`/`Comparable` traits + enum `Value` (remplace wrappers Pointer/Integer/…/Pair des argv de signaux) |
+| `lout/signal.cc` + `.hh` | `[common]::lout::signal` | ported | `Emitter<R>` + `Weak<RefCell<R>>` ; `emit_bool` sans court-circuit (note amont préservée) ; `ObservedObject`/`DeletionEmitter` → `Drop` |
+| `lout/unicode.cc` + `.hh` | `[common]::lout::unicode` | ported | décodeur UTF-8 lenient (octet brut en fallback), table `is_alpha` verbatim, `next_utf8_char`/`num_utf8_chars` (+variantes `len` fidèles) |
 
 ## src/IO/ — couche I/O
 
