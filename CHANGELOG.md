@@ -129,3 +129,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   → enum `ViewerId` en attendant les vrais modules (4 tests dont
   quirks). `src/IO/proto.c` = won't port (stub vide amont).
 - `dillo-net::about` : `ABOUT_SPLASH` verbatim (VERSION 3.3.0-rc1).
+- `dillo-net::tls` : port de `src/IO/tls.c`/`tls.h` + backend
+  `tls_mbedtls.c` — `TlsEngine` = `Tls_servers` par (host-ci, port)
+  avec state machine `connect_ready` (NONE/RECEIVING/CLEAN/BAD/
+  USER_ACCEPTED → `CONNECT_NEVER`/`NOT_YET`/`READY`), `DilloVerifier`
+  = `MBEDTLS_SSL_VERIFY_OPTIONAL` (webpki enregistre `CertWarning`s
+  au lieu d'échouer — la décision reste post-handshake via
+  `after_handshake` = `Tls_check_certificate` + `a_Dialog_choice`
+  injecté), `TlsConn` partagé par `Arc`+`Mutex` ≙ `io->FD`/`conn`
+  partagé lecteur+écrivain (handshake conduit en tâche tokio ≙
+  `Tls_handshake_cb` sous iowatch ; `Mutex` jamais tenu à travers
+  `.await`), `IoStream::Tls` dispatché dans `try_read`/`try_write`/
+  `ready`/`try_clone`/`shutdown_both` (`send_close_notify` ≙
+  `mbedtls_ssl_close_notify`), `read_task` réordonné drain-puis-wait
+  = ordre `read()` amont + couvre le plaintext bufferisé sans
+  readiness. CA : `rustls-native-certs` ≙ `Tls_load_certificates` +
+  `add_ca_file` PEM/DER ≙ `Tls_load_certificates_from_file`. Deps :
+  `rustls` 0.23.46 (provider `aws-lc-rs` — tension « 100 % natif »
+  documentée ADR-0003, `rustls-rustcrypto` alpha-only), `rustls-
+  native-certs` 0.8. `tls_openssl.c` → won't port (backend
+  alternatif). 4 tests (b64, state machine, cert clean, dialog).

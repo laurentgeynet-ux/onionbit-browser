@@ -42,9 +42,9 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | `src/IO/iowatch.cc` + `.hh` | `[net]::io` | ported | `Fl::add_fd` → tâches tokio (`ready`+`try_read`/`try_write` = `read(2)`/`write(2)` non-bloquants) ; callbacks `IO_fd_*_cb` → `IoEvent` mpsc + `poll_io` (thread principal, single-writer) |
 | `src/IO/mime.c` + `.h` | `[net]::mime` | ported | `MimeRegistry` (2 listes ordonnées), `get_viewer` verbatim — scan unique MinSize/MajSize, quirk `/` initial → 2e slash, `dStrnAsciiCasecmp` préfixe dans les 2 sens ; `Viewer_t` → enum `ViewerId` (dispatch réel quand html/dicache portés) |
 | `src/IO/proto.c` | — | won't port | stub vide amont (commentaire seul, aucun code) |
-| `src/IO/tls.c` + `tls.h` | `[net]::tls` | not started | trait Tls → rustls (ADR-0003) |
-| `src/IO/tls_mbedtls.c` + `.h` | — | won't port | remplacé par rustls |
-| `src/IO/tls_openssl.c` + `.h` | — | won't port | remplacé par rustls |
+| `src/IO/tls.c` + `tls.h` | `[net]::tls` | ported | dispatcher verbatim : `TlsEngine` = `Tls_servers` (clé host-ci+port ≙ `htons`), state machine `connect_ready` NONE/RECEIVING/CLEAN/BAD/USER_ACCEPTED → `CONNECT_NEVER/NOT_YET/READY` ; `DilloVerifier` ≙ `VERIFY_OPTIONAL` (webpki enregistre les warnings au lieu d'échouer ; décision post-handshake `after_handshake` = `Tls_check_certificate` + `a_Dialog_choice` injecté) ; `a_Tls_connection` → `TlsConn` (`Arc`+`Mutex`, fd partagé lecteur/écrivain) intégré à `IoStream::Tls` ; handshake en tâche tokio ≙ `Tls_handshake_cb` ; CA natives `rustls-native-certs` ≙ `Tls_load_certificates` ; tension « 100 % rust natif » : provider `aws-lc-rs` (C/asm) — `rustls-rustcrypto` alpha-only, cf. ADR-0003 |
+| `src/IO/tls_mbedtls.c` + `.h` | `[net]::tls` | ported | backend porté : `DilloVerifier` = `VERIFY_OPTIONAL` (warnings collectés, pas de rejet immédiat), `CertStatus` NONE→RECEIVING→CLEAN/BAD/USER_ACCEPTED verbatim, `after_handshake` = `Tls_check_certificate`+dialog ; glue rustls ≠ mbedtls (API seule) |
+| `src/IO/tls_openssl.c` + `.h` | — | won't port | backend alternatif amont — rustls couvre les deux (ADR-0003) |
 
 ## src/ — parsing & engines
 

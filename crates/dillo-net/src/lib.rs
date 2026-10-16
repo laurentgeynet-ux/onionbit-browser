@@ -11,4 +11,5 @@ pub mod dns;
 pub mod fetch;
 pub mod io;
 pub mod mime;
+pub mod tls;
 pub mod url;

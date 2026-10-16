@@ -47,12 +47,15 @@ pub const IO_STOP_RDWR: i32 = 3;
 /// Clé primaire (`io->Key`, `a_Klist_insert`).
 pub type IoKey = i32;
 
-/// Flux I/O — `Plain` = socket nu ; `Tls` quand `tls.c` sera porté
-/// (dispatch de `a_Tls_connection` : même traitement read/write).
+/// Flux I/O — `Plain` = socket nu ; `Tls` = connexion rustls partagée
+/// (`Arc<TlsConn>` ≙ le `io->FD`/`conn` partagé lecteur+écrivain amont,
+/// cf. `a_Tls_connection`).
 #[derive(Debug)]
 pub enum IoStream {
     /// Socket TCP nu.
     Plain(TcpStream),
+    /// Connexion TLS (rustls) partagée entre les IO reader/writer.
+    Tls(std::sync::Arc<crate::tls::TlsConn>),
 }
 
 impl IoStream {
@@ -60,6 +63,7 @@ impl IoStream {
     fn try_read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Plain(s) => s.try_read(buf),
+            Self::Tls(t) => t.try_read(buf),
         }
     }
 
@@ -67,6 +71,7 @@ impl IoStream {
     fn try_write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
             Self::Plain(s) => s.try_write(buf),
+            Self::Tls(t) => t.try_write(buf),
         }
     }
 
@@ -74,13 +79,14 @@ impl IoStream {
     async fn ready(&self, interest: Interest) -> io::Result<()> {
         match self {
             Self::Plain(s) => s.ready(interest).await.map(|_| ()),
+            Self::Tls(t) => t.sock.ready(interest).await.map(|_| ()),
         }
     }
 
     /// `dup(fd)` : deuxième handle sur la même socket — amont partage
-    /// le *même* `io->FD` entre lecteur et écrivain. Passage par
-    /// `socket2` (tokio n'expose pas `try_clone`) + `from_std` dans le
-    /// contexte du runtime.
+    /// le *même* `io->FD` entre lecteur et écrivain. `Plain` passe par
+    /// `socket2` + `from_std` dans le contexte runtime ; `Tls` partage
+    /// l'`Arc` (la connexion rustls reste unique, comme `conn` amont).
     fn try_clone(&self, rt: &tokio::runtime::Handle) -> Option<Self> {
         match self {
             Self::Plain(s) => {
@@ -90,14 +96,17 @@ impl IoStream {
                 let _guard = rt.enter();
                 tokio::net::TcpStream::from_std(std_s).ok().map(Self::Plain)
             }
+            Self::Tls(t) => Some(Self::Tls(t.clone())),
         }
     }
 
     /// `shutdown(fd, SHUT_RDWR)` — atteint tous les détenteurs de clones
     /// (fidèle à `dClose` : fermer le côté écriture tue aussi la lecture).
+    /// `Tls` envoie `close_notify` d'abord (`a_Tls_close_by_fd`).
     fn shutdown_both(&self) -> io::Result<()> {
         match self {
             Self::Plain(s) => socket2::SockRef::from(s).shutdown(std::net::Shutdown::Both),
+            Self::Tls(t) => t.shutdown_both(),
         }
     }
 }
@@ -408,58 +417,59 @@ pub fn poll_io(chain: &mut Chain) {
     }
 }
 
-/// `IO_read` + `IO_fd_read_cb` — boucle de lecture non-bloquante :
-/// draine jusqu'à `EAGAIN`, poste `ReadData` par morceau, `Eof`/`ReadErr`.
+/// `IO_read` + `IO_fd_read_cb` — boucle `read()` jusqu'à `EAGAIN`
+/// *avant* d'attendre la readiness (ordre amont) — couvre aussi le
+/// plaintext TLS déjà bufferisé dans la connexion rustls.
+/// Poste `ReadData` par morceau, `Eof`/`ReadErr`.
 async fn read_task(key: IoKey, mut stream: Option<IoStream>, tx: mpsc::UnboundedSender<IoEvent>) {
     let Some(s) = stream.as_mut() else {
         return;
     };
     let mut out = Vec::with_capacity(IO_BUFLEN);
+    let mut buf = [0u8; IO_BUFLEN];
     loop {
-        if s.ready(Interest::READABLE).await.is_err() {
-            let _ = tx.send(IoEvent::ReadErr { key, status: -1 });
-            return;
+        // `IO_read` : drain jusqu'à EAGAIN/EOF/erreur
+        enum Stop {
+            Eof,
+            Err(i32),
         }
-        let mut buf = [0u8; IO_BUFLEN];
+        let mut stop = None;
         loop {
             match s.try_read(&mut buf) {
                 Ok(0) => {
-                    // St == 0 : envoyer le reliquat puis OpEnd
-                    if !out.is_empty() {
-                        let _ = tx.send(IoEvent::ReadData {
-                            key,
-                            bytes: std::mem::take(&mut out),
-                        });
-                    }
-                    let _ = tx.send(IoEvent::Eof { key });
-                    return;
-                }
-                Ok(n) => out.extend_from_slice(&buf[..n]),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    // EAGAIN → ret=TRUE (watch conservée)
-                    if !out.is_empty() {
-                        let _ = tx.send(IoEvent::ReadData {
-                            key,
-                            bytes: std::mem::take(&mut out),
-                        });
-                    }
+                    stop = Some(Stop::Eof);
                     break;
                 }
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => {
-                    if !out.is_empty() {
-                        let _ = tx.send(IoEvent::ReadData {
-                            key,
-                            bytes: std::mem::take(&mut out),
-                        });
-                    }
-                    let _ = tx.send(IoEvent::ReadErr {
-                        key,
-                        status: e.raw_os_error().unwrap_or(-1),
-                    });
-                    return;
+                    stop = Some(Stop::Err(e.raw_os_error().unwrap_or(-1)));
+                    break;
                 }
             }
+        }
+        if !out.is_empty() {
+            let _ = tx.send(IoEvent::ReadData {
+                key,
+                bytes: std::mem::take(&mut out),
+            });
+        }
+        match stop {
+            Some(Stop::Eof) => {
+                let _ = tx.send(IoEvent::Eof { key });
+                return;
+            }
+            Some(Stop::Err(status)) => {
+                let _ = tx.send(IoEvent::ReadErr { key, status });
+                return;
+            }
+            None => {}
+        }
+        // EAGAIN → ret=TRUE amont (watch conservée) : attendre l'activité
+        if s.ready(Interest::READABLE).await.is_err() {
+            let _ = tx.send(IoEvent::ReadErr { key, status: -1 });
+            return;
         }
     }
 }
