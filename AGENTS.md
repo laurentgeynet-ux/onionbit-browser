@@ -156,7 +156,7 @@ deviation-control mechanism of the port.
 | `dStr`/`dStr_sprintf` | `String` / `format!` |
 | `Dlist`, `dVector`, `Dlist` iter | `Vec`, `VecDeque`, iterators |
 | `lout::object::Object` + `Signal`/`Receiver` | enum `Event` + `mpsc`/callback traits |
-| `dw::core::Widget` vtables + cross-pointers | selon ADR-0005 (arène+`WidgetId` / `Rc`/`Weak` / enum dispatch) |
+| `dw::core::Widget` vtables + cross-pointers | ADR-0005 tranché : arène `Layout` + `WidgetId` + `enum WidgetKind`, `ctx: &mut LayoutCtx` partout |
 | `dw::core::Iterator` | standard `Iterator` / index cursors |
 | `FLTK` views/platform | `dillo-platform` (winit+softbuffer+tiny-skia) |
 | `a_IO_*` + `IO` struct + iowatch | tokio `AsyncRead/AsyncWrite` + channels |
@@ -202,8 +202,8 @@ deviation-control mechanism of the port.
   `generator` (avec fallback `getGenerator()→parent` si null),
   `container` (containing block) sont 4 liens bruts sans refcount.
   Le parent de *contenu* ≠ parent de *layout* pour les widgets OOF.
-  Le modèle de propriété Rust est fixé par **ADR-0005** — ne pas
-  commencer `dw/` avant sa résolution par prototype.
+  Le modèle de propriété Rust est fixé par **ADR-0005** (tranché :
+  option D, arène+enum+`LayoutCtx` — règles de port dans l'ADR).
 - **Dillo parses tolerantly**: `html.cc` recovers from malformed input
   in specific ways (implicit closes, tag soup nesting rules). A
   spec-compliant-but-stricter parser *diverges*. Port the state

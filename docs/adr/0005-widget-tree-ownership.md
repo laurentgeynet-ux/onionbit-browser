@@ -1,6 +1,6 @@
 # ADR-0005 — Modèle de propriété de l'arbre de widgets dw
 
-- **Statut** : ouvert (décision bloquante avant phase 4) · **Date** : 2026-10-16
+- **Statut** : accepté (prototype phase 0 livré) · **Date** : 2026-10-16, amendé phase 0
 
 ## Contexte
 
@@ -43,17 +43,47 @@ Avec `#![forbid(unsafe_code)]` et l'interdiction de panique :
 
 ## Décision
 
-**Prototype obligatoire en phase 0** avant engagement : crate
-`dillo-dw-proto` avec 3 widgets (`Container`, `Textblock`, `Image`)
-implémentant `queue_resize` qui traverse `parent` + `generator`
-pendant une itération, sous les options A, B et D. La décision est
-prise sur mesure : (1) zéro panique en scénario de stress,
-(2) fidélité structurelle au C, (3) ergonomie pour les ~36 k LOC
-suivants. Cet ADR sera amendé `accepté` avec le choix retenu.
+**Option D retenue** — arène + `enum WidgetKind` + `LayoutCtx`,
+mesurée sur `crates/dillo-dw-proto` (modules `a.rs`, `b.rs`, `d.rs`,
+scénario de stress identique : `queue_resize` frère déclenché
+pendant le `size_request` d'un `Textblock`, remontée
+`mark_size_change` vers un ancêtre en cours d'itération).
 
-Contraintes quel que soit le choix : jamais de `Mutex` dans
-l'arbre ; les `Signal` lout deviennent des files d'événements
-drainées *après* la mutation, pas des appels synchrones.
+Résultats mesurés :
+
+- **A** (arène + `dyn`) : zéro panique, mais take/replace `Null` sur
+  *chaque* appel récursif + downcast `Any` pour la config — le `dyn`
+  coûte sans gain sur l'enum.
+- **B** (`Rc`/`Weak`) : **panique réelle `BorrowMutError` au premier
+  essai** — même `id_of` (`borrow()` immuable) échoue sur un nœud
+  mut-emprunté. Version corrigée (`try_borrow_mut` + file de `Weak`
+  déférés + drain post-itération) passe, mais le coût est *réparti*
+  : chaque `parent->foo()` amont devient upgrade+try+branche, et
+  l'ordre des événements de remontée se ré-ordonne.
+- **D** : zéro panique nativement — le `&mut self` C++ devient
+  `&mut LayoutCtx` + id ; les liens croisés `parent`/`quasiParent`/
+  `generator`/`container` restent des `WidgetId` fidèles à
+  widget.hh:127-146. Friction *localisée* : extraire les données du
+  nœud (`mem::take`/copy) avant toute récursion, réécrire après —
+  pattern mécanique à appliquer dans le port de `dw/`.
+
+Contraintes rappelées : jamais de `Mutex` dans l'arbre ; les
+`Signal` lout deviennent des files d'événements drainées *après* la
+mutation (implémenté dans le proto via `drain_events`).
+
+Règles de port dérivées pour `dw/` :
+
+1. Tous les liens (`parent`, `quasiParent`, `generator`,
+   `container`, `children`) sont des `WidgetId` dans l'arène
+   `Layout` ; `getGenerator()`/`getQuasiParent()` gardent le
+   fallback sur `parent`.
+2. Toute méthode de widget prend `ctx: &mut LayoutCtx` ; avant un
+   appel récursif, extraire les champs nécessaires (take/copy),
+   rappeler, réécrire.
+3. Les émissions (`extremesChanged`, `layout*`, destructions)
+   passent par `ctx.events`, drainées après mutation.
+4. Si les ids doivent survivre à des suppressions, passer
+   `WidgetId` en (slot, génération) — à évaluer en phase 4.
 
 ## Conséquences
 

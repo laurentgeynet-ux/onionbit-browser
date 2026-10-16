@@ -12,9 +12,10 @@ in `rapport` mode, then `apply`.
       `container`/`debug`/`msg` → won't port justifiés (std/tracing)
 - [ ] Headless golden-render harness (tiny-skia offscreen target +
       image diff) — prerequisite for all later verification
-- [ ] **`dillo-dw-proto`** (ADR-0005) : prototype du modèle de
-      propriété de l'arbre de widgets (3 widgets, options A/B/D),
-      décision ADR-0005 amendée — **bloquant pour la phase 4**
+- [x] **`dillo-dw-proto`** (ADR-0005) : prototype options A/B/D sur
+      3 widgets → **option D retenue** (arène+`enum`+`LayoutCtx`) —
+      B a paniqué `BorrowMutError` au 1er essai puis exigé
+      try_borrow+defer ; ADR amendé avec règles de port
 - [ ] PORTING.md rows phase-0 → `ported`
 
 **Audits** : none yet (infrastructure).

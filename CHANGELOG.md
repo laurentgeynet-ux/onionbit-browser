@@ -29,3 +29,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sur `Weak<RefCell<R>>`, `emit_bool` sans court-circuit),
   `identity` (trait `Identifiable`). `container`/`debug`/`msg` →
   won't port (collections std / `tracing`). 15 tests ajoutés.
+- `dillo-dw-proto` : prototype ADR-0005 (3 options × scénario
+  `queue_resize` en pleine itération) → **option D retenue** :
+  arène `Layout` + `WidgetId` + `enum WidgetKind` + `LayoutCtx`.
+  B (`Rc`/`Weak`) a paniqué `BorrowMutError` au premier essai puis
+  exigé try_borrow+defer partout ; A (`dyn`) paie take/replace +
+  downcast sans gain. ADR-0005 amendé `accepté` + règles de port
+  `dw/` (liens en ids, take/copy avant récursion, events drainés).
