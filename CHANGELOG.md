@@ -79,3 +79,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`:80`→`:443`, port, scheme) — le déclencheur `prefs`/`hsts` se
   branchera avec leurs ports. 18 tests dont la batterie RFC-3986
   §5.4 complète (normal + abnormal).
+- `dillo-browser::prefs` : port de `src/prefs.c` + `prefsparser.cc` —
+  `Prefs` owned (pas de global), `Default` = `a_Prefs_init` verbatim
+  (~110 champs, UA `Dillo/3.3.0-rc1`), `parse_dillorc` ligne à ligne
+  via `dlib::parse_rc_line`, `parse_option` = symbol table → match
+  avec les 12 types (BOOL/COLOR/STRING/STRINGS/URL/INT32/DOUBLE/
+  FRACTION_100/GEOMETRY/PANEL_SIZE), sémantique « 1re occurrence
+  vide le défaut » pour les listes, `strtod`/`strtol` lenients.

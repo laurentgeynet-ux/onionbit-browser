@@ -89,8 +89,8 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | `src/klist.c` + `klist.h` | `[common]::klist` | not started | |
 | `src/misc.c` + `misc.h` | `[common]::misc` | ported | escape/tabs/sniff Content-Type/parse type+cmp+check/geometry/search_url/base64/disposition/file2dstr ; quirks amont documentés (check -1 inatteignable, sniff UTF-8 écrase binaire ASCII) |
 | `src/colors.c` + `colors.h` | `[common]::colors` | ported | table 147 couleurs verbatim (EXTENDED), parse `#`/`0x`/nom/hex nu + err 0/1/2, `color_vc` scores verbatim |
-| `src/prefs.c` + `prefs.h` | `[browser]::prefs` | not started | dillorc runtime |
-| `src/prefsparser.cc` + `.hh` | `[browser]::prefsparser` | not started | parser dillorc byte-compatible |
+| `src/prefs.c` + `prefs.h` | `[browser]::prefs` | ported | `Prefs` (pas de global — owned par le navigateur), défauts `a_Prefs_init` verbatim, UA `Dillo/3.3.0-rc1` |
+| `src/prefsparser.cc` + `.hh` | `[browser]::prefsparser` | ported | fusionné dans `prefs::parse_dillorc`/`parse_option` — symbol table → match, STRINGS vident le défaut à la 1re occurrence, types BOOL/COLOR/STRING/STRINGS/URL/INT32/DOUBLE/FRACTION_100/GEOMETRY/PANEL_SIZE |
 | `src/paths.cc` + `paths.hh` | `[browser]::paths` | not started | chemins ~/.dillo → dirs |
 | `src/dpiapi.c` + `dpiapi.h` | `[browser]::dpiapi` | not started | API navigateur→plugins |
 | `src/timeout.cc` + `timeout.hh` | `[browser]::timeout` | not started | Fl::add_timeout → tokio/winit |

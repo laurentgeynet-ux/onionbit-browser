@@ -4,3 +4,5 @@
 //! cookies,domain,auth,digest,hsts,prefs,prefsparser,paths,actions,
 //! keys,menu,dialog,findbar,tipwin,timeout,ui,dpiapi}.*`.
 #![forbid(unsafe_code)]
+
+pub mod prefs;
