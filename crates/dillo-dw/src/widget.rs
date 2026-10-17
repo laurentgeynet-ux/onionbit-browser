@@ -641,6 +641,8 @@ impl Layout {
     /// `has_stacking_context_mgr` remonte le widget SCM sinon
     /// hérite du parent), `notifySetParent`.
     pub fn widget_set_parent(&mut self, w: WidgetId, parent: WidgetId) {
+        // Attacher = le widget a un `layout` amont (A05-D4).
+        self.arena.borrow_mut().detached.remove(&w);
         self.node_mut(w, |n| n.parent = Some(parent));
         if !self.node(w, |n| n.button_sensitive_set) {
             let ps = self.node(parent, |n| n.button_sensitive);
@@ -802,10 +804,10 @@ impl Layout {
     ) {
         self.enter_queue_resize();
 
-        // `if (layout)` amont : dans l'arène le widget est toujours
-        // rattaché — la branche `else` (NEEDS_*/EXTREMES_CHANGED)
-        // ne s'applique qu'aux widgets détachés (`detach_widget`,
-        // phase destruction).
+        // `if (layout)` amont ≙ `!detached` : pas encore rattaché
+        // (`add_widget_node`/`set_parent`/`add_widget`) ou détaché
+        // (`detach_widget`, destruction) → branche NEEDS_*/
+        // EXTREMES_CHANGED, sans liste ni idle (verbatim — A05-D4).
         let detached = self.node_detached(w);
         let (resize_flag, extremes_flag) = if detached {
             (NEEDS_RESIZE, EXTREMES_CHANGED)
@@ -847,11 +849,11 @@ impl Layout {
                     self.queue_resize_list_put(w2);
                 }
                 let child_parent_ref = self.node(child, |n| n.parent_ref);
-                self.node_mut(w2, |n| {
-                    n.set_flags(resize_flag);
-                    n.set_flags(ALLOCATE_QUEUED);
-                });
+                // Ordre verbatim : `resizeFlag` → `markSizeChange` →
+                // `ALLOCATE_QUEUED` (widget.cc:382-386 — A05-D5).
+                self.node_mut(w2, |n| n.set_flags(resize_flag));
                 self.w_mark_size_change(w2, child_parent_ref);
+                self.node_mut(w2, |n| n.set_flags(ALLOCATE_QUEUED));
                 if extremes_changed {
                     self.node_mut(w2, |n| n.set_flags(extremes_flag));
                     self.w_mark_extremes_change(w2, child_parent_ref);
@@ -3229,9 +3231,14 @@ impl Layout {
             }
         }
 
+        // `if (parent) … else if (layout) layout->removeWidget()`
+        // (widget.cc:133-135) — `layout != NULL` ≙ rattaché : tout
+        // widget sans parent encore attaché est le top level
+        // (A05-D3 — `set_widget` vide `top_level` *avant* le delete,
+        // verbatim amont).
         if let Some(p) = self.node(w, |n| n.parent) {
             self.w_remove_child(p, w);
-        } else if self.top_level == Some(w) {
+        } else if !self.node_detached(w) {
             self.remove_widget();
         }
         self.node_mut(w, |n| {
@@ -3239,6 +3246,8 @@ impl Layout {
             n.kind = WidgetKind::Base;
             n.parent = None;
         });
+        // Tombe ≙ objet détruit — `layout == NULL` désormais.
+        self.arena.borrow_mut().detached.insert(w);
     }
 }
 

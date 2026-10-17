@@ -350,3 +350,31 @@ périmètre est sémantiquement conforme — la machine de
 négociation de tailles, de damage et de scroll est la couche
 la plus fidèle auditée à ce jour, les écarts se concentrent
 aux frontières lifecycle `addWidget`/`setWidget`/destruction.
+
+## Apply — résolution
+
+Branche `audit/05-dw-core` (worktree `C:/Projet/wt/dillorust-a05`) :
+
+- **D1** corrigé — `style.rs` : seconds trapèzes gauche/droit en
+  `x1 + 2*w + d` / `x1 + 1 - 2*w - d` (verbatim `points[0].x ± w`) ;
+  coords exactes épinglées (`border_double_draws_two_bands`).
+- **D2** corrigé — `add_widget` : `canvas_height_greater = false`
+  + `widget_queue_resize(widget, -1, false)` verbatim.
+- **D3** corrigé — `widget_delete` : `remove_widget` si
+  `!detached` et sans parent (≙ `layout != NULL`), tombe marquée
+  `detached`.
+- **D4** corrigé — `detached` ≙ `layout == NULL` complet :
+  nœud naît detached, levé à l'attache, reposé à la destruction ;
+  `queueResize` non rattaché = branche NEEDS_* verbatim, gate SCM
+  de `set_style` revivifié.
+- **D5** corrigé — ordre `resizeFlag → markSizeChange →
+  ALLOCATE_QUEUED` ancêtres verbatim.
+- **D6** différé — identité `Color` (copie valeur) : perf-only,
+  nécessite `Rc<Color>` partagé.
+
+Tests : +5 (`border_double` coords, lifecycle add/set_widget,
+queueResize unattached, émission `resizeQueued`) ; fixture
+`anchors_scroll_to_named_position` réordonnée. Gates :
+fmt / clippy `-D warnings` / `cargo test --workspace` (tous verts,
+dont 122 `dillo-dw`) / `cargo doc` clean.
+Changelog : `docs/audits/changelog/A05.md` ; `PORTING.md` annoté.

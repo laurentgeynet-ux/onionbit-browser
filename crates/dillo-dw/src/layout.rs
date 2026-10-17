@@ -397,12 +397,17 @@ impl Layout {
         self.platform.borrow_mut().get_resource_factory()
     }
 
-    /// `new Widget` amont → nouveau nœud d'arène (id ≥ 1).
+    /// `new Widget` amont → nouveau nœud d'arène (id ≥ 1). Le nœud
+    /// naît `detached` ≙ `widget->layout == NULL` (A05-D4) — levé
+    /// par `add_widget`/`widget_set_parent`, reposé par
+    /// `detach_widget`/`widget_delete`.
     #[must_use]
     pub fn add_widget_node(&self, kind: crate::widget::WidgetKind) -> WidgetId {
         let mut a = self.arena.borrow_mut();
         a.nodes.push(WidgetNode::new(kind));
-        a.nodes.len() - 1
+        let w = a.nodes.len() - 1;
+        a.detached.insert(w);
+        w
     }
 
     /// `widget->layout == NULL` amont (≙ `detachWidget`).
@@ -656,6 +661,11 @@ impl Layout {
         self.queue_resize_list.clear();
         self.w_notify_set_as_top_level(widget);
         self.findtext_state.set_widget(Some(widget));
+        // Verbatim fin de `addWidget` : reset puis `queueResize` du
+        // top level (remplit `queueResizeList` + arme l'idle —
+        // A05-D2).
+        self.canvas_height_greater = false;
+        self.widget_queue_resize(widget, -1, false);
     }
 
     /// `Layout::setWidget` — verbatim layout.cc:438 : supprime
@@ -2252,14 +2262,18 @@ mod tests {
     fn anchors_scroll_to_named_position() {
         let mut l = make_layout();
         l.attach_view(RecView::viewport());
+        let w = l.add_widget_node(WidgetKind::Base);
+        l.add_widget(w);
+        // Le resize initial (verbatim `addWidget`) calcule le canvas
+        // depuis la requête — on seed après, comme un resizeIdle
+        // amont qui aurait déjà tourné.
+        l.drain_idles();
         l.viewport_width = 100;
         l.viewport_height = 100;
         l.canvas_width = 100;
         l.canvas_ascent = 500;
         l.uses_viewport = true;
 
-        let w = l.add_widget_node(WidgetKind::Base);
-        l.add_widget(w);
         assert!(l.add_anchor(w, b"top", 150).is_some());
         // doublon → None (verbatim `anchorsTable->contains`).
         assert!(l.add_anchor(w, b"top", 200).is_none());
@@ -2455,5 +2469,112 @@ mod tests {
         assert_eq!(l.get_widget_at_point(50, 50), Some(top));
         // hors tout → None.
         assert_eq!(l.get_widget_at_point(200, 200), None);
+    }
+
+    // ---- A05 apply — lifecycle addWidget/setWidget/detached ----
+
+    #[test]
+    fn add_widget_queues_initial_resize_and_resets_chg() {
+        // Verbatim `addWidget` (layout.cc:396-403) : reset
+        // `canvasHeightGreater` puis `topLevel->queueResize(-1,false)`
+        // — flags RESIZE_QUEUED/ALLOCATE_QUEUED + idle armé (A05-D2).
+        let mut l = make_layout();
+        l.attach_view(RecView::viewport());
+        l.canvas_height_greater = true;
+
+        let top = l.add_widget_node(WidgetKind::Base);
+        l.add_widget(top);
+        assert!(!l.canvas_height_greater);
+        assert!(l.node(top, |n| n.resize_queued() && n.allocate_queued()));
+
+        // l'idle file alors le premier sizeRequest/sizeAllocate.
+        l.drain_idles();
+        assert!(l.node(top, |n| n.was_allocated() && !n.needs_allocate()));
+    }
+
+    #[test]
+    fn add_widget_emits_resize_queued() {
+        // Le signal `resizeQueued` amont est émis via
+        // `Widget::queueResize` → `Layout::queueResize` (A05-D2).
+        struct Rec {
+            resizes: usize,
+        }
+        impl LayoutReceiver for Rec {
+            fn resize_queued(&mut self, _extremes_changed: bool) {
+                self.resizes += 1;
+            }
+        }
+        let mut l = make_layout();
+        l.attach_view(RecView::viewport());
+        let rec = Rc::new(RefCell::new(Rec { resizes: 0 }));
+        let rec_dyn: Rc<RefCell<dyn LayoutReceiver>> = rec.clone();
+        l.connect_layout_receiver(&rec_dyn);
+
+        let top = l.add_widget_node(WidgetKind::Base);
+        l.add_widget(top);
+        assert_eq!(rec.borrow().resizes, 1);
+    }
+
+    #[test]
+    fn set_widget_replace_resets_and_requeues() {
+        // Verbatim `setWidget` : `topLevel=NULL` puis `delete` —
+        // `~Widget` appelle `layout->removeWidget()` car
+        // `layout != NULL` (≙ rattaché) — reset scroll/canvas/view
+        // *pendant* la destruction (A05-D3), puis `addWidget` re-file
+        // le nouveau top level.
+        let mut l = make_layout();
+        l.attach_view(RecView::viewport());
+        let a = l.add_widget_node(WidgetKind::Base);
+        l.set_widget(a);
+        l.drain_idles();
+        assert!(l.node(a, WidgetNode::was_allocated));
+        l.scroll_x = 10;
+        l.scroll_y = 20;
+
+        let b = l.add_widget_node(WidgetKind::Base);
+        l.set_widget(b);
+        // `a` = tombe detached ; `removeWidget` a remis scroll à 0
+        // et réémis `canvasSizeChanged(0,0,0)`.
+        assert!(l.node_detached(a));
+        assert_eq!((l.scroll_x, l.scroll_y), (0, 0));
+        assert_eq!(l.canvas_width, 0);
+        // `b` = top level attaché, resize re-filé (≙ addWidget).
+        assert!(!l.node_detached(b));
+        assert!(l.node(b, WidgetNode::resize_queued));
+        l.drain_idles();
+        assert!(l.node(b, WidgetNode::was_allocated));
+    }
+
+    #[test]
+    fn queue_resize_unattached_sets_needs_without_idle() {
+        // `if (layout) … else` amont : un widget pas encore rattaché
+        // prend la branche NEEDS_*/EXTREMES_CHANGED — pas de
+        // `queueResizeList`, pas d'idle, pas d'émission (A05-D4).
+        struct Rec {
+            resizes: usize,
+        }
+        impl LayoutReceiver for Rec {
+            fn resize_queued(&mut self, _extremes_changed: bool) {
+                self.resizes += 1;
+            }
+        }
+        let mut l = make_layout();
+        l.attach_view(RecView::viewport());
+        let rec = Rc::new(RefCell::new(Rec { resizes: 0 }));
+        let rec_dyn: Rc<RefCell<dyn LayoutReceiver>> = rec.clone();
+        l.connect_layout_receiver(&rec_dyn);
+
+        let w = l.add_widget_node(WidgetKind::Base);
+        assert!(l.node_detached(w)); // ≙ `layout == NULL` amont.
+        l.widget_queue_resize(w, 0, true);
+        assert!(l.node(w, |n| n.needs_resize()
+            && n.extremes_changed()
+            && !n.resize_queued()));
+        assert_eq!(rec.borrow().resizes, 0);
+
+        // L'attache conserve les flags → le prochain drain alloue.
+        l.add_widget(w);
+        l.drain_idles();
+        assert!(l.node(w, WidgetNode::was_allocated));
     }
 }
