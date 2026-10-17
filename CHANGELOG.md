@@ -7,6 +7,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `dillo-dw` style+interfaces image (phase 4, lot dw-1a) :
+  `imgbuf` trait (`dw/imgbuf.hh` — verbatim, `Rc<dyn Imgbuf>`),
+  `imgrenderer` (`ImgRenderer` + `ImgRendererDist`, snapshot Rc),
+  `style` complet modulo draw_* : tous les enums, `Length`
+  packing verbatim + `roundInt` ≙ `(d>0?d+0.5:d-0.5)`, `Box`,
+  `StyleAttrs` (`initValues`/`resetValues`/`sizeDiffs`≙false,
+  `equals` ptr-identité `Rc::ptr_eq`, `hashValue` somme
+  `(intptr_t)`→adresses), `Style` + `styleTable` thread_local
+  (déduplication ≙ pool statique), `Font`/`FontAttrs`,
+  `Tooltip` (+trait `TooltipHooks` ≙ virtuals), `StyleImage`
+  (partiel), `numtostr` verbatim (romain/alpha/`"****."`,
+  `num=0`→`"."` quirk préservé).
+
 - `dillo-dw` fondations (phase 4, lot dw-0) : `types`
   (`dw/types.cc/.hh` — `Rectangle`/`Circle`/`Polygon`/`Region`
   avec quirks verbatim : borne `y>=maxy` asymétrique, fusion

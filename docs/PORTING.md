@@ -131,7 +131,7 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 |---|---|---|---|
 | `dw/core.hh` | `[dw]::core` | not started | namespaces/traits centraux |
 | `dw/types.cc` + `.hh` | `[dw]::types` | ported | Rect/Circle/Polygon/Region, Alloc/Req/Extremes, Content, stacking ctx ; `Shape::draw` via seam `View` ; quirks verbatim (borne poly `y>=maxy`, merge ≤16) |
-| `dw/style.cc` + `.hh` | `[dw]::style` | in progress | `Color`/`Shading`/`shadeColor` portés ; Style/Font/Tooltip/Length/StyleImage à faire ; pooling `Layout` différé |
+| `dw/style.cc` + `.hh` | `[dw]::style` | in progress | enums, `Length` verbatim, `Box`, `StyleAttrs`, `Style`+table tl, `Font`/`Tooltip`, `numtostr`, `Color`/`Shading` ; `drawBorder`/`drawBackground*`/tile-buffer à faire (dw-1b) |
 | `dw/events.hh` | `[dw]::events` | ported | ButtonState + Mouse/Button/Motion/Crossing (`Widget*`→`WidgetId`) |
 | `dw/tools.cc` + `.hh` | `[dw]::tools` | ported | SizeParams verbatim (refs→`WidgetId`) |
 | `dw/platform.hh` | `[dw]::platform` (trait) | not started | trait Platform — impl `[plat]` |
@@ -151,8 +151,8 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | `dw/findtext.cc` + `.hh` | `[dw]::findtext` | not started | |
 | `dw/selection.cc` + `.hh` | `[dw]::selection` | not started | |
 | `dw/image.cc` + `image.hh` | `[dw]::image` | not started | widget image |
-| `dw/imgrenderer.cc` + `.hh` | `[dw]::imgrenderer` | not started | scaling/filtrage |
-| `dw/imgbuf.hh` | `[dw]`/`[img]::imgbuf` iface | not started | interface buffer |
+| `dw/imgbuf.hh` | `[dw]::imgbuf` trait | ported | trait `Imgbuf` (Rc&lt;dyn&gt;) — impl concrète `[img]::imgbuf` à aligner (dw-1b) |
+| `dw/imgrenderer.cc` + `.hh` | `[dw]::imgrenderer` | ported | trait `ImgRenderer` + `ImgRendererDist` (snapshot Rc) — impls dw (`StyleImgRenderer`…) à venir |
 | `dw/table.cc` + `table.hh` | `[dw]::table` | not started | algo table maison |
 | `dw/tablecell.cc` + `tablecell.hh` | `[dw]::table` | not started | |
 | `dw/simpletablecell.cc` + `.hh` | `[dw]::table` | not started | |

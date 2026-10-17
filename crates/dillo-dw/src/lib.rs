@@ -12,6 +12,8 @@
 #![forbid(unsafe_code)]
 
 pub mod events;
+pub mod imgbuf;
+pub mod imgrenderer;
 pub mod style;
 pub mod tools;
 pub mod types;
