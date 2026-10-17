@@ -226,6 +226,13 @@ pub trait Resource {
         let _ = self;
         None
     }
+
+    /// Downcast plateforme — ≙ les casts `Fltk*Resource*` amont.
+    /// Les impls concrètes retournent `Some(self)` ; `None` par
+    /// défaut (≙ cast échoué).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
     /// `(SelectionResource*)res`.
     fn as_selection_resource(&self) -> Option<&dyn SelectionResource> {
         None
@@ -473,6 +480,11 @@ pub trait ComplexButtonOps {
     fn create_platform(&mut self) -> Rc<RefCell<dyn Platform>>;
     /// `setLayout` — transmission du layout interne (≙ `this->layout`).
     fn set_layout(&mut self, layout: &mut Layout);
+    /// Seam plateforme (pas amont) : cellule partagée du layout
+    /// interne — `Rc` possédé par `ComplexButtonResource` — pour
+    /// que `draw` de la plateforme pilote `layout->draw` (≙
+    /// `flatView->draw` amont).
+    fn set_layout_cell(&mut self, _cell: std::rc::Weak<RefCell<Option<Layout>>>) {}
     /// `reliefXThickness` — épaisseur relief horizontale.
     fn relief_x_thickness(&self) -> i32;
     /// `reliefYThickness` — épaisseur relief verticale.
@@ -487,6 +499,9 @@ pub trait ComplexButtonOps {
     fn draw(&self, view: &mut dyn View, area: &Rectangle, context: &mut DrawingContext);
     /// `setStyle`.
     fn set_style(&mut self, style: &Rc<Style>);
+    /// `sizeAllocate` — verbatim `FltkComplexButtonResource::
+    /// sizeAllocate` (positionne la flat view interne).
+    fn size_allocate(&mut self, _allocation: &Allocation) {}
 }
 
 /// `ComplexButtonResource::LayoutReceiver` — verbatim : relay de
@@ -525,7 +540,7 @@ pub struct ComplexButtonResource {
     ops: RefCell<Box<dyn ComplexButtonOps>>,
     /// `layout` — layout interne (≙ `Layout *layout` ; `RefCell`
     /// pour méthodes `&self` — `Option` car posé dans `init`).
-    layout: RefCell<Option<Layout>>,
+    layout: Rc<RefCell<Option<Layout>>>,
     /// `childWidget`.
     child_widget: Cell<Option<WidgetId>>,
     /// `embed` (≙ `Resource::embed`).
@@ -555,7 +570,7 @@ impl ComplexButtonResource {
     pub fn new(ops: Box<dyn ComplexButtonOps>) -> Self {
         Self {
             ops: RefCell::new(ops),
-            layout: RefCell::new(None),
+            layout: Rc::new(RefCell::new(None)),
             child_widget: Cell::new(None),
             embed: Cell::new(None),
             click_x: Cell::new(-1),
@@ -591,6 +606,11 @@ impl ComplexButtonResource {
         layout.connect_layout_receiver(&relay_dyn);
         *self.relay.borrow_mut() = Some(relay);
         *self.layout.borrow_mut() = Some(layout);
+        // Seam port : l'ops plateforme pilote `layout->draw` depuis
+        // son `draw` (≙ `flatView->draw` amont).
+        self.ops
+            .borrow_mut()
+            .set_layout_cell(Rc::downgrade(&self.layout));
         // `if (getEmbed()) childWidget->setQuasiParent(getEmbed())`.
         if let Some(e) = self.embed.get() {
             if let Some(l) = self.layout.borrow_mut().as_mut() {
@@ -669,8 +689,11 @@ impl Resource for ComplexButtonResource {
         extremes.max_width_intrinsic = extremes.max_width;
     }
 
-    /// `sizeAllocate` — vide verbatim (ui.cc:403).
-    fn size_allocate(&self, _l: &mut Layout, _allocation: &Allocation) {}
+    /// `sizeAllocate` — relayé aux ops (≙ `FltkComplexButtonResource`
+    /// qui redimensionne la flat view — fltkui.cc).
+    fn size_allocate(&self, _l: &mut Layout, allocation: &Allocation) {
+        self.ops.borrow_mut().size_allocate(allocation);
+    }
 
     /// `getAvailWidthOfChild` — verbatim ui.cc:407 :
     /// `max(getEmbed()->getAvailWidth - 2*reliefX, 0)` (`-1` propagé).

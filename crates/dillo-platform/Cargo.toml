@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 dillo-common.workspace = true
 dillo-dw.workspace = true
+dillo-images.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tiny-skia.workspace = true

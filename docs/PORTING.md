@@ -175,15 +175,15 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
-| `dw/fltkplatform.cc` + `.hh` + `fltkcore.hh` | `[plat]::platform` | not started | spec du trait — impl winit/skia |
-| `dw/fltkviewbase.cc` + `.hh` | `[plat]::view` | not started | |
-| `dw/fltkviewport.cc` + `.hh` | `[plat]::viewport` | not started | scroll/damage |
-| `dw/fltkflatview.cc` + `.hh` | `[plat]::flatview` | not started | |
-| `dw/fltkui.cc` + `.hh` | `[plat]::ui` | not started | ResourceFactory FLTK |
-| `dw/fltkcomplexbutton.cc` + `.hh` | `[plat]::button` | not started | |
-| `dw/fltkimgbuf.cc` + `.hh` | `[plat]::imgbuf` | not started | pixbuf adapter |
-| `dw/fltkmisc.cc` + `.hh` | `[plat]::misc` | not started | |
-| `dw/fltkpreview.cc` + `.hh` | `[plat]::preview` | not started | print preview — peut être différé |
+| `dw/fltkplatform.cc` + `.hh` + `fltkcore.hh` | `[plat]::platform` | ported | `SkiaPlatform` : fontes `cosmic-text` (pool/interning familles, métriques via `font.rustybuzz` ≙ `fl_height`/`fl_width`), couleurs/tooltips/imgbuf (`dillo-images` `ImgbufType::Rgb` ≙ `FltkImgbuf` RGB-only), idles `take_pending_idles` ≙ `Fl::add_idle`, clipboard in-process (**déviation** ≙ `Fl::copy` — pas de presse-papier OS pour l'instant, A10) |
+| `dw/fltkviewbase.cc` + `.hh` | `[plat]::view` | ported | `Canvas`+`SkiaView` : draws `*_at(origin,…)` tiny-skia ≙ `fl_line`/`rect`/`arc`/`polygon`/`draw_text` (cosmic `Buffer::draw` par pixel + `draw_buffer`), coords vue↔canvas verbatim, clip stack ≙ `fl_push_clip`/`fl_pop_clip` (`ClippingView` proxy), `Pixmap` en `Option` ≙ dégradation OOM, bg `set_bg_color`+`fill_bg` |
+| `dw/fltkviewport.cc` + `.hh` | `[plat]::view`+`[plat]::app` | ported | scroll `scroll_to`/`scroll_cmd` verbatim (`linesize`≙`scroll_step`), damage `queue_draw`/`take_damage` ≙ `FL_DAMAGE_*`, `blit_scroll` ≙ `fl_scroll`, winit `ApplicationHandler` (`DwApp`) ≙ `handle()` : button/motion/enter/leave/wheel→layout, `getDwButtonState` verbatim, `event_clicks` ≙ double-clic <500 ms, scrollbars dessinées+hit-testées ≙ `Fl_Scrollbar` enfants (**déviation** : pas de vrai widget OS) |
+| `dw/fltkflatview.cc` + `.hh` | `[plat]::view` | ported | `FlatView`/`FlatViewShared` : cellules canvas/clip partagées ≙ même back-buffer ; `attach_flat_canvas` résout le canvas par `View::as_any` downcast ≙ pointeur `view` amont |
+| `dw/fltkui.cc` + `.hh` | `[plat]::ui` | ported | `SkiaResourceFactory` + 8 ressources auto-dessinées (label-button/entry/multiline/toggle/radio/optionmenu/list/complex) : `sizeRequest` **verbatim** (`fl_width("n")*size+label+2*RELIEF_X` × font+`RELIEF_Y`, RELIEF=3), listes `@N`/`\a`/depth verbatim, contrôles auto-dessinés (**déviation** ADR-0002 : pas de widgets natifs FLTK) |
+| `dw/fltkcomplexbutton.cc` + `.hh` | `[plat]::ui` | ported | `SkiaComplexButtonOps` ≙ `FltkComplexButtonResource` : layout interne + `FlatView` partagée, `size_allocate`→`sizeAllocate` verbatim |
+| `dw/fltkimgbuf.cc` + `.hh` | `[plat]::platform` | ported | adaptateur `create_imgbuf` → `dillo_images::imgbuf::Imgbuf` (`Rgb` seul — verbatim `FltkImgbuf` RGB-only) |
+| `dw/fltkmisc.cc` + `.hh` | `[plat]::app` | ported | `screenWidth`/`screenHeight` ≙ requête moniteur winit — exposé via `DwApp`/surface (fallback 800×600 headless) |
+| `dw/fltkpreview.cc` + `.hh` | `[plat]::preview` | deferred | print preview — phase chrome (non requis pour le rendu) |
 | `dw/preview.xbm` | — | won't port | asset FLTK |
 
 ## dpi/ — plugins

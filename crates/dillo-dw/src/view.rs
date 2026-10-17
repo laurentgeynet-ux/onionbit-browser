@@ -201,4 +201,11 @@ pub trait View {
 
     /// `mergeClippingView` — réinjecte la sous-vue dans le parent.
     fn merge_clipping_view(&mut self, clipping_view: Box<dyn View>);
+
+    /// Downcast plateforme — ≙ les casts `FltkView*` amont
+    /// (`FltkResource::draw` caste `View*` → `FltkView*`). Les
+    /// impls concrètes retournent `Some(self)` ; `None` défaut.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }

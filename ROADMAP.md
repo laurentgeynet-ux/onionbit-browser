@@ -156,9 +156,11 @@ prototype phase 0).
 
 ## Phase 6 — Platform & UI shell
 
-- [ ] `dillo-platform` : `dw::core::Platform` impl (winit window,
+- [x] `dillo-platform` : `dw::core::Platform` impl (winit window,
       softbuffer present, tiny-skia `View`/`Layout` hooks, events,
       clipboard, cursors) — replaces `dw/fltk*.cc`
+      (`platform.rs`/`view.rs`/`ui.rs`/`app.rs`/`surface.rs` +
+      `golden.rs`) — clipboard in-process (déviation documentée)
 - [ ] `src/ui.cc` chrome (toolbars, tabs via `UI`/`CustTabs`),
       `uicmd.cc`, `keys.cc`+`keysrc`, `menu.cc`, `dialog.cc`,
       `findbar.cc`, `tipwin.cc` (`timeout.cc` déjà porté dans

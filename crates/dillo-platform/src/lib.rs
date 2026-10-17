@@ -4,5 +4,9 @@
 //! raster `tiny-skia`, fontes `cosmic-text` (ADR-0002).
 #![forbid(unsafe_code)]
 
+pub mod app;
 pub mod golden;
+pub mod platform;
 pub mod surface;
+pub mod ui;
+pub mod view;

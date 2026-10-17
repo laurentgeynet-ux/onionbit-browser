@@ -590,6 +590,12 @@ impl Layout {
         self.platform.borrow_mut().dpi_x()
     }
 
+    /// `textWidth` — `platform->textWidth` verbatim
+    /// (layout.hh:370). Mesure `text` dans la fonte donnée.
+    pub fn text_width(&mut self, font: &crate::style::Font, text: &[u8]) -> i32 {
+        self.platform.borrow_mut().text_width(font, text)
+    }
+
     /// `createFont` — `platform->createFont` verbatim
     /// (`try_everything` ≙ fallback agressif).
     pub fn create_font(

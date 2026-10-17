@@ -40,6 +40,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `content_type_cmp` retournait un bool inversé par rapport à
   l'`int` amont dans `cache.rs` (≠0 = différent). 28 tests
   `dillo-html` (entités, soup, forms, plain).
+- `dillo-platform` (phase 6, lot plat-1) : pile native
+  `winit`+`softbuffer`+`tiny-skia`+`cosmic-text` remplaçant
+  `dw/fltk*.cc` (ADR-0002). `platform.rs` — `SkiaPlatform`
+  (≙ `fltkplatform.cc`) : fontes cosmic-text (pool, interning
+  familles, métriques `rustybuzz` ≙ `fl_height`/`fl_width`),
+  couleurs/tooltips, adaptateur imgbuf `dillo-images`,
+  file idle ≙ `Fl::add_idle`, clipboard in-process
+  (déviation ≙ `Fl::copy`). `view.rs` — `Canvas`/`SkiaView`/
+  `ClippingView`/`FlatView`/`SharedView` (≙ `fltkviewbase.cc`+
+  `fltkviewport.cc`+`fltkflatview.cc`) : draws tiny-skia avec
+  traduction vue↔canvas verbatim, pile de clips ≙ `fl_push_clip`,
+  scroll/damage/blit ≙ `fl_scroll`+`FL_DAMAGE_*`, `Pixmap` en
+  `Option` (OOM gracieux). `ui.rs` — `SkiaResourceFactory` +
+  8 ressources auto-dessinées (≙ `fltkui.cc`+`fltkcomplexbutton.cc`)
+  : `sizeRequest` verbatim (`fl_width("n")*size+label+2*RELIEF_X`,
+  RELIEF=3), listes `@N`/`\a`/depth, groupes radio partagés.
+  `app.rs` — `DwApp` `ApplicationHandler` winit (≙
+  `FltkViewport::handle`+`Fl::run`) : dispatch bouton/motion/
+  enter/leave/wheel→`Layout`, `getDwButtonState` verbatim,
+  double-clic <500 ms ≙ `event_clicks`, scrollbars dessinées et
+  hit-testées ≙ `Fl_Scrollbar`, drain idles dans `about_to_wait`,
+  présentation `softbuffer`. `surface.rs` — `PlatformSurface`
+  (Pixmap→blit 0RGB→present). Seam : `SharedView` proxie le
+  `Canvas` (et non la vue — le layout rappelle `view.*` pendant
+  `draw` ; un proxy `Rc<RefCell<SkiaView>>` paniquerait —
+  pointeur widget amont reproduit au niveau du canvas).
+  21 tests (scroll/clamp, damage, clip, pixels headless,
+  hit-test scrollbars, métriques `sizeRequest` verbatim).
 - `dillo-css` (phase 3, lot css-1) : crate complète —
   `doctree` (arène `Vec` ≙ pointeurs chaînés amont),
   `css` (types/`CssLength` union, `CssPropertyList`,

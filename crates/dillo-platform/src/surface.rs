@@ -53,17 +53,14 @@ impl PlatformSurface {
     /// `SurfaceError::Softbuffer` sur échec buffer/présentation.
     pub fn present(&mut self, pixmap: &tiny_skia::Pixmap) -> Result<(), SurfaceError> {
         let (w, h) = self.size();
-        if w == 0 || h == 0 {
+        let (Some(w), Some(h)) = (NonZeroU32::new(w), NonZeroU32::new(h)) else {
             return Ok(());
-        }
-        self.surface.resize(
-            NonZeroU32::new(w).unwrap_or_else(|| unreachable!()),
-            NonZeroU32::new(h).unwrap_or_else(|| unreachable!()),
-        )?;
+        };
+        self.surface.resize(w, h)?;
         let mut buf = self.surface.buffer_mut()?;
-        let bw = buf.len() / h as usize;
+        let bw = buf.len() / h.get() as usize;
         let (pw, ph) = (pixmap.width(), pixmap.height());
-        for y in 0..h.min(ph) {
+        for y in 0..h.get().min(ph) {
             for x in 0..pw.min(u32::try_from(bw).unwrap_or(u32::MAX)) {
                 let Some(p) = pixmap.pixel(x, y) else {
                     continue;

@@ -587,6 +587,7 @@ dependencies = [
  "cosmic-text",
  "dillo-common",
  "dillo-dw",
+ "dillo-images",
  "png",
  "softbuffer",
  "thiserror 2.0.21",
