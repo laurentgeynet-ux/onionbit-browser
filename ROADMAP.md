@@ -18,7 +18,7 @@ in `rapport` mode, then `apply`.
       3 widgets → **option D retenue** (arène+`enum`+`LayoutCtx`) —
       B a paniqué `BorrowMutError` au 1er essai puis exigé
       try_borrow+defer ; ADR amendé avec règles de port
-- [ ] PORTING.md rows phase-0 → `ported`
+- [x] PORTING.md rows phase-0 → `ported`
 
 **Audits** : none yet (infrastructure).
 
