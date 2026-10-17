@@ -178,8 +178,9 @@ impl Layout {
             .get(word_no as usize)
             .is_some_and(|word| word.style.attrs.background_image.is_some());
         if has_bg {
-            let r: Rc<RefCell<dyn crate::imgrenderer::ImgRenderer>> =
-                Rc::new(RefCell::new(WordImgRenderer::new(&self.arena, w, word_no)));
+            let r: Rc<RefCell<dyn crate::imgrenderer::ImgRenderer>> = Rc::new(RefCell::new(
+                WordImgRenderer::new(&self.arena, self.id, w, word_no),
+            ));
             if let Some(word) = tb.words.get_mut(word_no as usize) {
                 if let Some(bi) = &word.style.attrs.background_image {
                     bi.borrow().put_external_img_renderer(&r);
@@ -224,7 +225,7 @@ impl Layout {
             .is_some_and(|word| word.space_style.attrs.background_image.is_some());
         if has_bg {
             let r: Rc<RefCell<dyn crate::imgrenderer::ImgRenderer>> = Rc::new(RefCell::new(
-                super::SpaceImgRenderer::new(&self.arena, w, word_no),
+                super::SpaceImgRenderer::new(&self.arena, self.id, w, word_no),
             ));
             if let Some(word) = tb.words.get_mut(word_no as usize) {
                 if let Some(bi) = &word.space_style.attrs.background_image {

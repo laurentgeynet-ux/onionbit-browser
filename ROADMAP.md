@@ -115,8 +115,20 @@ prototype phase 0).
 - [x] `findtext.cc`, `selection.cc` **[`dw::findtext`,
       `dw::selection`]** (KMP verbatim, DeepIterator ancrage,
       clipboard)
-- [ ] `image.cc` (widget side), `imgrenderer.cc`
-- [~] `tools.cc`, `ui.cc` (dw::core::ui widgets) — `tools` porté
+- [x] `image.cc` (widget side), `imgrenderer.cc`
+      **[`dw::image`]** — `WidgetKind::Image` + `ImageData`
+      verbatim, `ImageImgRenderer` (`Weak<Arena>`+`WidgetId`,
+      resize/draw différés tagués `Layout::id`), sizing/extremes/
+      allocation/draw-lignes/alt-text verbatim, `ImageMapsList`
+      (shapes + hit-test), events link/click `x_img`/`x_link`
+- [x] `tools.cc`, `ui.cc` (dw::core::ui widgets) —
+      **[`dw::ui`]** : `WidgetKind::Embed` + trait `Resource`
+      (`&self`+Cell/RefCell — ré-entrant), receivers/emitters
+      verbatim, sous-traits LabelButton/Selection/List/OptionMenu/
+      Text/Entry/MultiLine/Toggle/Check/Radio + `ResourceFactory`,
+      `ComplexButtonResource` complet (arène partagée
+      `Layout::with_arena`, relief `2*x`/`y`, relay resize
+      `pending_resizes` tagué)
 
 **Audit** : `audit-05-dw-core`, `audit-06-dw-textblock`
 

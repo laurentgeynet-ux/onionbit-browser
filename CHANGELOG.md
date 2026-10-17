@@ -30,6 +30,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wrap-around RESTART). `DeepIterator::new` clone l'itérateur
   entrant (verbatim ctor amont).
 
+- `dillo-dw::image` (phase 4, lot dw-4a) : `WidgetKind::Image`
+  + `ImageData` verbatim `dw/image.cc` — états `altText`/`buffer`/
+  `ImageMapsList` (imagemaps client/serveur, hit-test shapes),
+  `ImageImgRenderer` ≙ `Image:ImgRenderer` (`Weak<Arena>`+
+  `WidgetId`, `setBuffer` scale/alt-transition, draws/resizes
+  différés tagués `Layout::id` — files `pending_*` désormais
+  taguées par layout car l'arène est partageable), sizing/
+  extremes/allocation/draw-par-lignes/alt-text verbatim,
+  events `x_img`/`x_link`.
+
+- `dillo-dw::ui` (phase 4, lot dw-4b) : `WidgetKind::Embed` +
+  trait `Resource` verbatim `dw/ui.cc` — `&self` + mutabilité
+  intérieure (ré-entrance `w_*_of_child`), `Activate`/`Clicked`
+  receivers/emitters, sous-traits verbatim (`LabelButton`,
+  `Selection`, `List`/`SelectionMode`, `OptionMenu`, `Text`,
+  `Entry` (`UNLIMITED_SIZE=-1`), `MultiLineText`, `Toggle`,
+  `Check`, `Radio`+`RadioGroupIterator`) et `ResourceFactory`
+  (impl phase platform ≙ `fltkui.cc`) ; `ComplexButtonResource`
+  complet : layout interne `Layout::with_arena` (arène partagée
+  ≙ pointeurs cross-layout amont), relief `2*reliefX/Y` sur
+  sizeRequest/getExtremes, corrections `*OfChild` verbatim
+  (FIXME typo `getAvailHeight` amont conservé, `NoRec`≙base
+  extraite), `EmbedResizeRelay` ≙ `LayoutReceiver::resizeQueued`
+  → `pending_resizes` tagué. `Layout::id` unique ajouté pour
+  taguer les files différées en arène partagée. 13 tests.
+
 - `dillo-dw::textblock::listitem` + `bullet` + `ruler` :
   `AlignedTextblock`/`ListItem` (liste partagée Rc,
   `updateValue`→`setMaxValue`, `leftInnerPadding`/

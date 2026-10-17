@@ -590,7 +590,7 @@ impl Layout {
             let _ = self.node_tb_mut(w, |tb| tb.last_word_drawn = lw);
         }
         let _ = self.node_tb_mut(w, |tb| {
-            tb.redraw_y = self.node(w, super::super::widget::WidgetNode::get_height)
+            tb.redraw_y = self.node(w, super::super::widget::WidgetNode::get_height);
         });
     }
 

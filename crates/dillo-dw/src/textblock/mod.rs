@@ -800,6 +800,8 @@ pub fn is_textblock_kind(kind: &WidgetKind) -> bool {
 pub struct WordImgRenderer {
     /// Arène faible (≙ `textblock`).
     arena: std::rc::Weak<RefCell<crate::layout::Arena>>,
+    /// `Layout::id` émetteur (tag `pending_draws`).
+    layout_id: usize,
     /// Le textblock.
     widget: WidgetId,
     /// `wordNo`.
@@ -816,11 +818,13 @@ impl WordImgRenderer {
     /// `WordImgRenderer (textblock, wordNo)` — `dataSet = false`.
     pub(crate) fn new(
         arena: &Rc<RefCell<crate::layout::Arena>>,
+        layout_id: usize,
         widget: WidgetId,
         word_no: i32,
     ) -> Self {
         Self {
             arena: Rc::downgrade(arena),
+            layout_id,
             widget,
             word_no,
             x_word_widget: 0,
@@ -967,6 +971,7 @@ impl crate::style::ExternalImgRenderer for WordImgRenderer {
         if let Some(a) = self.arena.upgrade() {
             let alloc = a.borrow().nodes[self.widget].allocation;
             a.borrow_mut().pending_draws.push((
+                self.layout_id,
                 Some(self.widget),
                 crate::types::Rectangle {
                     x: x - alloc.x,
@@ -999,11 +1004,12 @@ impl SpaceImgRenderer {
     /// délégué (textblock.hh:327).
     pub(crate) fn new(
         arena: &Rc<RefCell<crate::layout::Arena>>,
+        layout_id: usize,
         widget: WidgetId,
         word_no: i32,
     ) -> Self {
         Self {
-            word: WordImgRenderer::new(arena, widget, word_no),
+            word: WordImgRenderer::new(arena, layout_id, widget, word_no),
         }
     }
     /// `setData` hérité (appelé depuis `addLine`).

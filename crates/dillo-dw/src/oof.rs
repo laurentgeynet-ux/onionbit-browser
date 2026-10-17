@@ -252,7 +252,9 @@ pub fn is_oof_aware_kind(kind: &WidgetKind) -> bool {
         WidgetKind::Base
         | WidgetKind::Container { .. }
         | WidgetKind::Text { .. }
-        | WidgetKind::Bullet => false,
+        | WidgetKind::Bullet
+        | WidgetKind::Image { .. }
+        | WidgetKind::Embed { .. } => false,
     }
 }
 

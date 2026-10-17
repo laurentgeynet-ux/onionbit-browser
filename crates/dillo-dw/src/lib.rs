@@ -15,6 +15,7 @@ pub mod bullet;
 pub mod events;
 pub mod findtext;
 pub mod hyphenator;
+pub mod image;
 pub mod imgbuf;
 pub mod imgrenderer;
 pub mod iterator;
@@ -27,6 +28,7 @@ pub mod style;
 pub mod textblock;
 pub mod tools;
 pub mod types;
+pub mod ui;
 pub mod view;
 pub mod widget;
 

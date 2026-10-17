@@ -74,8 +74,17 @@ pub(crate) struct Arena {
     pub(crate) detached: HashSet<WidgetId>,
     /// Draws différés des renderers externes — `Some(w)` =
     /// coords widget (≙ `queueDrawArea`), `None` = coords
-    /// canvas (≙ `layout->queueDraw`).
-    pub(crate) pending_draws: Vec<(Option<WidgetId>, Rectangle)>,
+    /// canvas (≙ `layout->queueDraw`). Le premier champ tague le
+    /// [`Layout`] émetteur (`id`) : une arène peut être partagée
+    /// entre plusieurs layouts (`ui::ComplexButtonResource`),
+    /// chacun ne draine que les siens.
+    pub(crate) pending_draws: Vec<(usize, Option<WidgetId>, Rectangle)>,
+    /// Resizes différés des renderers externes (≙
+    /// `queueResize(ref, extremesChanged)` — ex. `Image::
+    /// setBuffer`) — vidés vers `widget_queue_resize` par
+    /// [`Layout::drain_idles`]. Même tag `Layout::id` que
+    /// `pending_draws`.
+    pub(crate) pending_resizes: Vec<(usize, WidgetId, i32, bool)>,
 }
 
 impl Arena {
@@ -85,6 +94,7 @@ impl Arena {
             nodes: vec![WidgetNode::new(crate::widget::WidgetKind::Base)],
             detached: HashSet::new(),
             pending_draws: Vec::new(),
+            pending_resizes: Vec::new(),
         }
     }
 }
@@ -189,9 +199,17 @@ pub enum SelectionEvent {
 // Layout — champs verbatim layout.hh.
 // ------------------------------------------------------------------
 
+/// Identifiant unique de `Layout` (≙ identité du pointeur amont) —
+/// tague les entrées `pending_draws`/`pending_resizes` quand une
+/// arène est partagée entre plusieurs layouts
+/// (`ui::ComplexButtonResource`).
+static NEXT_LAYOUT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
 /// `dw::core::Layout`.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Layout {
+    /// Identité du layout (modèle D — cf. `NEXT_LAYOUT_ID`).
+    pub(crate) id: usize,
     /// `platform` (`Rc` ≙ pointeur possédé amont — `delete
     /// platform` dans `~Layout`).
     pub(crate) platform: Rc<RefCell<dyn Platform>>,
@@ -280,10 +298,29 @@ impl Layout {
     /// `Layout (platform, limit)` — verbatim layout.cc:270.
     #[must_use]
     pub fn new(platform: Rc<RefCell<dyn Platform>>, limit: bool) -> Self {
+        Self::with_arena(Rc::new(RefCell::new(Arena::new())), platform, limit)
+    }
+
+    /// `Layout` partageant une arène existante — modèle D pour
+    /// `ui::ComplexButtonResource` (le `childWidget` amont vit
+    /// dans un `Layout` dédié mais référence le `Embed` externe
+    /// par pointeur ; en arène partagée, `quasiParent` reste un
+    /// `WidgetId` valide). `platform`/`view`/compteurs restent
+    /// par-layout (verbatim).
+    ///
+    /// `pub(crate)` : `Arena` n'est pas exposée — la création de
+    /// ressources complexes se fait via `ui::ComplexButtonResource`.
+    #[must_use]
+    pub(crate) fn with_arena(
+        arena: Rc<RefCell<Arena>>,
+        platform: Rc<RefCell<dyn Platform>>,
+        limit: bool,
+    ) -> Self {
         let layout = Layout {
+            id: NEXT_LAYOUT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             platform,
             view: None,
-            arena: Rc::new(RefCell::new(Arena::new())),
+            arena,
             top_level: None,
             widget_at_point: None,
             queue_resize_list: Vec::new(),
@@ -410,10 +447,18 @@ impl Layout {
     }
 
     /// Vide `pending_draws` vers `view->queueDraw` — les
-    /// renderers externes n'ont pas `&mut Layout`.
+    /// renderers externes n'ont pas `&mut Layout`. Ne consomme
+    /// que les entrées taguées `self.id` (arène partageable) ;
+    /// les autres restent en file pour leur propre layout.
     pub fn flush_pending_draws(&mut self) {
-        let mut draws = std::mem::take(&mut self.arena.borrow_mut().pending_draws);
-        for (w, rect) in draws.drain(..) {
+        let draws = {
+            let mut a = self.arena.borrow_mut();
+            let (mine, rest): (Vec<_>, Vec<_>) =
+                a.pending_draws.drain(..).partition(|e| e.0 == self.id);
+            a.pending_draws = rest;
+            mine
+        };
+        for (_, w, rect) in draws {
             match w {
                 Some(w) => {
                     let alloc = self.node(w, |n| n.allocation);
@@ -822,6 +867,7 @@ impl Layout {
                     bg_attachment: self.bg_attachment,
                     bg_position_x: self.bg_position_x,
                     bg_position_y: self.bg_position_y,
+                    layout_id: self.id,
                     pending_draws: arena,
                 })));
             }
@@ -1037,6 +1083,19 @@ impl Layout {
         let cbs = self.platform.borrow_mut().take_pending_idles();
         for cb in cbs {
             cb(self);
+        }
+        // Resizes différés par les renderers externes (≙
+        // `queueResize` amont — différé, modèle D) — tagués
+        // `self.id` comme `pending_draws`.
+        let resizes = {
+            let mut a = self.arena.borrow_mut();
+            let (mine, rest): (Vec<_>, Vec<_>) =
+                a.pending_resizes.drain(..).partition(|e| e.0 == self.id);
+            a.pending_resizes = rest;
+            mine
+        };
+        for (_, w, ref_, extremes_changed) in resizes {
+            self.widget_queue_resize(w, ref_, extremes_changed);
         }
         self.flush_pending_draws();
     }
@@ -1630,6 +1689,8 @@ pub(crate) struct LayoutImgRenderer {
     bg_attachment: style::BackgroundAttachment,
     bg_position_x: Length,
     bg_position_y: Length,
+    /// `Layout::id` émetteur (tag `pending_draws`).
+    layout_id: usize,
     /// Arène (draws différés — ≙ `layout->queueDraw` amont).
     pending_draws: std::rc::Weak<RefCell<Arena>>,
 }
@@ -1703,6 +1764,7 @@ impl style::ExternalImgRenderer for LayoutImgRenderer {
         if let Some(a) = self.pending_draws.upgrade() {
             // `None` : coords canvas directes.
             a.borrow_mut().pending_draws.push((
+                self.layout_id,
                 None,
                 Rectangle {
                     x,

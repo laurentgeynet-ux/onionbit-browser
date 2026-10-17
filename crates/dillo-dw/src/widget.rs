@@ -139,11 +139,25 @@ pub enum WidgetKind {
     /// `dw::Bullet` — puce de liste (bullet.cc), `Widget`
     /// direct amont, leaf sans état.
     Bullet,
+    /// `dw::Image` — widget image (image.cc), `Widget` direct
+    /// amont ; `img` ≙ champs verbatim.
+    Image {
+        /// Champs verbatim `image.hh`.
+        img: crate::image::ImageData,
+    },
     /// `dw::Ruler` — `<hr>` (ruler.cc) ; `Ruler : RegardingBorder`
     /// amont ≙ `OofAwareData` embarqué.
     Ruler {
         /// Champs `OOFAwareWidget`.
         oof: crate::oof::OofAwareData,
+    },
+    /// `dw::core::ui::Embed` — widget hôte d'une `Resource` de
+    /// formulaire (ui.cc:36) ; `Rc` partagé car la machinerie du
+    /// layout interne (`ComplexButtonResource`) re-entre dans le
+    /// même objet pendant `size_request`.
+    Embed {
+        /// `resource` (≙ `Resource*` possédé amont).
+        res: Rc<dyn crate::ui::Resource>,
     },
 }
 
@@ -527,6 +541,25 @@ impl Layout {
     /// `Widget::setQuasiParent` — verbatim (simple affectation).
     pub fn widget_set_quasi_parent(&mut self, w: WidgetId, qp: Option<WidgetId>) {
         self.node_mut(w, |n| n.quasi_parent = qp);
+    }
+
+    /// `Embed::getResource` — `None` si `w` n'est pas un `Embed`.
+    /// `Rc` cloné : les méthodes `Resource` sont `&self` +
+    /// ré-entrantes (ui.rs — modèle D).
+    #[must_use]
+    pub fn embed_resource(&self, w: WidgetId) -> Option<Rc<dyn crate::ui::Resource>> {
+        self.node(w, |n| match &n.kind {
+            WidgetKind::Embed { res } => Some(res.clone()),
+            _ => None,
+        })
+    }
+
+    /// `new Embed (resource)` — verbatim ui.cc:36 : nœud +
+    /// `resource->setEmbed(this)`.
+    pub fn add_embed_widget(&self, res: &Rc<dyn crate::ui::Resource>) -> WidgetId {
+        let w = self.add_widget_node(WidgetKind::Embed { res: res.clone() });
+        res.set_embed(Some(w));
+        w
     }
 
     /// `Widget::getTopLevel` — remonte `parent` jusqu'à la racine.
@@ -1628,7 +1661,11 @@ impl Layout {
             | WidgetKind::Text { .. }
             | WidgetKind::OofAware { .. }
             | WidgetKind::Bullet
-            | WidgetKind::Ruler { .. } => Vec::new(),
+            | WidgetKind::Image { .. }
+            | WidgetKind::Ruler { .. }
+            // `Embed` : pas d'enfants Widget (`childWidget` vit
+            // dans le layout interne — ui.cc).
+            | WidgetKind::Embed { .. } => Vec::new(),
         })
     }
 
@@ -1669,6 +1706,7 @@ impl Layout {
             Text(Rc<[u8]>),
             OofAware,
             Textblock,
+            Embed(Rc<dyn crate::ui::Resource>),
             Empty,
         }
         match self.node(w, |n| match &n.kind {
@@ -1682,8 +1720,17 @@ impl Layout {
             // `Bullet::iterator` — `EmptyIterator` verbatim
             // (`\bug Not implemented` amont) ;
             // `Ruler::iterator` — `EmptyIterator` (`\todo
-            // TextIterator?` amont).
-            WidgetKind::Base | WidgetKind::Bullet | WidgetKind::Ruler { .. } => Dispatch::Empty,
+            // TextIterator?` amont) ; `Image::iterator` —
+            // `EmptyIterator` (`\bug Not implemented`,
+            // image.cc:497-502).
+            // `Embed::iterator` — `resource->iterator` verbatim
+            // (ui.cc:137) ; les impls amont retournent toutes
+            // `EmptyIterator` (`ug Not implemented`).
+            WidgetKind::Embed { res } => Dispatch::Embed(res.clone()),
+            WidgetKind::Base
+            | WidgetKind::Bullet
+            | WidgetKind::Image { .. }
+            | WidgetKind::Ruler { .. } => Dispatch::Empty,
         }) {
             Dispatch::Child(children) => Box::new(crate::iterator::ChildIterator::new(
                 w,
@@ -1705,6 +1752,7 @@ impl Layout {
             Dispatch::Textblock => Box::new(crate::textblock::iter::textblock_iterator(
                 self, w, mask, at_end,
             )),
+            Dispatch::Embed(res) => res.iterator(mask, at_end),
             Dispatch::Empty => Box::new(crate::iterator::EmptyIterator::new(w, mask, at_end)),
         }
     }
@@ -1742,10 +1790,26 @@ impl Layout {
     /// (`MSG_ERR` + retour) → no-op documenté : `Base` ne doit pas
     /// être mesuré. `Bullet`/`Ruler` : `*Simpl` verbatim.
     pub(crate) fn w_size_request_simpl(&mut self, w: WidgetId, requisition: &mut Requisition) {
+        // `Embed::sizeRequestSimpl` — verbatim ui.cc:50 :
+        // `resource->sizeRequest` + `correctRequisition
+        // (preserveAscent, true, true)`.
+        if let Some(res) = self.embed_resource(w) {
+            res.size_request(self, requisition);
+            self.widget_correct_requisition(
+                w,
+                requisition,
+                split_height_preserve_ascent,
+                true,
+                true,
+            );
+            return;
+        }
         if self.node(w, |n| matches!(&n.kind, WidgetKind::Bullet)) {
             self.bullet_size_request_simpl(w, requisition);
         } else if self.node(w, |n| matches!(&n.kind, WidgetKind::Ruler { .. })) {
             self.ruler_size_request_simpl(w, requisition);
+        } else if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
+            self.img_size_request_simpl(w, requisition);
         }
     }
 
@@ -1777,10 +1841,21 @@ impl Layout {
     /// no-op (même note que `sizeRequestSimpl`). `Bullet`/`Ruler` :
     /// `*Simpl` verbatim.
     pub(crate) fn w_get_extremes_simpl(&mut self, w: WidgetId, extremes: &mut Extremes) {
+        // `Embed::getExtremesSimpl` — verbatim ui.cc:58 :
+        // `resource->getExtremes` + `correctExtremes(false)` +
+        // `adjustmentWidth = min(minWidthIntrinsic, minWidth)`.
+        if let Some(res) = self.embed_resource(w) {
+            res.get_extremes(self, extremes);
+            self.widget_correct_extremes(w, extremes, false);
+            extremes.adjustment_width = extremes.min_width_intrinsic.min(extremes.min_width);
+            return;
+        }
         if self.node(w, |n| matches!(&n.kind, WidgetKind::Bullet)) {
             self.bullet_get_extremes_simpl(w, extremes);
         } else if self.node(w, |n| matches!(&n.kind, WidgetKind::Ruler { .. })) {
             self.ruler_get_extremes_simpl(w, extremes);
+        } else if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
+            self.img_get_extremes_simpl(w, extremes);
         }
     }
 
@@ -1810,6 +1885,16 @@ impl Layout {
     pub(crate) fn w_size_allocate_impl(&mut self, w: WidgetId, allocation: &Allocation) {
         if self.node(w, |n| is_textblock_kind(&n.kind)) {
             self.tb_size_allocate_impl(w, allocation);
+            return;
+        }
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
+            self.img_size_allocate_impl(w, allocation);
+            return;
+        }
+        // `Embed::sizeAllocateImpl` — `resource->sizeAllocate`
+        // verbatim (ui.cc:65).
+        if let Some(res) = self.embed_resource(w) {
+            res.size_allocate(self, allocation);
             return;
         }
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
@@ -1912,7 +1997,12 @@ impl Layout {
 
     /// `Widget::getAdjustMinWidth` — statique amont.
     pub(crate) fn w_get_adjust_min_width(&self, w: WidgetId) -> bool {
-        let _ = w;
+        // `Image::getAdjustMinWidth` → `false` (image.hh:180 —
+        // verbatim : largeur minimale mal définie, correction
+        // sans intérêt).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
+            return false;
+        }
         ADJUST_MIN_WIDTH.load(Ordering::Relaxed)
     }
 
@@ -1984,12 +2074,24 @@ impl Layout {
             self.tb_container_size_changed_for_children(w);
             return;
         }
+        // `Embed::containerSizeChangedForChildren` —
+        // `resource->containerSizeChangedForChildren` verbatim
+        // (ui.cc:99 — ne descend PAS dans les enfants Widget).
+        if let Some(res) = self.embed_resource(w) {
+            res.container_size_changed_for_children(self);
+            return;
+        }
         // `Bullet::containerSizeChangedForChildren` /
-        // `Ruler::containerSizeChangedForChildren` — « Nothing to
-        // do » verbatim (bullet.cc:54-58, ruler.cc:67-71) ; le
-        // `Ruler` court-circuite la variante `OOFAwareWidget`.
+        // `Ruler::containerSizeChangedForChildren` —
+        // « Nothing to do » verbatim (bullet.cc:54-58,
+        // ruler.cc:67-71) ; le `Ruler` court-circuite la
+        // variante `OOFAwareWidget`. Idem `Image`
+        // (image.cc:309-313).
         if self.node(w, |n| {
-            matches!(&n.kind, WidgetKind::Bullet | WidgetKind::Ruler { .. })
+            matches!(
+                &n.kind,
+                WidgetKind::Bullet | WidgetKind::Ruler { .. } | WidgetKind::Image { .. }
+            )
         }) {
             return;
         }
@@ -2059,6 +2161,11 @@ impl Layout {
         if self.node(w, |n| is_textblock_kind(&n.kind)) {
             return self.tb_get_avail_width_of_child(w, child, force_value);
         }
+        // `Embed::getAvailWidthOfChild` — délègue au resource
+        // verbatim (ui.cc:72).
+        if let Some(res) = self.embed_resource(w) {
+            return res.get_avail_width_of_child(self, child, force_value);
+        }
         let style = self.node(child, |n| n.style.clone());
         let Some(s) = style else { return -1 };
         if s.width == LENGTH_AUTO {
@@ -2101,6 +2208,10 @@ impl Layout {
     ) -> i32 {
         if self.node(w, |n| is_textblock_kind(&n.kind)) {
             return self.tb_get_avail_height_of_child(w, child, force_value);
+        }
+        // `Embed::getAvailHeightOfChild` — verbatim ui.cc:77.
+        if let Some(res) = self.embed_resource(w) {
+            return res.get_avail_height_of_child(self, child, force_value);
         }
         let style = self.node(child, |n| n.style.clone());
         let Some(s) = style else { return -1 };
@@ -2148,6 +2259,19 @@ impl Layout {
         allow_decrease_width: bool,
         allow_decrease_height: bool,
     ) {
+        // `Embed::correctRequisitionOfChild` — délègue au resource
+        // verbatim (ui.cc:82).
+        if let Some(res) = self.embed_resource(w) {
+            res.correct_requisition_of_child(
+                self,
+                child,
+                requisition,
+                split_height_fun,
+                allow_decrease_width,
+                allow_decrease_height,
+            );
+            return;
+        }
         let eff = self.node(child, |n| n.quasi_parent.or(n.container).or(n.parent));
         if eff == Some(w) {
             for pass in 0..3 {
@@ -2193,35 +2317,54 @@ impl Layout {
         extremes: &mut Extremes,
         use_adjustment_width: bool,
     ) {
+        if let Some(res) = self.embed_resource(w) {
+            // `Embed::correctExtremesOfChild` — délègue au resource
+            // verbatim (ui.cc:93).
+            res.correct_extremes_of_child(self, child, extremes, use_adjustment_width);
+            return;
+        }
         let eff = self.node(child, |n| n.quasi_parent.or(n.container).or(n.parent));
         if eff == Some(w) {
-            let limit_min_width = if use_adjustment_width {
-                self.widget_get_min_width(child, Some(extremes), false)
-            } else {
-                0
-            };
-            let style = self.node(child, |n| n.style.clone());
-            if let Some(s) = &style {
-                let width =
-                    self.widget_calc_width(child, s.width, -1, Some(w), limit_min_width, false);
-                let min_width =
-                    self.widget_calc_width(child, s.min_width, -1, Some(w), limit_min_width, false);
-                let max_width =
-                    self.widget_calc_width(child, s.max_width, -1, Some(w), limit_min_width, false);
-                if width != -1 {
-                    extremes.min_width = width;
-                    extremes.max_width = width;
-                }
-                if min_width != -1 {
-                    extremes.min_width = min_width;
-                }
-                if max_width != -1 {
-                    extremes.max_width = max_width;
-                }
-            }
+            self.w_correct_extremes_of_child_base(w, child, extremes, use_adjustment_width);
         } else {
             let e = eff.unwrap_or(w);
             self.w_correct_extremes_of_child(e, child, extremes, use_adjustment_width);
+        }
+    }
+
+    /// `Widget::correctExtremesOfChild` — impl de **base**
+    /// (non-virtuel ≙ `correctExtremesOfChildNoRec` de `ui.hh:278`,
+    /// appelé par `ComplexButtonResource` en court-circuitant le
+    /// dispatch `Embed`).
+    pub(crate) fn w_correct_extremes_of_child_base(
+        &mut self,
+        w: WidgetId,
+        child: WidgetId,
+        extremes: &mut Extremes,
+        use_adjustment_width: bool,
+    ) {
+        let limit_min_width = if use_adjustment_width {
+            self.widget_get_min_width(child, Some(extremes), false)
+        } else {
+            0
+        };
+        let style = self.node(child, |n| n.style.clone());
+        if let Some(s) = &style {
+            let width = self.widget_calc_width(child, s.width, -1, Some(w), limit_min_width, false);
+            let min_width =
+                self.widget_calc_width(child, s.min_width, -1, Some(w), limit_min_width, false);
+            let max_width =
+                self.widget_calc_width(child, s.max_width, -1, Some(w), limit_min_width, false);
+            if width != -1 {
+                extremes.min_width = width;
+                extremes.max_width = width;
+            }
+            if min_width != -1 {
+                extremes.min_width = min_width;
+            }
+            if max_width != -1 {
+                extremes.max_width = max_width;
+            }
         }
     }
 
@@ -2232,6 +2375,18 @@ impl Layout {
         if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
             return self.tb_button_press_impl(w, event);
         }
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
+            return self.img_button_press_impl(w, event);
+        }
+        // `Embed::buttonPressImpl` — verbatim ui.cc:113 :
+        // bouton 3 → `resource->emitClicked`, `handled = true`.
+        if let Some(res) = self.embed_resource(w) {
+            if event.button == 3 {
+                res.emit_clicked(event);
+                return true;
+            }
+            return false;
+        }
         let _ = (w, event);
         false
     }
@@ -2240,6 +2395,9 @@ impl Layout {
     pub(crate) fn w_button_release_impl(&mut self, w: WidgetId, event: &EventButton) -> bool {
         if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
             return self.tb_button_release_impl(w, event);
+        }
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
+            return self.img_button_release_impl(w, event);
         }
         let _ = (w, event);
         false
@@ -2250,6 +2408,9 @@ impl Layout {
         if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
             return self.tb_motion_notify_impl(w, event);
         }
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
+            return self.img_motion_notify_impl(w, event);
+        }
         let _ = (w, event);
         false
     }
@@ -2259,6 +2420,14 @@ impl Layout {
     pub(crate) fn w_enter_notify_impl(&mut self, w: WidgetId, event: &EventCrossing) {
         if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
             return self.tb_enter_notify_impl(w, event);
+        }
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
+            return self.img_enter_notify_impl(w, event);
+        }
+        // `Embed::enterNotifyImpl` — verbatim ui.cc:104 :
+        // `resource->emitEnter()` + base `Widget::enterNotifyImpl`.
+        if let Some(res) = self.embed_resource(w) {
+            res.emit_enter();
         }
         let _ = event;
         let tooltip = self.node(w, |n| {
@@ -2275,6 +2444,14 @@ impl Layout {
     pub(crate) fn w_leave_notify_impl(&mut self, w: WidgetId, event: &EventCrossing) {
         if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
             return self.tb_leave_notify_impl(w, event);
+        }
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
+            return self.img_leave_notify_impl(w, event);
+        }
+        // `Embed::leaveNotifyImpl` — verbatim ui.cc:110 :
+        // `resource->emitLeave()` + base.
+        if let Some(res) = self.embed_resource(w) {
+            res.emit_leave();
         }
         let _ = event;
         let tooltip = self.node(w, |n| {
@@ -2300,8 +2477,19 @@ impl Layout {
             self.bullet_draw(w, view, area, context);
             return;
         }
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
+            self.img_draw(w, view, area, context);
+            return;
+        }
         if self.node(w, |n| matches!(&n.kind, WidgetKind::Ruler { .. })) {
             self.ruler_draw(w, view, area, context);
+            return;
+        }
+        // `Embed::draw` — verbatim ui.cc:126 :
+        // `drawWidgetBox(false)` + `resource->draw`.
+        if let Some(res) = self.embed_resource(w) {
+            self.widget_draw_widget_box(w, view, area, false);
+            res.draw(view, area, context);
             return;
         }
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
@@ -2411,6 +2599,11 @@ impl Layout {
     /// `WidgetImgRenderer` sur la nouvelle image de fond.
     /// `&Rc<Style>` ≙ `Style*` emprunté amont.
     pub fn widget_set_style(&mut self, w: WidgetId, style_: &Rc<Style>) {
+        // `Embed::setStyle` — `resource->setStyle` + `Widget::setStyle`
+        // verbatim (ui.cc:142).
+        if let Some(res) = self.embed_resource(w) {
+            res.set_style(style_);
+        }
         let old = self.node(w, |n| n.style.clone());
         let size_changed = match &old {
             Some(o) => {
@@ -2478,7 +2671,11 @@ impl Layout {
         }
         let arena = Rc::downgrade(&self.arena);
         let r: Rc<RefCell<dyn crate::imgrenderer::ImgRenderer>> =
-            Rc::new(RefCell::new(WidgetImgRenderer { arena, widget: w }));
+            Rc::new(RefCell::new(WidgetImgRenderer {
+                arena,
+                layout_id: self.id,
+                widget: w,
+            }));
         self.widget_img_renderers.insert(w, r.clone());
         r
     }
@@ -2720,6 +2917,9 @@ impl Layout {
 struct WidgetImgRenderer {
     /// Arène faible (≙ `widget` amont).
     arena: Weak<RefCell<crate::layout::Arena>>,
+    /// `Layout::id` émetteur (tag `pending_draws` — arène
+    /// partageable entre layouts).
+    layout_id: usize,
     /// Le widget concerné.
     widget: WidgetId,
 }
@@ -2846,6 +3046,7 @@ impl style::ExternalImgRenderer for WidgetImgRenderer {
             let mut a = a.borrow_mut();
             let alloc = a.nodes[self.widget].allocation;
             a.pending_draws.push((
+                self.layout_id,
                 Some(self.widget),
                 crate::types::Rectangle {
                     x: x - alloc.x,
