@@ -5,10 +5,14 @@
 #![forbid(unsafe_code)]
 
 pub mod about;
+pub mod auth;
 pub mod chain;
+pub mod cookies;
 pub mod decode;
+pub mod digest;
 pub mod dns;
 pub mod domain;
+pub mod dpip;
 pub mod fetch;
 pub mod history;
 pub mod hsts;

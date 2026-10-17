@@ -16,6 +16,15 @@ use dillo_common::dlib;
 pub const URL_HTTP_PORT: i32 = 80;
 pub const URL_HTTPS_PORT: i32 = 443;
 
+/// `URL_*` flags (`url.h` amont) — set par le demandeur (capi).
+pub const URL_GET: u32 = 1 << 0;
+pub const URL_POST: u32 = 1 << 1;
+pub const URL_ILC: u32 = 1 << 2;
+pub const URL_MAP: u32 = 1 << 3;
+pub const URL_RELOAD_PAGE: u32 = 1 << 4;
+pub const URL_RELOAD_FROM_CACHE: u32 = 1 << 5;
+pub const URL_WEBKIT_BACK_TRACK: u32 = 1 << 6;
+
 /// `a_Url_host_type` return codes.
 pub const URL_HOST_ERROR: i32 = -1;
 pub const URL_HOST_NAME: i32 = 0;

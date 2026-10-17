@@ -201,3 +201,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `url_cmp`+fragment → idx, titres avec fallback `URL_STR`,
   `set_title_by_url` scan inverse. 18 tests. Registres
   `thread_local` = globales amont (single-writer main).
+- `dillo-net::{auth,digest,dpip,cookies}` : lot B des pré-requis
+  `cache.c`/`capi.c`. `auth.c`/`auth.h` : parse de challenges
+  `WWW-Authenticate` verbatim (cb-0 n'interrompt que le token en
+  cours, `stale`/`algorithm` non quotés, `realm` ci), arbre
+  `AuthHost`→`AuthRealm` (chemins `URL_PATH` complets,
+  `path_is_inside` = préfixe + frontière `/`, longest-path),
+  `stale` → refresh nonce sans dialog, `AuthDialog` injecté ≙
+  `a_Dialog_user_password`, Digest avant Basic, `dStrshred` du mot
+  de passe. `digest.c` : MD5 via `md-5`, cnonce `fastrand` ≙
+  `rand()%16`, A1/A2 verbatim, ordre de champs IE + `nc=%08x`,
+  `opaque` NULL-vs-"" distingué (`Option`). `dpip/dpip.c` (helpers
+  protocole) : `build_cmd` (`%s`→`'val'` + stuffing `'`→`''`, EOT
+  ` '>'`) et `get_attr_l` (machine SEEK_NAME→FOUND + destuff). 
+  `cookies.c` : client `cookies.dpi` — parseur `cookiesrc`
+  (`DEFAULT` + longest-domain-first, `.dom` suffixe sans apex),
+  DENY→drop, cross-org non-racine→`""`, canal `DpiSend` injecté ≙
+  `a_Dpi_send_blocking_cmd`, disabled sans contenu. Flags `URL_*`
+  ajoutés à `url.rs` (`URL_Post` pour digest). 18 nouveaux tests.
