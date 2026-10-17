@@ -2135,11 +2135,14 @@ fn draw_border_left(
                     pt(x1 + w, y1 - 1 + w_t),
                 ];
                 view.draw_polygon(color, shading, filled, convex, &points);
+                // Bord lointain du 2ᵉ trapèze = `points[0].x + w`
+                // amont = `x1 + 2*w + d` (bord intérieur, pas `x1+w`
+                // qui retombe sur l'espace intermédiaire — A05-D1).
                 let points = [
                     pt(x1 + w + d, y1 - 1 + style.border_width.top - w_t),
                     pt(x1 + w + d, y2 + 1 - style.border_width.bottom + w_b),
-                    pt(x1 + w, y2 + 1 - style.border_width.bottom),
-                    pt(x1 + w, y1 - 1 + style.border_width.top),
+                    pt(x1 + 2 * w + d, y2 + 1 - style.border_width.bottom),
+                    pt(x1 + 2 * w + d, y1 - 1 + style.border_width.top),
                 ];
                 view.draw_polygon(color, shading, filled, convex, &points);
             }
@@ -2252,11 +2255,13 @@ fn draw_border_right(
                     pt(x1 + 1 - w, y1 - 1 + w_t),
                 ];
                 view.draw_polygon(color, shading, filled, convex, &points);
+                // Bord lointain = `points[0].x - w` = `x1 + 1 - 2*w - d`
+                // amont (bord intérieur — A05-D1).
                 let points = [
                     pt(x1 + 1 - w - d, y1 - 1 + style.border_width.top - w_t),
                     pt(x1 + 1 - w - d, y2 + 1 - style.border_width.bottom + w_b),
-                    pt(x1 + 1 - w, y2 + 1 - style.border_width.bottom),
-                    pt(x1 + 1 - w, y1 - 1 + style.border_width.top),
+                    pt(x1 + 1 - 2 * w - d, y2 + 1 - style.border_width.bottom),
+                    pt(x1 + 1 - 2 * w - d, y1 - 1 + style.border_width.top),
                 ];
                 view.draw_polygon(color, shading, filled, convex, &points);
             }
@@ -2981,7 +2986,9 @@ mod draw_tests {
 
     #[test]
     fn border_double_draws_two_bands() {
-        // `BORDER_DOUBLE` width 6 → 2 trapèzes par côté.
+        // `BORDER_DOUBLE` width 6 → w=2, d=2 → 2 trapèzes par côté ;
+        // la 2ᵉ bande couvre [x1+w+d, x1+2w+d] (bord intérieur —
+        // verbatim `points[0].x + w` amont, A05-D1).
         let mut v = RecView::default();
         let attrs = attrs_with_border(BorderStyle::Double, 6);
         let area = Rectangle {
@@ -2992,6 +2999,21 @@ mod draw_tests {
         };
         draw_border(&mut v, &area, 0, 0, 20, 20, &attrs, false);
         assert_eq!(v.polys.len(), 8);
+        // Ordre de draw : right(0,1), left(2,3), top(4,5), bottom(6,7).
+        // Gauche — xb1=0 : bande ext. [(0,-1),(0,20),(2,18),(2,1)],
+        // bande int. x ∈ {4..6} = x1+w+d .. x1+2w+d.
+        assert_eq!(v.polys[2], vec![pt(0, -1), pt(0, 20), pt(2, 18), pt(2, 1)]);
+        assert_eq!(v.polys[3], vec![pt(4, 3), pt(4, 16), pt(6, 14), pt(6, 5)]);
+        // Droite — xb2=19 : bande int. x ∈ {14..16} = x1+1-2w-d ..
+        // x1+1-w-d.
+        assert_eq!(
+            v.polys[0],
+            vec![pt(20, -1), pt(20, 20), pt(18, 18), pt(18, 1)]
+        );
+        assert_eq!(
+            v.polys[1],
+            vec![pt(16, 3), pt(16, 16), pt(14, 14), pt(14, 5)]
+        );
     }
 
     #[test]
