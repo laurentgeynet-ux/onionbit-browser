@@ -7,6 +7,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `dillo-dw::iterator` (phase 4, lot dw-2b) : `DwIterator`
+  trait object ≙ `Iterator` (widget `WidgetId`, mask,
+  `next`/`prev`/`highlight`/`unhighlight`/`get_allocation`),
+  `EmptyIterator`/`TextIterator` verbatim + `ChildIterator`
+  seam enfants (`WidgetKind::Text` feuille ≙ usage
+  `TextIterator` anticipé amont), `iterator_scroll_to`
+  verbatim (clamp viewport sur saut de ligne/colonne),
+  `DeepIterator` pile niveau-indexée (`searchDownward`/
+  `searchSideward`/`respective_parent` OOF_REF→generator
+  verbatim), `CharIterator` (BREAK→`'\n'`, `space`→`' '`) ;
+  `Layout::w_iterator` dispatch `WidgetKind`. 8 tests
+  (traversée cross-widget, space flag, compareTo, vide).
+
 - `dillo-dw` style+interfaces image (phase 4, lot dw-1a) :
   `imgbuf` trait (`dw/imgbuf.hh` — verbatim, `Rc<dyn Imgbuf>`),
   `imgrenderer` (`ImgRenderer` + `ImgRendererDist`, snapshot Rc),

@@ -14,6 +14,7 @@
 pub mod events;
 pub mod imgbuf;
 pub mod imgrenderer;
+pub mod iterator;
 pub mod layout;
 pub mod platform;
 pub mod style;

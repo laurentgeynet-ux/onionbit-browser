@@ -100,8 +100,11 @@ prototype phase 0).
       aligné `Rc<dyn Imgbuf>`
 - [x] `widget.cc` + `layout.cc` (size negotiate, allocation, draw,
       damage/queue-draw, anchors)
-- [ ] `iterator.cc`, `textblock.cc` + `textblock_linebreaking.cc` +
-      `textblock_iterator.cc` (word wrap, breaking spaces doc parity)
+- [~] `iterator.cc` **[`dw::iterator`]** porté (trait
+      `DwIterator`, Deep/Char verbatim, ChildIterator seam)
+      ; `textblock.cc` + `textblock_linebreaking.cc` +
+      `textblock_iterator.cc` (word wrap, breaking spaces doc
+      parity) — à faire
 - [ ] `hyphenator.cc` (+ `.pat` files), `ruler.cc`, `bullet.cc`,
       `listitem.cc`, `alignedtextblock.cc`
 - [ ] `findtext.cc`, `selection.cc`

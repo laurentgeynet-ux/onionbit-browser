@@ -108,6 +108,14 @@ pub enum WidgetKind {
         /// Enfants ordonnés (≙ contenu `WIDGET_IN_FLOW`).
         children: Vec<WidgetId>,
     },
+    /// Feuille texte d'un mot — ≙ l'usage `TextIterator`
+    /// anticipé mais commenté amont (bullet/image/ruler) ;
+    /// seam de test pour `DeepIterator`/`CharIterator` en
+    /// attendant `Textblock`.
+    Text {
+        /// Le mot (`const char *text` amont).
+        text: Rc<[u8]>,
+    },
 }
 
 // ------------------------------------------------------------------
@@ -1567,9 +1575,43 @@ impl Layout {
     /// concrets exposeront leur contenu enfant).
     pub(crate) fn widget_children_for_container_change(&self, w: WidgetId) -> Vec<WidgetId> {
         self.node(w, |n| match &n.kind {
-            WidgetKind::Base => Vec::new(),
             WidgetKind::Container { children } => children.clone(),
+            WidgetKind::Base | WidgetKind::Text { .. } => Vec::new(),
         })
+    }
+
+    /// `Widget::iterator` — dispatch `WidgetKind` :
+    /// `Base` → `EmptyIterator` (≙ widget sans contenu amont),
+    /// `Container` → `ChildIterator` sur `children` (seam —
+    /// les kinds concrets exposeront leur itérateur dédié).
+    #[must_use]
+    pub fn w_iterator(
+        &self,
+        w: WidgetId,
+        mask: i16,
+        at_end: bool,
+    ) -> Box<dyn crate::iterator::DwIterator> {
+        enum Dispatch {
+            Child(Vec<WidgetId>),
+            Text(Rc<[u8]>),
+            Empty,
+        }
+        match self.node(w, |n| match &n.kind {
+            WidgetKind::Container { children } => Dispatch::Child(children.clone()),
+            WidgetKind::Text { text } => Dispatch::Text(text.clone()),
+            WidgetKind::Base => Dispatch::Empty,
+        }) {
+            Dispatch::Child(children) => Box::new(crate::iterator::ChildIterator::new(
+                w,
+                mask,
+                at_end,
+                children.into(),
+            )),
+            Dispatch::Text(text) => {
+                Box::new(crate::iterator::TextIterator::new(w, mask, at_end, &text))
+            }
+            Dispatch::Empty => Box::new(crate::iterator::EmptyIterator::new(w, mask, at_end)),
+        }
     }
 
     /// `Widget::sizeRequestImpl` — délègue à la variante simple
