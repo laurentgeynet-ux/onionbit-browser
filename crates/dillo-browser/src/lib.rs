@@ -5,4 +5,8 @@
 //! keys,menu,dialog,findbar,tipwin,timeout,ui,dpiapi}.*`.
 #![forbid(unsafe_code)]
 
+pub mod actions;
+pub mod bookmark;
+pub mod dpiapi;
+pub mod nav;
 pub mod prefs;

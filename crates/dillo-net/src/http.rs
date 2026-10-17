@@ -90,8 +90,13 @@ pub struct HttpWeb {
     pub flags: u32,
     /// `web->filename` — destination téléchargement (`WEB_Download`).
     pub filename: Option<String>,
-    /// `web->SavedBytes` — octets déjà écrits sur disque.
-    pub saved_bytes: usize,
+    /// `web->stream` — fichier ouvert par `capi` pour `WEB_Download`
+    /// (≙ `web->stream` amont ; `RefCell` = partage via `Rc` main-
+    /// thread).
+    pub stream: std::cell::RefCell<Option<std::fs::File>>,
+    /// `web->SavedBytes` — octets déjà écrits sur disque (muté à
+    /// travers le `Rc` partagé, comme `Web->SavedBytes` amont).
+    pub saved_bytes: std::cell::Cell<usize>,
     valid: std::cell::Cell<bool>,
     msg_sink: MsgSink,
 }
@@ -116,7 +121,8 @@ impl HttpWeb {
             bw: 0,
             flags,
             filename: None,
-            saved_bytes: 0,
+            stream: std::cell::RefCell::new(None),
+            saved_bytes: std::cell::Cell::new(0),
             valid: std::cell::Cell::new(true),
             msg_sink: std::cell::RefCell::new(Box::new(|_| {})),
         }

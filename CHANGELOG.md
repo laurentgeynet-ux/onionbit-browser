@@ -252,3 +252,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sauf cache-hit, http→2 branches recv-avant-send ≙ course DNS) ;
   seams `DpiOps`/`dpi_ccc` injectées (phase DPI). 24 nouveaux tests
   (137 total `dillo-net`).
+- `dillo-common::{bitvec,klist}` + `dillo-browser::{nav,actions,
+  bookmark,dpiapi}` : lot D. `bitvec.c` : quirk `BVEC_SIZE=1` (1
+  octet/bit, bit 0 seul). `klist.c` : clés `i32` compteur, wrap
+  complet à 0 seulement (clés négatives émises entre-temps),
+  `Clean`. `nav.c` : `Nav` = champs `bw->nav_*`/`meta_refresh_*`
+  amont ; pile verbatim, `expect_done` (ops pile uniquement si
+  `expecting` — back/forw n'empilent pas), repush/reload/
+  redirection0 différés `NavSched`, scroll saved/restored,
+  `Nav_save_cb` via `HttpWeb::stream`/`saved_bytes` (Cell+RefCell,
+  ouvert par capi WEB_Download) ; seams `NavBw`/`NavUi`/`NavSched`.
+  `actions.c` : `label:cmd` strtok-verbatim, `Command` détaché +
+  `DILLO_PID`. `bookmark.c` : machine chat `bookmarks` (H/I/O).
+  `dpiapi.c` : dialog dpip → `DialogChoice` → `cmd=answer`. 18
+  nouveaux tests.

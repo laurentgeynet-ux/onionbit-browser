@@ -880,7 +880,10 @@ pub fn capi_open_url(mut web: Rc<HttpWeb>, call: Option<CaCb>) -> i32 {
                 if let Some(fname) = &web.filename {
                     // `web->stream = fopen(filename, "w")` amont.
                     match std::fs::File::create(fname) {
-                        Ok(_f) => use_cache = true,
+                        Ok(f) => {
+                            *web.stream.borrow_mut() = Some(f);
+                            use_cache = true;
+                        }
                         Err(e) => {
                             CAPI.with(|c| {
                                 (c.borrow_mut().log)(&format!(

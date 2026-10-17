@@ -134,10 +134,10 @@ prototype phase 0).
       `dillo-browser`) — reste `bw.c` (browser windows)
 - [ ] `dicache.c`, `imgbuf.cc`, `image.cc` (src) + decoders
       `gif.c`,`png.c`,`jpeg.c`,`webp.c`,`svg.c` → pure-Rust crates
-- [ ] `nav.c`, `history.c`, `bookmark.c`, `auth.c`, `digest.c` (md-5),
+- [x] `nav.c`, `history.c`, `bookmark.c`, `auth.c`, `digest.c` (md-5),
       `cookies.c`, `domain.c`, `hsts.c` (+preload data), `bitvec.c`,
       `klist.c`
-- [ ] `actions.c`, `dpiapi.c`
+- [x] `actions.c`, `dpiapi.c`
 
 **Audit** : `audit-09-images`, `audit-11-browser-glue`,
 `audit-02-url-cookies` (complet)

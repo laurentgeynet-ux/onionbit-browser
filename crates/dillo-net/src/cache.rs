@@ -1041,6 +1041,13 @@ pub fn cache_set_log(log: Box<dyn FnMut(&str)>) {
     CACHE.with(|c| c.borrow_mut().log = log);
 }
 
+/// `a_UIcmd_set_msg` — accès cross-module à la seam UI pour les
+/// callbacks cache détenus ailleurs (`Nav_save_cb` amont appelle
+/// `a_UIcmd_set_msg` directement ; ici la seam vit dans `CACHE`).
+pub fn cache_ui_msg(bw: u32, msg: &str) {
+    CACHE.with(|c| c.borrow_mut().ui.set_msg(bw, msg));
+}
+
 /// `prefs` lu par cache.c.
 pub fn cache_set_prefs(trace_http: bool, hsts: bool) {
     CACHE.with(|c| {

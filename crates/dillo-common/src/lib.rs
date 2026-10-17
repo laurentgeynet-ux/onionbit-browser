@@ -6,8 +6,10 @@
 //! `colors.c`).
 #![forbid(unsafe_code)]
 
+pub mod bitvec;
 pub mod colors;
 pub mod dlib;
+pub mod klist;
 pub mod lout;
 pub mod misc;
 pub mod utf8;
