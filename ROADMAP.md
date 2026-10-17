@@ -65,13 +65,15 @@ vraies phases. Sert aussi de banc d'essai au choix ADR-0005.
 
 ## Phase 2 — HTML engine
 
-- [ ] `html.cc` + `html_common.hh` + `html_charrefs.h` →
+- [x] `html.cc` + `html_common.hh` + `html_charrefs.h` →
       `dillo-html` tokenizer/parser (tag-soup state machine,
-      entity table)
-- [ ] `doctree.hh` → document tree
-- [ ] `plain.cc` → plain-text doc type
-- [ ] `form.cc` → forms model (submit logic différée à phase 6)
-- [ ] `table.cc` (src/html glue) → table widget bridge
+      entity table) — `html.rs`/`common.rs`/`entities.rs`/`tags.rs`
+- [x] `doctree.hh` → document tree — `dillo-css::doctree`
+- [x] `plain.cc` → plain-text doc type — `dillo-html::plain`
+- [x] `form.cc` → forms model (submit logic différée à phase 6) —
+      `dillo-html::form`
+- [x] `table.cc` (src/html glue) → table widget bridge —
+      `dillo-html::table`
 
 **Audit** : `audit-03-html-parser`
 

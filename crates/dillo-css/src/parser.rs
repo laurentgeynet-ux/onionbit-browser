@@ -103,8 +103,13 @@ pub trait CssHtmlHooks {
         base_url: Option<&[u8]>,
         use_base: bool,
     ) -> Option<DilloUrl>;
-    /// `a_Html_load_stylesheet`.
-    fn load_stylesheet(&mut self, url: DilloUrl);
+    /// `a_Html_load_stylesheet` — `Some(data)` = feuille en cache :
+    /// le parser la parse **inline** (≙ récursion amont
+    /// `html->styleEngine->parse` dans `a_Html_load_stylesheet` —
+    /// les règles s'insèrent à la position exacte du `@import`) ;
+    /// `None` = feuille absente du cache — l'impl a lancé le fetch
+    /// réseau (repush ultérieur, verbatim).
+    fn load_stylesheet(&mut self, url: DilloUrl) -> Option<Vec<u8>>;
 }
 
 /// `strtol(tval, NULL, 10)` — whitespace, signe, digits, saturé i64.
@@ -193,6 +198,10 @@ pub struct CssParser<'a> {
     ttype: CssTokenType,
     /// `tval` — ≤ `maxStrLen-1` octets (NUL omis).
     tval: Vec<u8>,
+    /// `importDepth` amont vit sur `StyleEngine` ; comme la récursion
+    /// est réalisée ici (le hook rend les octets), le compteur vit
+    /// sur le parser — `1` à la racine, `+1` par feuille importée.
+    import_depth: i32,
     within_block: bool,
     /// `spaceSeparated` — whitespace vu avant ce token.
     space_separated: bool,
@@ -216,6 +225,7 @@ impl<'a> CssParser<'a> {
             bufptr: 0,
             ttype: CssTokenType::Char,
             tval: Vec::new(),
+            import_depth: 1,
             within_block: false,
             space_separated: false,
         };
@@ -1402,7 +1412,28 @@ impl<'a> CssParser<'a> {
                 let base = self.base_url_str.clone();
                 let use_base = self.base_url_str.is_some();
                 if let Some(url) = html.resolve_url(&us, base.as_deref(), use_base) {
-                    html.load_stylesheet(url);
+                    // verbatim : `a_Html_load_stylesheet` fetch le
+                    // sheet puis appelle `styleEngine->parse`
+                    // récursivement — le check `importDepth > 10` vit
+                    // à l'entrée du parse amont (ici avant récursion).
+                    if let Some(data) = html.load_stylesheet(url.clone()) {
+                        if self.import_depth > 10 {
+                            tracing::warn!(
+                                "Maximum depth of CSS @import reached--ignoring stylesheet."
+                            );
+                        } else if let Some(ctx) = self.context.as_deref_mut() {
+                            self.import_depth += 1;
+                            CssParser::parse(
+                                Some(&mut *html),
+                                &mut *self.tag_index,
+                                Some(&url),
+                                ctx,
+                                &data,
+                                self.origin,
+                            );
+                            self.import_depth -= 1;
+                        }
+                    }
                 }
             }
         }
@@ -1608,8 +1639,9 @@ mod tests {
             buf.push_str(s);
             url_new(buf.as_bytes(), None)
         }
-        fn load_stylesheet(&mut self, url: DilloUrl) {
+        fn load_stylesheet(&mut self, url: DilloUrl) -> Option<Vec<u8>> {
             self.imported.push(url);
+            None
         }
     }
 

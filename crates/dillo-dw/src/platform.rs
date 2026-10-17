@@ -100,9 +100,9 @@ pub trait Platform {
     /// plateforme verbatim).
     fn copy_selection(&mut self, text: &[u8], destination: i32);
 
-    /// `getResourceFactory` — factory UI (≙ `ui::ResourceFactory`,
-    /// seam `Any` tant que `dw/ui.hh` n'est pas porté).
-    fn get_resource_factory(&mut self) -> Option<Rc<dyn std::any::Any>>;
+    /// `getResourceFactory` — factory UI
+    /// (`ui::ResourceFactory` verbatim, ui.hh).
+    fn get_resource_factory(&mut self) -> Option<Rc<dyn crate::ui::ResourceFactory>>;
 }
 
 /// `void (Layout::*func)()` amont — callback idle déclenché au

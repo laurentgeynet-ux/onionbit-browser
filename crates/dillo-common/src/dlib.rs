@@ -114,6 +114,141 @@ pub fn str_nfill(len: usize, c: u8) -> Vec<u8> {
     vec![c; len]
 }
 
+/// `strtol(str, &tail, base)` — verbatim C : skip espaces C, signe
+/// optionnel, chiffres de `base` (2..=36). Retourne
+/// `(valeur saturée, index de fin relatif à `s`)` ; `end == 0`
+/// quand aucun chiffre n'est consommé (comme `strtol` sans conversion,
+/// `tail` pointe alors `s`).
+#[must_use]
+pub fn strtol(s: &[u8], base: u32) -> (i32, usize) {
+    let (val, end) = strtoul_i64(s, base);
+    let clamped = val.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+    (i32::try_from(clamped).unwrap_or(i32::MAX), end)
+}
+
+/// `strtoul(str, &tail, base)` — verbatim C. Identique à `strtol`
+/// mais sans signe négatif (un `-` produit la négation modulo —
+/// ici simplement saturée comme amont l'utilise pour couleurs).
+#[must_use]
+pub fn strtoul(s: &[u8], base: u32) -> (u32, usize) {
+    let (val, end) = strtoul_i64(s, base);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let v = val.clamp(0, i64::from(u32::MAX)) as u32;
+    (v, end)
+}
+
+/// cœur commun `strtol`/`strtoul` : skip espaces, signe, chiffres.
+/// Retourne `(valeur signée saturée i64, index de fin)`.
+fn strtoul_i64(s: &[u8], base: u32) -> (i64, usize) {
+    let mut end = 0;
+    while end < s.len() && is_space(s[end]) {
+        end += 1;
+    }
+    let neg = match s.get(end) {
+        Some(b'-') => {
+            end += 1;
+            true
+        }
+        Some(b'+') => {
+            end += 1;
+            false
+        }
+        _ => false,
+    };
+    let digits_start = end;
+    let mut val: i64 = 0;
+    while end < s.len() {
+        let d = u32::from(match s[end].to_ascii_lowercase() {
+            c @ b'0'..=b'9' => c - b'0',
+            c @ b'a'..=b'z' => c - b'a' + 10,
+            _ => break,
+        });
+        if d >= base {
+            break;
+        }
+        val = val
+            .saturating_mul(i64::from(base))
+            .saturating_add(i64::from(d));
+        end += 1;
+    }
+    if end == digits_start {
+        return (0, 0);
+    }
+    (if neg { -val } else { val }, end)
+}
+
+/// `strtod(str, &tail)` — verbatim C : espaces, signe,
+/// `digits[.digits][eE[+-]digits]` (pas de hex/inf/nan — amont n'en
+/// consomme pas via ce chemin). Retourne `(valeur, index de fin)`.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn strtod(s: &[u8]) -> (f64, usize) {
+    let mut end = 0;
+    while end < s.len() && is_space(s[end]) {
+        end += 1;
+    }
+    let neg = match s.get(end) {
+        Some(b'-') => {
+            end += 1;
+            true
+        }
+        Some(b'+') => {
+            end += 1;
+            false
+        }
+        _ => false,
+    };
+    let mantissa_start = end;
+    let mut val = 0.0f64;
+    while end < s.len() && is_digit(s[end]) {
+        val = val.mul_add(10.0, f64::from(s[end] - b'0'));
+        end += 1;
+    }
+    if end < s.len() && s[end] == b'.' {
+        end += 1;
+        let mut scale = 0.1f64;
+        while end < s.len() && is_digit(s[end]) {
+            val += f64::from(s[end] - b'0') * scale;
+            scale /= 10.0;
+            end += 1;
+        }
+    }
+    if end > mantissa_start && (matches!(s.get(end), Some(b'e' | b'E'))) {
+        // exposant optionnel — n'est consommé que si des chiffres suivent
+        let exp_start = end;
+        let mut i = end + 1;
+        let eneg = match s.get(i) {
+            Some(b'-') => {
+                i += 1;
+                true
+            }
+            Some(b'+') => {
+                i += 1;
+                false
+            }
+            _ => false,
+        };
+        let dstart = i;
+        let mut exp = 0i32;
+        while i < s.len() && is_digit(s[i]) {
+            exp = exp
+                .saturating_mul(10)
+                .saturating_add(i32::from(s[i] - b'0'));
+            i += 1;
+        }
+        if i > dstart {
+            val *= 10f64.powi(if eneg { -exp } else { exp });
+            end = i;
+        } else {
+            end = exp_start;
+        }
+    }
+    if end == mantissa_start {
+        return (0.0, 0);
+    }
+    (if neg { -val } else { val }, end)
+}
+
 /// `dStrsep` : découpe `orig` au premier caractère de `delim`.
 /// Avance le curseur ; renvoie `None` quand `orig` est épuisé.
 pub fn str_sep<'a>(orig: &mut Option<&'a [u8]>, delim: &[u8]) -> Option<&'a [u8]> {

@@ -2236,7 +2236,7 @@ mod tests {
             Rc::new(NullImgbuf { w, h })
         }
         fn copy_selection(&mut self, _t: &[u8], _d: i32) {}
-        fn get_resource_factory(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        fn get_resource_factory(&mut self) -> Option<Rc<dyn crate::ui::ResourceFactory>> {
             None
         }
     }

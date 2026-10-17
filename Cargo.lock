@@ -538,6 +538,8 @@ version = "0.0.0"
 dependencies = [
  "dillo-common",
  "dillo-css",
+ "dillo-dw",
+ "dillo-net",
  "thiserror 2.0.21",
  "tracing",
 ]

@@ -5,4 +5,15 @@
 //! `form.cc`.
 #![forbid(unsafe_code)]
 
+pub mod common;
+pub mod entities;
+mod entities_table;
+pub mod form;
+pub mod html;
 pub mod minidoc;
+pub mod plain;
+pub mod sink;
+pub mod table;
+pub mod tags;
+#[cfg(test)]
+mod tests;

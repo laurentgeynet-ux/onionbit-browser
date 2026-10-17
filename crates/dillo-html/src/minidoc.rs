@@ -5,6 +5,12 @@
 //! texte hors bloc groupé en paragraphe, `<a>` non fermé absorbé
 //! jusqu'à la fin du bloc. Sera remplacé par le vrai parseur en
 //! phase 2 — ce module est le pilote, pas la spec.
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::cast_possible_truncation)] // `int`/`float` amont.
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_lossless)]
 
 /// Run inline d'un bloc.
 #[derive(Debug, Clone, PartialEq, Eq)]

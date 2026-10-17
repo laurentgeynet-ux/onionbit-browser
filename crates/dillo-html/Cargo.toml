@@ -1,7 +1,9 @@
 [package]
 name = "dillo-html"
 version = "0.0.0"
-edition.workspace = true
+# 2024 : let-chains (`if let .. && let ..`) — le port lit
+# `Resource*` chaînés comme les casts C++ amont.
+edition = "2024"
 rust-version.workspace = true
 license.workspace = true
 
@@ -11,5 +13,7 @@ workspace = true
 [dependencies]
 dillo-common.workspace = true
 dillo-css.workspace = true
+dillo-dw.workspace = true
+dillo-net.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

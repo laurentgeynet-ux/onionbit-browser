@@ -1689,7 +1689,7 @@ mod tests {
             unreachable!("imgbuf non utilise dans ces tests")
         }
         fn copy_selection(&mut self, _t: &[u8], _d: i32) {}
-        fn get_resource_factory(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        fn get_resource_factory(&mut self) -> Option<Rc<dyn dillo_dw::ui::ResourceFactory>> {
             None
         }
     }

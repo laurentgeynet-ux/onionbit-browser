@@ -66,7 +66,13 @@ const RESIZE_COUNTER_LIMIT: usize = 1000;
 /// `pending_draws` : zones `queueDrawArea` émises par les
 /// renderers externes (qui n'ont pas `&mut Layout`) — vidées
 /// vers `view.queue_draw` par [`Layout::flush_pending_draws`].
-pub(crate) struct Arena {
+///
+/// `pub` (ADR-0005) : les opérations « méthode de widget » amont
+/// (`tb_add_text`, `tbl_add_cell`, `w_*`…) vivent sur `Arena` —
+/// `dillo-html` les appelle via [`Layout::arena`]. Les champs
+/// restent `pub(crate)` ; l'accès se fait uniquement par les
+/// méthodes `pub`.
+pub struct Arena {
     /// Nœuds — `nodes[0]` est une tombe sentinel (modèle D :
     /// `WidgetId` commence à 1, les ids ne sont pas réutilisés).
     pub(crate) nodes: Vec<WidgetNode>,
@@ -372,6 +378,23 @@ impl Layout {
         // `selectionState.setLayout` amont ≙ `layout` passé en
         // paramètre des méthodes (`crate::selection`).
         layout
+    }
+
+    /// Accès à l'arène partagée — ≙ les appels
+    /// `((Textblock*)dw)->*` de `src/html.cc`/`form.cc` (modèle D :
+    /// les widgets sont des nœuds, les opérations vivent sur
+    /// `Arena`). Retourne le `Rc` pour que les receivers
+    /// (`HtmlLinkReceiver` ≙ `html->linkReceiver`) puissent tenir
+    /// un `Weak`.
+    #[must_use]
+    pub fn arena(&self) -> &Rc<RefCell<Arena>> {
+        &self.arena
+    }
+
+    /// `Layout::getResourceFactory` — verbatim
+    /// (`platform->getResourceFactory`).
+    pub fn resource_factory(&mut self) -> Option<Rc<dyn crate::ui::ResourceFactory>> {
+        self.platform.borrow_mut().get_resource_factory()
     }
 
     /// `new Widget` amont → nouveau nœud d'arène (id ≥ 1).
@@ -1900,7 +1923,7 @@ mod tests {
             })
         }
         fn copy_selection(&mut self, _t: &[u8], _d: i32) {}
-        fn get_resource_factory(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        fn get_resource_factory(&mut self) -> Option<Rc<dyn crate::ui::ResourceFactory>> {
             None
         }
     }

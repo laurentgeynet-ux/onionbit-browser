@@ -225,8 +225,10 @@ pub enum ListStylePosition {
     Outside,
 }
 
-/// `dw::core::style::ListStyleType`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `dw::core::style::ListStyleType` — `PartialOrd` verbatim
+/// (`listStyleType >= LIST_STYLE_TYPE_DECIMAL` amont teste les
+/// types ordonnés sur l'ordre de déclaration de l'enum).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(i32)]
 pub enum ListStyleType {
     /// `LIST_STYLE_TYPE_DISC`.

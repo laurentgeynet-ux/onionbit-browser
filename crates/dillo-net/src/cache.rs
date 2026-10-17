@@ -949,7 +949,7 @@ fn set_content_type(c: &mut Cache, url: &DilloUrl, ctype: &[u8], from: &str) -> 
     } else {
         c.entries[pos].type_meta = Some(ctype.to_vec());
     }
-    if misc::content_type_cmp(curr.as_deref(), Some(ctype)) {
+    if !misc::content_type_cmp(curr.as_deref(), Some(ctype)) {
         // Le nouveau type diffère du courant → normalisation éventuelle.
         let parsed = misc::parse_content_type(Some(ctype));
         let major_empty = parsed.major.as_deref().is_none_or(<[u8]>::is_empty);

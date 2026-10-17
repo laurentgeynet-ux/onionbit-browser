@@ -530,6 +530,12 @@ impl Layout {
     pub fn widget_quasi_parent(&self, w: WidgetId) -> Option<WidgetId> {
         self.node(w, |n| n.quasi_parent)
     }
+    /// `w->instanceOf (TEXTBLOCK)` — pour le walk de linkReceiver
+    /// amont (`html.cc` `HtmlLinkReceiver::link`).
+    #[must_use]
+    pub fn widget_is_textblock_kind(&self, w: WidgetId) -> bool {
+        self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind))
+    }
     /// `getContainer`.
     #[must_use]
     pub fn widget_container(&self, w: WidgetId) -> Option<WidgetId> {

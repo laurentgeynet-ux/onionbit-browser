@@ -382,7 +382,7 @@ mod tests {
         fn copy_selection(&mut self, t: &[u8], _d: i32) {
             self.copied = t.to_vec();
         }
-        fn get_resource_factory(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        fn get_resource_factory(&mut self) -> Option<Rc<dyn crate::ui::ResourceFactory>> {
             None
         }
     }

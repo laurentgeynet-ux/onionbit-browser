@@ -7,6 +7,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `dillo-html` (phase 2, lot html-1) : crate complète —
+  machine d'état tag-soup verbatim `src/html.cc` (`html.rs` :
+  `DilloHtml` + `Html_write_raw` buffer cumulatif ≙ `Client->Buf`,
+  ouvertures/fermetures implicites, cross-nesting, stash modes,
+  warnings+numéros de ligne verbatim), `tags.rs` (table `Tags[]`
+  94 entrées + `B8` flags verbatim + ~90 `Html_tag_open_*`),
+  `entities.rs` (table 2125 entrées `html_charrefs.h` + parsing
+  `&name;`/numeric verbatim — `;` optionnel HTML≤4.01, `&ampy`
+  → littéral), `common.rs` (`HtmlState`/`Core`/`Shared`/`Prefs`,
+  `EndTag::{Required,Optional,Forbidden}` ≙ `'O'`/`'R'`/`'F'`),
+  `sink.rs` (trait `HtmlSink` ≙ `BrowserWindow*` + `a_UIcmd_*` +
+  dialogs), `plain.rs` (`DilloPlain` verbatim — `expand_tabs`,
+  anchors `line-%d`, incrémental), `table.rs` (glue `src/table.cc`
+  — border/cellspacing par défaut, td/th → `Textblock`/`Simple`),
+  `form.rs` (`src/form.cc` complet : `HtmlForm`/`HtmlInput`
+  15 types, encodage urlencode/multipart verbatim, `FormReceiver`
+  `Weak` ≙ cycle brisé, radio groups, select/optgroup/option,
+  textarea/button/file/isindex, `form_send` via sink).
+  Quirks verbatim : bug amont `Tags[stack_idx]` dans
+  `tag_cleanup_at_close` (reproduit avec borne), attributs
+  dupliqués → premier gardé, `IMAGE_MAX_AREA`, `MAX_BORDER` 10.
+  Seam `@import` : hook → octets en cache + récursion inline
+  (ordre de cascade verbatim ; `None` → fetch async + repush).
+  Préparatifs `dillo-dw` : `Arena` publique (`tb_*`/`w_*`/`embed_*`
+  sur `Layout`), `get_resource_factory` typé `ResourceFactory`,
+  downcast accessors `Resource` (≙ casts `form.cc`),
+  `ListStyleType` ordonné, `widget_parent` accesseur,
+  `Layout::platform/arena` publics, `rust-version` 1.86
+  (trait upcasting `Rc<dyn SubResource>`→`Rc<dyn Resource>`),
+  `dlib::strtol`/`strtod`/`dGethomedir`. Fix connexe :
+  `content_type_cmp` retournait un bool inversé par rapport à
+  l'`int` amont dans `cache.rs` (≠0 = différent). 28 tests
+  `dillo-html` (entités, soup, forms, plain).
 - `dillo-css` (phase 3, lot css-1) : crate complète —
   `doctree` (arène `Vec` ≙ pointeurs chaînés amont),
   `css` (types/`CssLength` union, `CssPropertyList`,

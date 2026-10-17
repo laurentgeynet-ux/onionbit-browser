@@ -191,6 +191,62 @@ pub trait Resource {
             .borrow_mut()
             .emit_void(|r| r.clicked(res, event));
     }
+    // -- downcasts verbatim `form.cc` ((EntryResource*)res etc.) ------
+    // Chaque impl concrète override l'accesseur de SON sous-trait.
+
+    /// `(TextResource*)res`.
+    fn as_text_resource(&self) -> Option<&dyn TextResource> {
+        None
+    }
+    /// `(EntryResource*)res`.
+    fn as_entry_resource(&self) -> Option<&dyn EntryResource> {
+        None
+    }
+    /// `(MultiLineTextResource*)res`.
+    fn as_multi_line_text_resource(&self) -> Option<&dyn MultiLineTextResource> {
+        None
+    }
+    /// `(ToggleButtonResource*)res`.
+    fn as_toggle_button_resource(&self) -> Option<&dyn ToggleButtonResource> {
+        None
+    }
+    /// `(CheckButtonResource*)res`.
+    fn as_check_button_resource(&self) -> Option<&dyn CheckButtonResource> {
+        None
+    }
+    /// `(RadioButtonResource*)res`.
+    fn as_radio_button_resource(&self) -> Option<&dyn RadioButtonResource> {
+        None
+    }
+    /// `Rc` du sous-trait — ≙ cast `RadioButtonResource*` quand un
+    /// `Rc` typé est requis (`create_radio_button_resource`,
+    /// groupement amont). Les impls radio le surchargent ; défaut
+    /// `None` (≙ cast échoué).
+    fn as_radio_button_resource_rc(self: Rc<Self>) -> Option<Rc<dyn RadioButtonResource>> {
+        let _ = self;
+        None
+    }
+    /// `(SelectionResource*)res`.
+    fn as_selection_resource(&self) -> Option<&dyn SelectionResource> {
+        None
+    }
+    /// `(OptionMenuResource*)res`.
+    fn as_option_menu_resource(&self) -> Option<&dyn OptionMenuResource> {
+        None
+    }
+    /// `(ListResource*)res`.
+    fn as_list_resource(&self) -> Option<&dyn ListResource> {
+        None
+    }
+    /// `(LabelButtonResource*)res`.
+    fn as_label_button_resource(&self) -> Option<&dyn LabelButtonResource> {
+        None
+    }
+    /// `(ComplexButtonResource*)res`.
+    fn as_complex_button_resource(&self) -> Option<&ComplexButtonResource> {
+        None
+    }
+
     /// `emitEnter` (ui.cc:278) — signal 1.
     fn emit_enter(&self) {
         let res = self.as_resource();
@@ -855,7 +911,7 @@ mod tests {
             Rc::new(NullImgbuf { w, h })
         }
         fn copy_selection(&mut self, _t: &[u8], _d: i32) {}
-        fn get_resource_factory(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        fn get_resource_factory(&mut self) -> Option<Rc<dyn crate::ui::ResourceFactory>> {
             None
         }
     }

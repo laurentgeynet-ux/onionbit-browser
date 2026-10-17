@@ -667,7 +667,7 @@ mod tests {
             self.copied = t.to_vec();
             self.copies += 1;
         }
-        fn get_resource_factory(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        fn get_resource_factory(&mut self) -> Option<Rc<dyn crate::ui::ResourceFactory>> {
             None
         }
     }

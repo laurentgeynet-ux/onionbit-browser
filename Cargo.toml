@@ -16,7 +16,9 @@ members = [
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.85"
+# 1.86 : trait upcasting (`Rc<dyn SubResource>` → `Rc<dyn Resource>`,
+# ≙ héritage C++ `Resource*` amont — form.cc/dillo-html).
+rust-version = "1.86"
 license = "GPL-3.0-or-later"
 repository = "local://dillorust"
 
