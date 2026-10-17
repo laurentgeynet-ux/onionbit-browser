@@ -28,6 +28,7 @@
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::unused_self)]
+#![allow(clippy::fn_params_excessive_bools)]
 #![forbid(unsafe_code)]
 
 use std::cell::RefCell;
@@ -41,10 +42,15 @@ use dillo_net::url::DilloUrl;
 use dillo_platform::platform::SkiaPlatform;
 use dillo_platform::view::{SharedView, SkiaView};
 
+use crate::actions::{actions_init, Action};
 use crate::bw::BwRegistry;
-use crate::keys::KeysCommand;
+use crate::dialog::{AutoCancelRunner, DialogAnswer, DialogRunner, DialogState};
+use crate::findbar::{FindHit, Findbar, FindbarLayout};
+use crate::keys::{Keys, KeysCommand};
+use crate::menu::{self, DocOps, MenuCtx, NullDocOps};
 use crate::nav::{NavOp, NavSched};
 use crate::prefs::{PanelSize, Prefs};
+use crate::tipwin::TipWin;
 use crate::uicmd::{UiButton, UiCmd, UiShell};
 
 // -- constantes verbatim ----------------------------------------------------
@@ -645,6 +651,8 @@ pub struct Ui {
     pub findbar: Rect,
     /// `FindBar->visible()`.
     pub findbar_visible: bool,
+    /// `FindBar` internals (≙ `Fl_Group` : hide/input/next/prev/check).
+    pub findbar_state: Findbar,
     /// `Location` input (état texte/curseur).
     pub location: LineInput,
     /// `LocationGroup` rect (input + marge `CustInput`).
@@ -719,6 +727,7 @@ impl Ui {
             main: Rect::default(),
             findbar: Rect::default(),
             findbar_visible: false,
+            findbar_state: Findbar::new(),
             location: LineInput::default(),
             location_group: Rect::default(),
             main_label: String::new(),
@@ -1445,7 +1454,10 @@ impl Ui {
                 };
             }
             self.findbar_visible = true;
+            // `Findbar::show` verbatim — take_focus + select-all.
+            self.findbar_state.show();
         } else {
+            self.findbar_state.clear_focus();
             // hide
             self.findbar = Rect {
                 x: 0,
@@ -1915,6 +1927,31 @@ pub struct Chrome {
     control_waiting: bool,
     /// Chat `bookmarks` dpi (état de fonction amont → instance shell).
     bookmarks: crate::bookmark::Bookmarks,
+    /// Globaux `popup_*`/`history_*`/`current_page_url` amont + file
+    /// des popups différés (≙ `a_Timeout_add(0, Menu_popup_cb)`).
+    pub menus: MenuCtx,
+    /// `my_tipwin()` ≙ instance unique de [`TipWin`].
+    pub tipwin: TipWin,
+    /// Statics `input_answer`/`input_str`/`choice_answer` + cache du
+    /// menu moteurs de `a_Dialog_input` (`static pm` amont).
+    dialog_state: DialogState,
+    /// `DialogRunner` injecté — défaut [`AutoCancelRunner`] (annule,
+    /// ≙ fermeture de fenêtre amont). `None` impossible → `Box`.
+    dialog_runner: Box<dyn DialogRunner>,
+    /// Seam `a_Html_*` des menus (docs vivants) — [`NullDocOps`]
+    /// tant que l'app n'a pas injecté le registre (≙ `doc==NULL`).
+    doc_ops: Box<dyn DocOps>,
+    /// `a_Actions_link_get()` (statique amont).
+    link_actions: Rc<Vec<Action>>,
+    /// `a_Actions_page_get()` (statique amont).
+    page_actions: Rc<Vec<Action>>,
+    /// `Fl::event_x()/event_y()` du dernier event — utilisé par les
+    /// `a_Menu_*_popup` (verbatim : `popup_x = Fl::event_x()`).
+    pub event_xy: (i32, i32),
+    /// `Keys` global amont (shortcuts affichés du file menu).
+    pub keys: Keys,
+    /// `DILLO_DOCDIR` amont (docdir — posé par l'app au démarrage).
+    pub docdir: std::path::PathBuf,
 }
 
 impl Chrome {
@@ -1930,6 +1967,8 @@ impl Chrome {
                 FL_BG_DEFAULT as u32
             }
         };
+        let (link_actions, page_actions) = actions_init(&prefs.borrow());
+        let show_tip = prefs.borrow().show_ui_tooltip;
         Chrome {
             platform,
             prefs,
@@ -1946,7 +1985,76 @@ impl Chrome {
                 .unwrap_or_default(),
             control_waiting: false,
             bookmarks: crate::bookmark::Bookmarks::default(),
+            menus: MenuCtx::default(),
+            tipwin: TipWin::new(show_tip),
+            dialog_state: DialogState::default(),
+            dialog_runner: Box::new(AutoCancelRunner),
+            doc_ops: Box::new(NullDocOps),
+            link_actions: Rc::new(link_actions),
+            page_actions: Rc::new(page_actions),
+            event_xy: (0, 0),
+            keys: Keys::new(),
+            docdir: std::path::PathBuf::new(),
         }
+    }
+
+    /// Injecte le `DialogRunner` natif (fenêtres modales de l'app).
+    pub fn set_dialog_runner(&mut self, r: Box<dyn DialogRunner>) {
+        self.dialog_runner = r;
+    }
+
+    /// Injecte la seam `a_Html_*` des menus (`DocOps` ≙ accès docs).
+    pub fn set_doc_ops(&mut self, d: Box<dyn DocOps>) {
+        self.doc_ops = d;
+    }
+
+    /// Prochain popup à présenter (≙ timeout `Menu_popup_cb` amont).
+    pub fn take_popup(&mut self) -> Option<menu::Popup> {
+        self.menus.take_popup()
+    }
+
+    /// Dispatch de l'item choisi (≙ `m->do_callback` dans
+    /// `Menu_popup_cb`). `mouse`/`shift` ≙ `Fl::event_button`/`state`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn popup_dispatch(
+        &mut self,
+        uicmd: &UiCmd,
+        reg: &mut BwRegistry,
+        popup: &mut menu::Popup,
+        item: usize,
+        sub: Option<usize>,
+        mouse: i32,
+        shift: bool,
+    ) {
+        let item = match (popup.items.get_mut(item), sub) {
+            (Some(i), Some(s)) => i.submenu.as_mut().and_then(|v| v.get_mut(s)),
+            (Some(i), None) => Some(i),
+            _ => None,
+        };
+        let Some(item) = item else { return };
+        // `menus` est sorti de `self` le temps du dispatch (verbatim
+        // amont : les globaux popup_* vivent hors de la fenêtre) —
+        // évite un double `&mut` (`self` est aussi le `UiShell`).
+        let mut menus = std::mem::take(&mut self.menus);
+        let prefs = self.prefs.clone();
+        let pa = self.page_actions.clone();
+        let la = self.link_actions.clone();
+        let mut doc_ops = std::mem::replace(&mut self.doc_ops, Box::new(NullDocOps));
+        menu::dispatch(
+            &mut menus,
+            uicmd,
+            reg,
+            self,
+            &prefs,
+            item,
+            mouse,
+            shift,
+            &pa,
+            &la,
+            &mut *doc_ops,
+        );
+        self.menus = menus;
+        self.doc_ops = doc_ops;
     }
 
     /// `Paths::setOldWorkingDir` ≙ répertoire capturé au démarrage.
@@ -2327,68 +2435,196 @@ impl UiShell for Chrome {
         }
     }
 
-    // ---- dialogs / menus : implémentés par les modules dédiés
-    // (dialog.rs/menu.rs — chrome-3). Défauts sûrs en attendant : ----
-
-    fn dialog_choice(&mut self, _title: &str, _msg: &str, _alts: &[&str]) -> i32 {
-        0 // ≙ fenêtre fermée (amont `choice_answer = 0`)
+    // `a_Dialog_*` — modèle [`crate::dialog`] + runner injecté
+    // (défaut `AutoCancel` ≙ fenêtre fermée immédiatement).
+    fn dialog_input(&mut self, title: &str, msg: &str) -> Option<String> {
+        let spec =
+            crate::dialog::input_spec(&mut self.dialog_state, &self.prefs.borrow(), title, msg);
+        match self.dialog_runner.run(&spec) {
+            DialogAnswer::Input(s, idx) => {
+                // verbatim : `prefs.search_url_idx = ch->value()` —
+                // bool_t amont ≙ `!= 0`.
+                self.prefs.borrow().search_url_idx.set(idx != 0);
+                Some(s)
+            }
+            _ => None,
+        }
     }
-    fn dialog_input(&mut self, _title: &str, _msg: &str) -> Option<String> {
-        None
-    }
-    fn dialog_passwd(&mut self, _title: &str, _msg: &str) -> Option<String> {
-        None
+    fn dialog_passwd(&mut self, title: &str, msg: &str) -> Option<String> {
+        let spec = crate::dialog::DialogSpec {
+            kind: crate::dialog::DialogKind::Passwd,
+            title: crate::dialog::default_title(&crate::dialog::DialogKind::Passwd, Some(title)),
+            msg: msg.to_string(),
+            alternatives: Vec::new(),
+            pattern: None,
+            suggested: None,
+            text: String::new(),
+            search_labels: Vec::new(),
+            search_url_idx: 0,
+            window_wh: (0, 0),
+            font_factor: 0.0,
+        };
+        match self.dialog_runner.run(&spec) {
+            DialogAnswer::Path(p) => p,
+            _ => None,
+        }
     }
     fn dialog_save_file(
         &mut self,
-        _title: &str,
-        _msg: Option<&str>,
-        _suggested: &str,
+        title: &str,
+        msg: Option<&str>,
+        suggested: &str,
     ) -> Option<String> {
-        None
+        let spec = crate::dialog::file_spec(
+            crate::dialog::DialogKind::SaveFile,
+            title,
+            msg,
+            Some(suggested),
+        );
+        match self.dialog_runner.run(&spec) {
+            DialogAnswer::Path(p) => p,
+            _ => None,
+        }
     }
     fn dialog_select_file(
         &mut self,
-        _title: &str,
-        _msg: Option<&str>,
-        _init: Option<&str>,
+        title: &str,
+        msg: Option<&str>,
+        init: Option<&str>,
     ) -> Option<String> {
-        None
+        // verbatim : select ≙ même chemin que save.
+        let spec =
+            crate::dialog::file_spec(crate::dialog::DialogKind::SelectFile, title, msg, init);
+        match self.dialog_runner.run(&spec) {
+            DialogAnswer::Path(p) => p,
+            _ => None,
+        }
     }
     fn dialog_open_file(
         &mut self,
-        _title: &str,
-        _msg: Option<&str>,
-        _pattern: &str,
+        title: &str,
+        msg: Option<&str>,
+        pattern: &str,
     ) -> Option<String> {
-        None
+        let spec = crate::dialog::file_spec(
+            crate::dialog::DialogKind::OpenFile,
+            title,
+            Some(pattern),
+            msg,
+        );
+        match self.dialog_runner.run(&spec) {
+            // verbatim : `a_Misc_escape_chars(fc_name, "% #")`.
+            DialogAnswer::Path(p) => crate::dialog::open_file_escape(p.as_deref()),
+            _ => None,
+        }
     }
-    fn dialog_text_window(&mut self, _title: &str, _txt: &str) {}
-    fn dialog_msg(&mut self, _title: &str, _msg: &str) {}
+    fn dialog_text_window(&mut self, title: &str, txt: &str) {
+        let spec = crate::dialog::text_window_spec(title, txt, &self.prefs.borrow());
+        let _ = self.dialog_runner.run(&spec);
+    }
+    fn dialog_msg(&mut self, title: &str, msg: &str) {
+        let spec = crate::dialog::DialogSpec {
+            kind: crate::dialog::DialogKind::Msg,
+            title: crate::dialog::default_title(&crate::dialog::DialogKind::Msg, Some(title)),
+            msg: msg.to_string(),
+            alternatives: Vec::new(),
+            pattern: None,
+            suggested: None,
+            text: String::new(),
+            search_labels: Vec::new(),
+            search_url_idx: 0,
+            window_wh: (0, 0),
+            font_factor: 0.0,
+        };
+        let _ = self.dialog_runner.run(&spec);
+    }
+    fn dialog_choice(&mut self, title: &str, msg: &str, alts: &[&str]) -> i32 {
+        match crate::dialog::choice_spec(title, msg, alts) {
+            Some(spec) => match self.dialog_runner.run(&spec) {
+                DialogAnswer::Choice(n) => n,
+                _ => 0, // verbatim : fenêtre fermée → choice_answer = 0
+            },
+            None => 0, // verbatim : pas d'alternatives → 0
+        }
+    }
 
-    fn history_popup(&mut self, _bw: u32, _x: i32, _y: i32, _dir: i32) {}
+    fn history_popup(&mut self, bw: u32, list: Vec<i32>, x: i32, y: i32, dir: i32) {
+        menu::history_popup(&mut self.menus, bw, x, y, dir, list);
+    }
+    // `a_Menu_*_popup` — verbatim menu.cc : `popup_x/y =
+    // Fl::event_x/y` ≙ `self.event_xy` (posé par l'app à chaque
+    /// event souris). Tous poussent dans `menus.pending` ≙
+    /// `a_Timeout_add(0.0, Menu_popup_cb)`.
     fn page_popup(
         &mut self,
-        _bw: u32,
-        _url: Option<&DilloUrl>,
-        _has_bugs: bool,
-        _css_urls: &[DilloUrl],
+        bw: u32,
+        url: Option<&DilloUrl>,
+        has_bugs: bool,
+        css_urls: &[DilloUrl],
     ) {
+        let (x, y) = self.event_xy;
+        menu::page_popup(
+            &mut self.menus,
+            &self.page_actions,
+            bw,
+            x,
+            y,
+            url,
+            has_bugs,
+            css_urls,
+        );
     }
-    fn link_popup(&mut self, _bw: u32, _url: &DilloUrl, _page_url: Option<&DilloUrl>) {}
+    fn link_popup(&mut self, bw: u32, url: &DilloUrl, page_url: Option<&DilloUrl>) {
+        let (x, y) = self.event_xy;
+        menu::link_popup(&mut self.menus, &self.link_actions, bw, x, y, url, page_url);
+    }
     fn image_popup(
         &mut self,
-        _bw: u32,
-        _url: &DilloUrl,
-        _loaded_img: bool,
-        _page_url: Option<&DilloUrl>,
-        _link_url: Option<&DilloUrl>,
+        bw: u32,
+        url: &DilloUrl,
+        loaded_img: bool,
+        page_url: Option<&DilloUrl>,
+        link_url: Option<&DilloUrl>,
     ) {
+        let (x, y) = self.event_xy;
+        menu::image_popup(
+            &mut self.menus,
+            &self.link_actions,
+            bw,
+            x,
+            y,
+            url,
+            loaded_img,
+            page_url,
+            link_url,
+        );
     }
-    fn form_popup(&mut self, _bw: u32, _url: &DilloUrl, _form: usize, _showing_hiddens: bool) {}
-    fn file_popup(&mut self, _bw: u32, _wid: usize) {}
-    fn bugmeter_popup(&mut self, _bw: u32, _url: Option<&DilloUrl>) {}
-    fn tools_popup(&mut self, _bw: u32, _x: i32, _y: i32) {}
+    fn form_popup(&mut self, bw: u32, url: &DilloUrl, form: usize, showing_hiddens: bool) {
+        let (x, y) = self.event_xy;
+        menu::form_popup(&mut self.menus, bw, x, y, url, form, showing_hiddens);
+    }
+    fn file_popup(&mut self, bw: u32, x: i32, y: i32) {
+        menu::file_popup(&mut self.menus, &self.keys, bw, x, y);
+    }
+    fn bugmeter_popup(&mut self, bw: u32, url: Option<&DilloUrl>) {
+        let (x, y) = self.event_xy;
+        menu::bugmeter_popup(&mut self.menus, bw, x, y, url);
+    }
+    fn tools_popup(&mut self, bw: u32, ui: usize, x: i32, y: i32) {
+        // verbatim : toggles depuis prefs + radio panel_size/setonly.
+        let (size, icons) = self.panel_state(ui);
+        menu::tools_popup(&mut self.menus, &self.prefs.borrow(), bw, x, y, size, icons);
+    }
+    fn panel_state(&self, ui: usize) -> (i32, bool) {
+        self.ui(ui)
+            .map_or((0, false), |u| (u.panel_size, u.small_icons))
+    }
+    fn panel_change(&mut self, ui: usize, size: i32, small_icons: bool) {
+        let prefs = self.prefs.clone();
+        if let Some(u) = self.ui_mut(ui) {
+            u.change_panel(&prefs.borrow(), size, small_icons);
+        }
+    }
 
     fn old_working_dir(&self) -> Vec<u8> {
         self.old_cwd.clone()
@@ -2431,6 +2667,8 @@ pub enum Hit {
     TabClose,
     /// Widget chrome.
     Wid(WId),
+    /// Sous-widget du findbar (`None` = zone morte du groupe).
+    Findbar(Option<FindHit>),
     /// Zone `Main` (viewport).
     Main,
     /// Rien.
@@ -2444,12 +2682,40 @@ impl Ui {
         if let Some(w) = self.widget_at(x, y) {
             Hit::Wid(w)
         } else if self.findbar_visible && self.findbar.contains(x, y) {
-            Hit::Wid(WId::Spacer) // findbar internals : chrome-3
+            // verbatim : dispatch interne du `Fl_Group` findbar.
+            let rel = (x - self.findbar.x, y - self.findbar.y);
+            Hit::Findbar(crate::findbar::hit(&self.findbar_layout(), rel))
         } else if self.main.contains(x, y) {
             Hit::Main
         } else {
             Hit::None
         }
+    }
+
+    /// Rect courant du widget `id` (cherche dans les barres ≙
+    /// `ui->contains`/`widget->x/y/w/h` amont).
+    #[must_use]
+    pub fn rect_of(&self, id: WId) -> Option<Rect> {
+        for g in [
+            self.loc_bar.as_ref(),
+            self.nav_bar.as_ref(),
+            Some(&self.status_bar),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(i) = g.find(id) {
+                return Some(g.children[i].rect);
+            }
+        }
+        None
+    }
+
+    /// Sous-rects du findbar (coordonnées relatives au rect —
+    /// verbatim constructeur `Findbar(width, height)`).
+    #[must_use]
+    pub fn findbar_layout(&self) -> FindbarLayout {
+        Findbar::layout(self.findbar.w, self.findbar.h)
     }
 }
 
@@ -2530,7 +2796,13 @@ pub fn ui_shortcut(
         K::Reload => uicmd.reload(reg, shell, prefs, bw),
         K::Stop => uicmd.stop(reg, shell, prefs, bw),
         K::Save => uicmd.save_page(reg, shell, bw),
-        K::FileMenu => uicmd.file_popup(shell, bw, ui),
+        K::FileMenu => {
+            // verbatim : `a_UIcmd_file_popup(bw, FileButton)` — popup
+            // au coin bas-gauche du bouton File.
+            if let Some(r) = shell.ui(ui).and_then(|u| u.rect_of(WId::FileMenu)) {
+                uicmd.file_popup(shell, bw, r.x, r.y + r.h);
+            }
+        }
         K::ViewSource => {
             let url = reg
                 .get(bw)
@@ -3246,10 +3518,260 @@ impl Chrome {
 
 // -- tests ------------------------------------------------------------------
 
+// -- dispatch souris (verbatim callbacks de ui.cc/menu.cc) -----------------------
+
+/// Boutons souris amont (`Fl::event_button()`).
+pub const MOUSE_LEFT: i32 = 1;
+/// `FL_MIDDLE_MOUSE`.
+pub const MOUSE_MIDDLE: i32 = 2;
+/// `FL_RIGHT_MOUSE`.
+pub const MOUSE_RIGHT: i32 = 3;
+
+/// Dispatch verbatim des callbacks de widgets du chrome —
+/// `b1_cb`/`clear_cb`/`search_cb`/`help_cb`/`filemenu_cb`/
+/// `bugmeter_cb` (ui.cc) + sous-widgets du findbar (findbar.cc).
+///
+/// `(wx, wy)` = position du clic dans l'UI ; `mouse` ≙
+/// `Fl::event_button()` ; `paste` ≙ `Fl::paste` (sélection primaire
+/// → texte). Retourne `true` si un callback a consommé le clic.
+#[allow(clippy::too_many_arguments)]
+pub fn chrome_widget(
+    uicmd: &UiCmd,
+    reg: &mut BwRegistry,
+    shell: &mut Chrome,
+    prefs: &RefCell<Prefs>,
+    bw: u32,
+    hit: Hit,
+    mouse: i32,
+    wx: i32,
+    wy: i32,
+    paste: &mut dyn FnMut() -> Option<String>,
+) -> bool {
+    shell.event_xy = (wx, wy); // ≙ Fl::event_x/y pour les popups
+    let Some(b) = reg.get(bw) else { return false };
+    let ui = b.ui.get();
+    match hit {
+        Hit::Wid(wid) => {
+            let rect = shell
+                .ui(ui)
+                .and_then(|u| u.rect_of(wid))
+                .unwrap_or_default();
+            let p = prefs.borrow();
+            match wid {
+                WId::Btn(btn) => {
+                    // `b1_cb` verbatim — gauche/milieu/droite.
+                    match btn {
+                        UiButton::Back => match mouse {
+                            MOUSE_LEFT => uicmd.back(reg, shell, &p, bw),
+                            MOUSE_MIDDLE => uicmd.back_nt(reg, shell, &p, bw),
+                            MOUSE_RIGHT => {
+                                uicmd.back_popup(reg, shell, bw, rect.x, rect.y + rect.h);
+                            }
+                            _ => {}
+                        },
+                        UiButton::Forw => match mouse {
+                            MOUSE_LEFT => uicmd.forw(reg, shell, &p, bw),
+                            MOUSE_MIDDLE => uicmd.forw_nt(reg, shell, &p, bw),
+                            MOUSE_RIGHT => {
+                                uicmd.forw_popup(reg, shell, bw, rect.x, rect.y + rect.h);
+                            }
+                            _ => {}
+                        },
+                        UiButton::Home => match mouse {
+                            MOUSE_LEFT => uicmd.home(reg, shell, &p, bw, false),
+                            MOUSE_MIDDLE => uicmd.home(reg, shell, &p, bw, true),
+                            _ => {}
+                        },
+                        UiButton::Reload => {
+                            if mouse == MOUSE_LEFT {
+                                uicmd.reload(reg, shell, &p, bw);
+                            }
+                        }
+                        UiButton::Save => {
+                            if mouse == MOUSE_LEFT {
+                                uicmd.save_page(reg, shell, bw);
+                            }
+                        }
+                        UiButton::Stop => {
+                            if mouse == MOUSE_LEFT {
+                                uicmd.stop(reg, shell, &p, bw);
+                            }
+                        }
+                        UiButton::Book => match mouse {
+                            MOUSE_LEFT => uicmd.book(reg, shell, &p, bw, false),
+                            MOUSE_MIDDLE => uicmd.book(reg, shell, &p, bw, true),
+                            _ => {}
+                        },
+                        UiButton::Tools if (mouse == MOUSE_LEFT || mouse == MOUSE_RIGHT) => {
+                            uicmd.tools(reg, shell, bw, rect.x, rect.y + rect.h);
+                        }
+                        _ => {}
+                    }
+                    true
+                }
+                WId::FileMenu => {
+                    // `filemenu_cb` — gauche ou droite.
+                    if mouse == MOUSE_LEFT || mouse == MOUSE_RIGHT {
+                        uicmd.file_popup(shell, bw, rect.x, rect.y + rect.h);
+                    }
+                    true
+                }
+                WId::Clear => {
+                    // `clear_cb` verbatim — L: clear+focus,
+                    // M: `paste_url` (FL_PASTE → set_location+open).
+                    if mouse == MOUSE_LEFT {
+                        uicmd.focus_location(reg, shell, bw);
+                        if let Some(u) = shell.ui_mut(ui) {
+                            u.set_location("");
+                        }
+                    } else if mouse == MOUSE_MIDDLE {
+                        if let Some(t) = paste() {
+                            if !t.is_empty() {
+                                shell.set_location(ui, &t);
+                                uicmd.open_urlstr(reg, shell, &p, bw, t.as_bytes());
+                            }
+                        }
+                    }
+                    true
+                }
+                WId::Search => {
+                    if mouse == MOUSE_LEFT {
+                        uicmd.search_dialog(reg, shell, &p, bw);
+                    }
+                    true
+                }
+                WId::Help => {
+                    // `help_cb` verbatim — docdir local ou remote.
+                    if mouse == MOUSE_LEFT {
+                        let path = shell.docdir.join("user_help.html");
+                        if path.is_file() {
+                            let url = format!("file:{}", path.to_string_lossy());
+                            uicmd.open_urlstr(reg, shell, &p, bw, url.as_bytes());
+                        } else {
+                            uicmd.open_urlstr(
+                                reg,
+                                shell,
+                                &p,
+                                bw,
+                                b"https://dillo-browser.org/user_help.html",
+                            );
+                        }
+                    }
+                    true
+                }
+                WId::BugMeter => {
+                    // `bugmeter_cb` verbatim.
+                    if mouse == MOUSE_LEFT {
+                        uicmd.view_page_bugs(reg, shell, bw);
+                    } else if mouse == MOUSE_RIGHT {
+                        uicmd.bugmeter_popup(reg, shell, bw);
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+        Hit::Findbar(fh) => {
+            // verbatim `findbar.cc` callbacks.
+            match fh {
+                Some(FindHit::Hide) => uicmd.findbar_toggle(reg, shell, bw, false),
+                Some(FindHit::Next) => {
+                    if let Some(u) = shell.ui(ui) {
+                        if let Some((key, cs, back)) =
+                            crate::findbar::search_cmd(&u.findbar_state, false)
+                        {
+                            uicmd.findtext_search(reg, shell, bw, key.as_bytes(), cs, back);
+                        }
+                    }
+                }
+                Some(FindHit::Prev) => {
+                    if let Some(u) = shell.ui(ui) {
+                        if let Some((key, cs, back)) =
+                            crate::findbar::search_cmd(&u.findbar_state, true)
+                        {
+                            uicmd.findtext_search(reg, shell, bw, key.as_bytes(), cs, back);
+                        }
+                    }
+                }
+                Some(FindHit::Case) => {
+                    if let Some(u) = shell.ui_mut(ui) {
+                        u.findbar_state.case_sens = !u.findbar_state.case_sens;
+                    }
+                }
+                Some(FindHit::Input) => {
+                    if let Some(u) = shell.ui_mut(ui) {
+                        u.findbar_state.input_focused = true;
+                    }
+                }
+                None => {}
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Touche quand le findbar a le focus (verbatim `MyInput::handle` +
+/// `Findbar::handle` — Escape laisse remonter à l'UI, Enter =
+/// next, Shift+Enter = prev via shortcut du bouton).
+///
+/// Retourne `true` si consommé par la barre.
+pub fn findbar_key(
+    uicmd: &UiCmd,
+    reg: &mut BwRegistry,
+    shell: &mut Chrome,
+    bw: u32,
+    key: i32,
+    text: Option<&str>,
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    meta: bool,
+) -> bool {
+    let Some(b) = reg.get(bw) else { return false };
+    let ui = b.ui.get();
+    let Some(u) = shell.ui_mut(ui) else {
+        return false;
+    };
+
+    // Enter = `next_btn` shortcut (verbatim `next_btn->shortcut(
+    // FL_Enter)` + `prev_btn->shortcut(FL_SHIFT+FL_Enter)`).
+    if (key == crate::keys::keysym::ENTER || key == crate::keys::keysym::KP_ENTER)
+        && (!ctrl && !alt && !meta)
+    {
+        let backwards = shift;
+        if let Some((k, cs, back)) = crate::findbar::search_cmd(&u.findbar_state, backwards) {
+            uicmd.findtext_search(reg, shell, bw, k.as_bytes(), cs, back);
+        }
+        return true;
+    }
+
+    match crate::findbar::input_key(&mut u.findbar_state.input, key, shift, ctrl, alt, meta) {
+        crate::findbar::InputKey::Pass => false,
+        crate::findbar::InputKey::Consumed => true,
+        crate::findbar::InputKey::Edit => {
+            // `Fl_Input::handle` ≙ `line_input_key` (sans clipboard :
+            // verbatim MyInput n'y touche pas pour ces touches).
+            let mut copy = |_s: &str| {};
+            let mut p = || Option::<String>::None;
+            let mut ed = LineInput {
+                text: u.findbar_state.input.buf.clone(),
+                pos: u.findbar_state.input.pos,
+                mark: u.findbar_state.input.pos,
+            };
+            let r = line_input_key(&mut ed, key, text, shift, ctrl, &mut copy, &mut p);
+            u.findbar_state.input.buf = ed.text;
+            u.findbar_state.input.pos = ed.pos;
+            r
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::keys::keysym;
+    use dillo_net::url::url_new;
 
     fn platform() -> Rc<RefCell<SkiaPlatform>> {
         Rc::new(RefCell::new(SkiaPlatform::new()))
@@ -3873,5 +4395,264 @@ mod tests {
             0
         ));
         assert_eq!(c.ui(ui_id).unwrap().location.text, "abz");
+    }
+
+    // -- chrome-3 : menus / dialogs / findbar / tipwin -------------------------
+
+    fn chrome_bw() -> (Rc<RefCell<Prefs>>, Chrome, BwRegistry, UiCmd, u32, usize) {
+        let prefs = Rc::new(RefCell::new(Prefs::default()));
+        let mut c = Chrome::new(platform(), Rc::clone(&prefs));
+        let mut reg = BwRegistry::new();
+        let uicmd = UiCmd::new(&Prefs::default());
+        let bw = {
+            let pr = prefs.borrow();
+            uicmd.browser_window_new(&mut reg, &mut c, &pr, 800, 600, None)
+        };
+        let ui = reg.get(bw).unwrap().ui.get();
+        (prefs, c, reg, uicmd, bw, ui)
+    }
+
+    #[test]
+    fn file_popup_builds_and_dispatches() {
+        let (prefs, mut c, mut reg, uicmd, bw, ui) = chrome_bw();
+        // verbatim : filemenu_cb L → popup sous le bouton File
+        let r = c.ui(ui).unwrap().rect_of(WId::FileMenu).unwrap();
+        uicmd.file_popup(&mut c, bw, r.x, r.y + r.h);
+        let mut pop = c.take_popup().unwrap();
+        assert_eq!(pop.items.len(), 6);
+        assert_eq!(pop.items[0].label, "New tab");
+        // "Open URL..." (idx 3) → focus location
+        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 3, None, 1, false);
+        assert_eq!(c.ui(ui).unwrap().focus, Focus::Location);
+        // "Exit Dillo" (idx 5) → defer_close_all (verbatim)
+        uicmd.file_popup(&mut c, bw, r.x, r.y + r.h);
+        let mut pop2 = c.take_popup().unwrap();
+        c.popup_dispatch(&uicmd, &mut reg, &mut pop2, 5, None, 1, false);
+        assert!(c.take_close_all());
+        drop(prefs);
+    }
+
+    #[test]
+    fn link_popup_dispatch_opens_nt() {
+        let (prefs, mut c, mut reg, uicmd, bw, _ui) = chrome_bw();
+        prefs.borrow_mut().focus_new_tab = false;
+        let link = url_new(b"https://ex.org/l", None).unwrap();
+        let page = url_new(b"https://ex.org/p", None).unwrap();
+        c.event_xy = (7, 8);
+        uicmd.link_popup(&mut c, bw, &link, Some(&page));
+        let mut pop = c.take_popup().unwrap();
+        assert_eq!((pop.x, pop.y), (7, 8));
+        let count = |reg: &BwRegistry| (0..10).filter(|i| reg.get(*i).is_some()).count();
+        let n0 = count(&reg);
+        // "Open link in new tab" → nt créé
+        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 0, None, 1, false);
+        assert_eq!(count(&reg), n0 + 1);
+    }
+
+    #[test]
+    fn tools_popup_panel_change_dispatch() {
+        let (prefs, mut c, mut reg, uicmd, bw, ui) = chrome_bw();
+        c.tools_popup(bw, ui, 10, 20);
+        let mut pop = c.take_popup().unwrap();
+        assert_eq!(pop.items[5].submenu.as_ref().unwrap().len(), 4);
+        // sous-item "tiny" (index 0) → panel_size 0
+        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 5, Some(0), 1, false);
+        assert_eq!(c.ui(ui).unwrap().panel_size, 0);
+        // "small icons" (sub idx 3) — garde la taille
+        c.tools_popup(bw, ui, 0, 0);
+        let mut pop2 = c.take_popup().unwrap();
+        c.popup_dispatch(&uicmd, &mut reg, &mut pop2, 5, Some(3), 1, false);
+        assert!(c.ui(ui).unwrap().small_icons);
+        assert_eq!(c.ui(ui).unwrap().panel_size, 0);
+        drop(prefs);
+    }
+
+    #[test]
+    fn tools_toggle_remote_css_writes_prefs() {
+        let (prefs, mut c, mut reg, uicmd, bw, ui) = chrome_bw();
+        prefs.borrow_mut().load_stylesheets = true;
+        c.tools_popup(bw, ui, 0, 0);
+        let mut pop = c.take_popup().unwrap();
+        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 0, None, 1, false);
+        assert!(!prefs.borrow().load_stylesheets);
+        assert!(!pop.items[0].set);
+    }
+
+    #[test]
+    fn bugmeter_validate_strips_fragment() {
+        let (prefs, mut c, mut reg, uicmd, bw, _ui) = chrome_bw();
+        let u0 = url_new(b"https://ex.org/page#frag", None).unwrap();
+        {
+            let pr = prefs.borrow();
+            uicmd.open_url(&mut reg, &mut c, &pr, bw, Some(&u0));
+            uicmd.expect_done(&mut reg, &mut c, &pr, bw); // ≙ capi→nav
+        }
+        uicmd.bugmeter_popup(&mut reg, &mut c, bw);
+        let mut pop = c.take_popup().unwrap();
+        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 0, None, 1, false);
+        {
+            let pr = prefs.borrow();
+            uicmd.expect_done(&mut reg, &mut c, &pr, bw); // ≙ réponse capi
+        }
+        let b = reg.get(bw).unwrap();
+        let nav = b.nav.borrow();
+        let mut top = dillo_net::history::history_get_url(nav.get_top_uidx()).unwrap();
+        let s = String::from_utf8_lossy(top.url_str()).into_owned();
+        assert!(s.contains("validator.w3.org/nu/"));
+        assert!(!s.contains("%23")); // '#' tronqué verbatim
+        assert!(s.contains("https%3A%2F%2Fex.org%2Fpage"));
+    }
+
+    #[test]
+    fn history_popup_dispatch_jump() {
+        let (prefs, mut c, mut reg, uicmd, bw, _ui) = chrome_bw();
+        {
+            let pr = prefs.borrow();
+            for s in ["https://a/", "https://b/", "https://c/"] {
+                let u = url_new(s.as_bytes(), None).unwrap();
+                uicmd.open_url(&mut reg, &mut c, &pr, bw, Some(&u));
+                uicmd.expect_done(&mut reg, &mut c, &pr, bw);
+            }
+        }
+        uicmd.back_popup(&mut reg, &mut c, bw, 3, 4);
+        let mut pop = c.take_popup().unwrap();
+        assert_eq!(pop.items.len(), 2); // b,a (+sentinel)
+                                        // item idx 1 = le plus ancien → retour à "a"
+        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 1, None, 1, false);
+        let b = reg.get(bw).unwrap();
+        let nav = b.nav.borrow();
+        let mut top = dillo_net::history::history_get_url(nav.get_top_uidx()).unwrap();
+        assert_eq!(String::from_utf8_lossy(top.url_str()), "https://a/");
+    }
+
+    #[test]
+    fn form_popup_dispatches_doc_ops() {
+        thread_local! {
+            static CALLS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
+        }
+        struct Rec;
+        impl DocOps for Rec {
+            fn load_images(&mut self, _d: usize, _p: Option<&DilloUrl>) {}
+            fn form_submit(&mut self, doc: usize, form: usize) {
+                CALLS.with(|c| c.borrow_mut().push((doc, form)));
+            }
+            fn form_reset(&mut self, _d: usize, _f: usize) {}
+            fn form_display_hiddens(&mut self, _d: usize, _f: usize, _x: bool) {}
+        }
+        let (prefs, mut c, mut reg, uicmd, bw, _ui) = chrome_bw();
+        c.set_doc_ops(Box::new(Rec));
+        let page = url_new(b"https://ex.org/f", None).unwrap();
+        reg.get(bw).unwrap().add_doc(11);
+        reg.get(bw).unwrap().add_url(&page); // verbatim a_Bw_get_url_doc
+        c.event_xy = (1, 2);
+        uicmd.form_popup(&mut c, bw, &page, 42, false);
+        let mut pop = c.take_popup().unwrap();
+        assert_eq!(pop.items[2].label, "Show hiddens");
+        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 0, None, 1, false);
+        CALLS.with(|v| assert_eq!(*v.borrow(), vec![(11, 42)]));
+        drop(prefs);
+    }
+
+    #[test]
+    fn chrome_widget_button_verbatim() {
+        let (prefs, mut c, mut reg, uicmd, bw, _ui) = chrome_bw();
+        let mut paste = || None;
+        // Back right-click → history popup (verbatim b1_cb)
+        chrome_widget(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            prefs.as_ref(),
+            bw,
+            Hit::Wid(WId::Btn(UiButton::Back)),
+            MOUSE_RIGHT,
+            5,
+            5,
+            &mut paste,
+        );
+        assert!(c.take_popup().is_some());
+        // FileMenu → file popup
+        chrome_widget(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            prefs.as_ref(),
+            bw,
+            Hit::Wid(WId::FileMenu),
+            MOUSE_LEFT,
+            5,
+            5,
+            &mut paste,
+        );
+        let pop = c.take_popup().unwrap();
+        assert_eq!(pop.items[0].label, "New tab");
+        // BugMeter right → bugmeter popup
+        chrome_widget(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            prefs.as_ref(),
+            bw,
+            Hit::Wid(WId::BugMeter),
+            MOUSE_RIGHT,
+            5,
+            5,
+            &mut paste,
+        );
+        let bp = c.take_popup().unwrap();
+        assert_eq!(bp.items.len(), 3);
+    }
+
+    #[test]
+    fn findbar_toggle_and_keys() {
+        let (prefs, mut c, mut reg, uicmd, bw, ui) = chrome_bw();
+        uicmd.findbar_toggle(&mut reg, &mut c, bw, true);
+        assert!(c.ui(ui).unwrap().findbar_visible);
+        assert!(c.ui(ui).unwrap().findbar_state.input_focused);
+        // Escape → Pass (remonte à l'UI qui cache la barre)
+        assert!(!findbar_key(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            bw,
+            keysym::ESCAPE,
+            None,
+            false,
+            false,
+            false,
+            false,
+        ));
+        // texte + Enter → search dispatché (ne panique pas sans layout)
+        c.ui_mut(ui).unwrap().findbar_state.input.buf = "x".into();
+        assert!(findbar_key(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            bw,
+            keysym::ENTER,
+            None,
+            false,
+            false,
+            false,
+            false,
+        ));
+        // Enter vide → consommé sans search
+        c.ui_mut(ui).unwrap().findbar_state.input.buf.clear();
+        assert!(findbar_key(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            bw,
+            keysym::ENTER,
+            None,
+            false,
+            false,
+            false,
+            false,
+        ));
+        // HidePanels shortcut cache la barre (verbatim)
+        let pr = prefs.borrow();
+        ui_shortcut(&uicmd, &mut reg, &mut c, &pr, bw, KeysCommand::HidePanels);
+        assert!(!c.ui(ui).unwrap().findbar_visible);
     }
 }

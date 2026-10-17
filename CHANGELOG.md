@@ -61,6 +61,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (mutation verbatim pendant `open_urlstr` sans `&mut` —
   évite le double-emprunt RefCell prefs/partagé avec le shell).
   67 tests `dillo-browser`.
+- `dillo-browser` (phase 6, lot chrome-3) : `menu.rs` (`src/menu.cc`
+  verbatim — 8 popups : page/link/image/form/file/bugmeter/
+  history/tools ; actions dynamiques `a_Actions_link_get`/
+  `page_get`, sous-menu stylesheet avec urls CSS en `user_data`
+  verbatim, ellipsis labels 30/40, middle-click ≙
+  `middle_click_opens_new_tab`/`focus_new_tab` ^ Shift, history
+  sentinel `-1`, toggles prefs tools, `MenuCtx` ≙ globaux
+  `popup_*`, seams `DocOps` ≙ `a_Html_*` + `UiShell::*_popup`),
+  `dialog.rs` (`src/dialog.cc` — `DialogState`+seam
+  `DialogRunner` ≙ fenêtres FLTK, `choice` 1-based/cancel→0,
+  `user_password`, `search` labels `search_urls`, `LineEditor` ≙
+  `Fl_Input` Ctrl-AEKD+cut+clamp UTF-8), `findbar.rs`
+  (`src/findbar.cc` — filtre clavier verbatim Pass/Consume,
+  Enter/Shift+Enter, métriques 70/2), `tipwin.rs`
+  (`src/tipwin.cc` — `TipWin` partagé snprintf-255+8, position
+  sous/au-dessus pointeur, délais 0.8s/0.1s, `CustButtonState`
+  highlight Enter/Leave/Release/Hide/Deactivate). Câblage
+  `ui.rs`/`Chrome` : dispatch verbatim `b1_cb`/`clear_cb`/
+  `search_cb`/`help_cb`/`filemenu_cb`/`bugmeter_cb`,
+  `Hit::Findbar`, coordonnées popup ≙ `Fl::event_x/y`. Fix :
+  `NavUi::set_buttons_sens` reçoit `(ptr,size)` en snapshot
+  (verbatim `bw->nav_*` — `b.nav` déjà emprunté par `Nav`),
+  `NavOp::CloseBw` + `UiCmd::expect_done` exposés (entrées
+  capi/menu, chrome-4). 101 tests `dillo-browser`.
 - `dillo-html` (phase 2, lot html-1) : crate complète —
   machine d'état tag-soup verbatim `src/html.cc` (`html.rs` :
   `DilloHtml` + `Html_write_raw` buffer cumulatif ≙ `Client->Buf`,

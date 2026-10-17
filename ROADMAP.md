@@ -164,10 +164,15 @@ prototype phase 0).
 - [x] `src/ui.cc` chrome — `dillo-browser::ui` (`Ui`/`Group`/
       `Tabs`/`LineInput`/`Chrome` : widgets logiques auto-dessinés
       verbatim, dessin tiny-skia, icônes XPM `pixmaps.rs`,
-      `UiShell` complet) — `menu.cc`/`dialog.cc`/`findbar.cc`/
-      `tipwin.cc` restants (stubs sûrs documentés dans `Chrome`)
+      `UiShell` complet)
       (`timeout.cc` déjà porté dans `dillo-net` — la boucle de
       drain `poll_timeouts` y est partagée)
+- [x] `src/menu.cc`/`dialog.cc`/`findbar.cc`/`tipwin.cc` —
+      `dillo-browser::{menu,dialog,findbar,tipwin}` : 8 popups
+      verbatim + `MenuCtx`/`dispatch`, seams `DialogRunner`/
+      `DocOps`, `LineEditor` (Ctrl-AEKD+cut UTF-8), filtre clavier
+      findbar Pass/Consume, `TipWin` partagé (délais 0.8/0.1s,
+      position pointeur, highlight CustButton)
 - [x] `bw.c`/`nav.c`/`keys.cc`+`keysrc`/`uicmd.cc` — glue
       `BrowserWindow`, pile de navigation, raccourcis clavier,
       dispatch `a_UIcmd_*` via seams `UiShell`/`NavIo`/`NavSched`

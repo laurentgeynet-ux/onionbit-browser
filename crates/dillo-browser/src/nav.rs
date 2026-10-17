@@ -88,8 +88,11 @@ pub trait NavUi {
     fn set_msg(&mut self, bw: u32, msg: &str);
     /// `a_UIcmd_set_location_text`.
     fn set_location_text(&mut self, bw: u32, text: &[u8]);
-    /// `a_UIcmd_set_buttons_sens`.
-    fn set_buttons_sens(&mut self, bw: u32);
+    /// `a_UIcmd_set_buttons_sens` — `ptr`/`size` = snapshot de la
+    /// pile nav (verbatim amont : lit `bw->nav` directement ; ici le
+    /// `Nav` est déjà emprunté par l'appelant, le seam ne peut pas le
+    /// re-emprunter).
+    fn set_buttons_sens(&mut self, bw: u32, ptr: i32, size: i32);
     /// `a_UIcmd_get_scroll_xy`.
     fn get_scroll_xy(&mut self, bw: u32) -> (i32, i32);
     /// `a_UIcmd_set_scroll_xy`.
@@ -122,6 +125,9 @@ pub enum NavOp {
     Reload,
     /// `Nav_redirection0_callback`.
     Redirection0,
+    /// `a_Timeout_add(0.0, a_UIcmd_close_bw, bw)` (menu.cc — même
+    /// mécanisme de timeout différé que les callbacks nav).
+    CloseBw,
 }
 
 /// Seam de planification : le shell mappe `NavOp` →
@@ -278,7 +284,7 @@ impl Nav {
     pub fn cancel_expect(&mut self, bw_id: u32, seams: &mut dyn NavIo) {
         if seams.expecting(bw_id) {
             seams.cancel_expect(bw_id);
-            seams.set_buttons_sens(bw_id);
+            seams.set_buttons_sens(bw_id, self.stack_ptr, self.stack_size());
         }
         if self.meta_refresh_status > 0 {
             self.meta_refresh_status -= 1;
@@ -353,7 +359,7 @@ impl Nav {
         }
 
         self.stack_clean();
-        seams.set_buttons_sens(bw_id);
+        seams.set_buttons_sens(bw_id, self.stack_ptr, self.stack_size());
         seams.finish_loading(bw_id);
     }
 
@@ -534,7 +540,7 @@ impl Nav {
             if let Some(u) = &url {
                 self.open_url(bw_id, u, None, offset, seams);
             }
-            seams.set_buttons_sens(bw_id);
+            seams.set_buttons_sens(bw_id, self.stack_ptr, self.stack_size());
         }
     }
 }
@@ -662,7 +668,7 @@ mod tests {
                 .borrow_mut()
                 .push(format!("loc:{}", String::from_utf8_lossy(text)));
         }
-        fn set_buttons_sens(&mut self, _bw: u32) {
+        fn set_buttons_sens(&mut self, _bw: u32, _p: i32, _s: i32) {
             self.evs.borrow_mut().push("sens".into());
         }
         fn get_scroll_xy(&mut self, _bw: u32) -> (i32, i32) {

@@ -324,10 +324,10 @@ pour la parité observable e2e.
 
 ### Non-bugs / seams
 
-- **NB-14** — Dialogues et menus popup (`dialog_*`, `*_popup`)
-  = stubs sûrs documentés (`dialog_choice`→0 ≙ fermé) en attente
-  des modules `dialog.rs`/`menu.rs`/`findbar.rs`/`tipwin.rs`
-  (chrome-3). Traçabilité : commentaires `chrome-3` dans `ui.rs`.
+- **NB-14** — ~~Dialogues et menus popup = stubs~~ → **résolu
+  (chrome-3)** : `dialog.rs`/`menu.rs`/`findbar.rs`/`tipwin.rs`
+  portés (addendum 3). `DialogRunner`/`DocOps` restent des seams
+  (impl native au lot chrome-4/app).
 - **NB-15** — `prefs.search_url_idx: Cell<bool>` : la mutation
   verbatim pendant `open_urlstr` sans `&mut Prefs` permet au
   `Rc<RefCell<Prefs>>` partagé du Chrome de coexister avec les
@@ -348,3 +348,74 @@ pour la parité observable e2e.
     le harness golden (hors scope unitaire).
 18. **Wheel/shortcut tabs** : couvert côté `uicmd` ; le hit-test
     `tab_at`/`close_at` couvert (`tab_hit_test`).
+
+
+## Addendum 3 — `menu.rs` / `dialog.rs` / `findbar.rs` / `tipwin.rs` (lot chrome-3)
+
+### Surface couverte
+
+- `src/menu.cc` + `menu.hh` → `menu.rs` (~950 lignes) : les 8
+  popups (`page`, `link`, `image`, `form`, `file`, `bugmeter`,
+  `history` back/forw, `tools`), `MenuCtx` ≙ globaux `popup_*`,
+  dispatch différé, seams `DocOps` (≙ `a_Html_*` doc callbacks) et
+  `UiShell::*_popup`/`panel_state`/`panel_change`.
+- `src/dialog.cc` + `dialog.hh` → `dialog.rs` : `DialogState` +
+  seam `DialogRunner` (≙ fenêtres FLTK) + `LineEditor` (≙
+  `Fl_Input` — Ctrl-A/E/K/D, cut, clamp UTF-8).
+- `src/findbar.cc` + `findbar.hh` → `findbar.rs` : `FindbarState`,
+  filtre `findbar_key` verbatim (verdict Pass/Consume), métriques.
+- `src/tipwin.cc` + `tipwin.hh` → `tipwin.rs` : `TipWin` partagé,
+  délais verbatim, `CustButtonState`/`TipWinInputState` highlight.
+
+### Vérifications verbatim effectuées
+
+- Page popup : « View page source » désactivé sur `dpi:/vsource/`,
+  « View page bugs » actif iff `page_bugs` ; sous-menu stylesheet
+  = urls CSS en `user_data` (≙ `item->user_data()` amont) —
+  **pas** l'url de page ; labels ellipsés tête 30 / queue 40.
+- Link popup : actions dynamiques `a_Actions_link_get` insérées
+  verbatim ; middle-click ≙
+  `middle_click_opens_new_tab`/`focus_new_tab`, Shift inverse le
+  focus (verbatim `!!(state & FL_SHIFT)`).
+- History popup : liste `a_UIcmd_get_history` terminée par `-1` ;
+  item i → `nav_jump(dir*(i+1))`, bouton 2 → nouvel onglet.
+- Tools popup : toggles écrivent `prefs` verbatim
+  (`load_stylesheets`, `parse_embedded_css`, `load_images`,
+  `load_background_images`, `http_force_https`) + radios
+  panel-size/`small_icons` → `panel_change` (≙ `a_UIcmd_*`).
+- `file` popup : Exit → `defer_close_all` (≙
+  `a_Timeout_add(0.0, a_UIcmd_close_all)` amont).
+- `bugmeter` validate : fragment `#` tronqué, url hex-encodée dans
+  le gabarit `%s` verbatim, schéma `dpi` exclu.
+- `dialog` : `choice` retourne index 1-based, cancel/close→0 ;
+  `user_password` verbatim ; `search` : labels
+  `prefs.search_urls` + `search_url_idx` (quirk `bool_t`).
+- `findbar_key` : verdicts verbatim — navigation/Shift+←→/
+  Ctrl-HIJLM/Esc passent ; Ctrl-AEKD locaux ; Enter→search fwd,
+  Shift+Enter→back (≙ `FL_SHIFT`).
+- `tipwin` : `tip` tronqué 255 octets + frontière UTF-8, `size`
+  = mesure + 8, position sous le pointeur sinon au-dessus,
+  délais 0.8 s / 0.1 s (récent), cancel sur input.
+
+### Corrections de bugs trouvées pendant le port
+
+- `NavUi::set_buttons_sens` prend désormais `(ptr, size)` en
+  snapshot : appelé depuis `Nav::*` pendant que `b.nav` est
+  emprunté — verbatim amont lit `bw->nav_*` par pointeur ; le seam
+  Rust ne peut pas re-emprunter (`RefCell`). Aucun écart
+  observable (valeurs identiques à l'instant de l'appel).
+- `NavOp::CloseBw` ajouté (≙ `a_Timeout_add(0.0, a_UIcmd_close_bw)`
+  des menus) + `UiCmd::expect_done` exposé (entrée `nav.h`
+  nécessaire à capi — chrome-4).
+
+### Test gap analysis (ajout 3)
+
+19. **DialogRunner réel** : la factory native de fenêtres
+    modales reste à câbler côté app (`NullDialogRunner` en
+    défaut — retour cancel ≙ fenêtre fermée, comportement sûr).
+20. **DocOps réel** : `form_submit`/`reset`/`display_hiddens` et
+    `load_images` attendent l'objet document `dillo-html`
+    (chrome-4+ ; les tests utilisent un recorder).
+21. **Popup natif** : le modèle `Popup` est dessiné par le shell
+    natif (rendu chrome) — la sémantique d'activation est testée
+    unitairement.

@@ -155,6 +155,11 @@ pub trait UiShell {
     fn button_set_sens(&mut self, ui: usize, btn: UiButton, sens: bool);
     /// `ui->panels_toggle()`.
     fn panels_toggle(&mut self, ui: usize);
+    /// `ui->get_panelsize()`/`ui->get_smallicons()` — état courant
+    /// (menu.cc `Menu_panel_change_cb`/`a_Menu_tools_popup`).
+    fn panel_state(&self, ui: usize) -> (i32, bool);
+    /// `ui->change_panel(size, small_icons)` (menu.cc).
+    fn panel_change(&mut self, ui: usize, size: i32, small_icons: bool);
     /// `ui->findbar_toggle(on)`.
     fn findbar_toggle(&mut self, ui: usize, on: bool);
 
@@ -189,8 +194,10 @@ pub trait UiShell {
     fn dialog_msg(&mut self, title: &str, msg: &str);
 
     // ---- a_Menu_* ---------------------------------------------------
-    /// `a_Menu_history_popup` — `dir` = -1 back / +1 forward.
-    fn history_popup(&mut self, bw: u32, x: i32, y: i32, dir: i32);
+    /// `a_Menu_history_popup` — `list` = `a_UIcmd_get_history(bw,dir)`
+    /// calculé par l'appelant (le registre `bw` vit hors du shell) ;
+    /// `dir` = -1 back / +1 forward.
+    fn history_popup(&mut self, bw: u32, list: Vec<i32>, x: i32, y: i32, dir: i32);
     /// `a_Menu_page_popup`.
     fn page_popup(
         &mut self,
@@ -212,12 +219,14 @@ pub trait UiShell {
     );
     /// `a_Menu_form_popup` — `form` ≙ `DilloHtmlForm*` opaque.
     fn form_popup(&mut self, bw: u32, url: &DilloUrl, form: usize, showing_hiddens: bool);
-    /// `a_Menu_file_popup` — `wid` ≙ widget ayant reçu le clic.
-    fn file_popup(&mut self, bw: u32, wid: usize);
+    /// `a_Menu_file_popup` — `(x,y)` ≙ `wid->x(), wid->y()+wid->h()`
+    /// (l'appelant résout le rect du widget).
+    fn file_popup(&mut self, bw: u32, x: i32, y: i32);
     /// `a_Menu_bugmeter_popup`.
     fn bugmeter_popup(&mut self, bw: u32, url: Option<&DilloUrl>);
-    /// `a_Menu_tools_popup`.
-    fn tools_popup(&mut self, bw: u32, x: i32, y: i32);
+    /// `a_Menu_tools_popup` — `ui` ≙ `bw->ui` (état du panel lu au
+    /// build des toggles/radios).
+    fn tools_popup(&mut self, bw: u32, ui: usize, x: i32, y: i32);
 
     // ---- misc seams --------------------------------------------------
     /// `Paths::getOldWorkingDir()` — répertoire de lancement (base des
@@ -297,8 +306,8 @@ impl NavUi for NavSeams<'_> {
     fn set_location_text(&mut self, bw: u32, text: &[u8]) {
         uicmd_set_location_text(self.reg, self.shell, bw, text);
     }
-    fn set_buttons_sens(&mut self, bw: u32) {
-        uicmd_set_buttons_sens(self.reg, self.shell, bw);
+    fn set_buttons_sens(&mut self, bw: u32, ptr: i32, size: i32) {
+        uicmd_set_buttons_sens_impl(self.reg, self.shell, bw, ptr, size);
     }
     fn get_scroll_xy(&mut self, bw: u32) -> (i32, i32) {
         uicmd_get_scroll_xy(self.reg, bw)
@@ -660,6 +669,25 @@ impl UiCmd {
         self.open_url_nbw(reg, shell, prefs, new_bw, url);
     }
 
+    /// `a_Nav_expect_done` — appelé par capi quand la réponse racine
+    /// arrive (verbatim — wrapper public ≙ l'entrée `nav.h`).
+    pub fn expect_done(
+        &self,
+        reg: &mut BwRegistry,
+        shell: &mut dyn UiShell,
+        prefs: &Prefs,
+        bw: u32,
+    ) {
+        let Some(b) = reg.get(bw) else { return };
+        let mut seams = NavSeams {
+            reg,
+            shell,
+            prefs,
+            uicmd: self,
+        };
+        b.nav.borrow_mut().expect_done(bw, &mut seams);
+    }
+
     /// `a_UIcmd_back` — verbatim `a_Nav_back`.
     pub fn back(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
@@ -684,9 +712,18 @@ impl UiCmd {
         b.nav.borrow_mut().back_nt(bw, &mut seams);
     }
 
-    /// `a_UIcmd_back_popup` — verbatim (`dir = -1`).
-    pub fn back_popup(&self, shell: &mut dyn UiShell, bw: u32, x: i32, y: i32) {
-        shell.history_popup(bw, x, y, -1);
+    /// `a_UIcmd_back_popup` — verbatim (`dir = -1` ; `get_history`
+    /// fait ici ≙ `a_Menu_history_popup` amont).
+    pub fn back_popup(
+        &self,
+        reg: &mut BwRegistry,
+        shell: &mut dyn UiShell,
+        bw: u32,
+        x: i32,
+        y: i32,
+    ) {
+        let list = self.get_history(reg, bw, -1);
+        shell.history_popup(bw, list, x, y, -1);
     }
 
     /// `a_UIcmd_forw` — verbatim `a_Nav_forw`.
@@ -714,8 +751,16 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_forw_popup` — verbatim (`dir = +1`).
-    pub fn forw_popup(&self, shell: &mut dyn UiShell, bw: u32, x: i32, y: i32) {
-        shell.history_popup(bw, x, y, 1);
+    pub fn forw_popup(
+        &self,
+        reg: &mut BwRegistry,
+        shell: &mut dyn UiShell,
+        bw: u32,
+        x: i32,
+        y: i32,
+    ) {
+        let list = self.get_history(reg, bw, 1);
+        shell.history_popup(bw, list, x, y, 1);
     }
 
     /// `a_UIcmd_home` (verbatim — `nt` ≙ nouvel onglet).
@@ -809,6 +854,12 @@ impl UiCmd {
         bw: u32,
         op: NavOp,
     ) {
+        // `CloseBw` ≙ `a_Timeout_add(0.0, a_UIcmd_close_bw, bw)` —
+        // n'emprunte pas `nav` (close_bw reprend `b` via `reg`).
+        if matches!(op, NavOp::CloseBw) {
+            self.close_bw(reg, shell, bw);
+            return;
+        }
         let Some(b) = reg.get(bw) else { return };
         let mut seams = NavSeams {
             reg,
@@ -821,6 +872,7 @@ impl UiCmd {
             NavOp::Repush => nav.repush_now(bw, &mut seams),
             NavOp::Reload => nav.reload_now(bw, &mut seams),
             NavOp::Redirection0 => nav.redirection0_now(bw, &mut seams),
+            NavOp::CloseBw => {}
         }
     }
 
@@ -1034,9 +1086,11 @@ impl UiCmd {
         Self::set_buttons_sens(reg, shell, bw);
     }
 
-    /// `a_UIcmd_tools` (verbatim).
-    pub fn tools(&self, shell: &mut dyn UiShell, bw: u32, x: i32, y: i32) {
-        shell.tools_popup(bw, x, y);
+    /// `a_UIcmd_tools` (verbatim — `ui` ≙ `bw->ui`, lu par le shell
+    /// pour l'état des toggles du menu).
+    pub fn tools(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32, x: i32, y: i32) {
+        let ui = reg.get(bw).map_or(0, |b| b.ui.get());
+        shell.tools_popup(bw, ui, x, y);
     }
 
     /// `a_UIcmd_open_file` (verbatim) — dialogue → `file:` URL.
@@ -1180,9 +1234,10 @@ impl UiCmd {
         shell.form_popup(bw, url, form, showing_hiddens);
     }
 
-    /// `a_UIcmd_file_popup` (verbatim).
-    pub fn file_popup(&self, shell: &mut dyn UiShell, bw: u32, wid: usize) {
-        shell.file_popup(bw, wid);
+    /// `a_UIcmd_file_popup` (verbatim — l'appelant passe le coin
+    /// bas-gauche du widget `wid` ≙ `wid->x(), wid->y()+wid->h()`).
+    pub fn file_popup(&self, shell: &mut dyn UiShell, bw: u32, x: i32, y: i32) {
+        shell.file_popup(bw, x, y);
     }
 
     /// `a_UIcmd_copy_urlstr` (verbatim) — `destination` : 0 primary,
@@ -1773,15 +1828,29 @@ fn uicmd_set_location_text(reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u3
 /// `a_UIcmd_set_buttons_sens` (verbatim corps).
 fn uicmd_set_buttons_sens(reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
     let Some(b) = reg.get(bw) else { return };
+    let (ptr, size) = {
+        let nav = b.nav.borrow();
+        (nav.stack_ptr(), nav.stack_size())
+    };
+    uicmd_set_buttons_sens_impl(reg, shell, bw, ptr, size);
+}
+
+/// Corps de `uicmd_set_buttons_sens` — `ptr`/`size` passés en snapshot
+/// pour être appelable depuis `Nav` (qui détient déjà l'emprunt).
+fn uicmd_set_buttons_sens_impl(
+    reg: &mut BwRegistry,
+    shell: &mut dyn UiShell,
+    bw: u32,
+    ptr: i32,
+    size: i32,
+) {
+    let Some(b) = reg.get(bw) else { return };
     let ui = b.ui.get();
     // Stop
     let sens = !b.image_clients.borrow().is_empty() || !b.root_clients.borrow().is_empty();
     shell.button_set_sens(ui, UiButton::Stop, sens);
     // Back
-    let (ptr, size, expecting) = {
-        let nav = b.nav.borrow();
-        (nav.stack_ptr(), nav.stack_size(), b.expecting())
-    };
+    let expecting = b.expecting();
     shell.button_set_sens(ui, UiButton::Back, ptr > 0);
     // Forward
     shell.button_set_sens(ui, UiButton::Forw, ptr < size - 1 && !expecting);
@@ -1974,6 +2043,10 @@ mod tests {
             self.sens.push((ui, btn, sens));
         }
         fn panels_toggle(&mut self, _ui: usize) {}
+        fn panel_state(&self, _ui: usize) -> (i32, bool) {
+            (2, false)
+        }
+        fn panel_change(&mut self, _ui: usize, _s: i32, _i: bool) {}
         fn findbar_toggle(&mut self, _ui: usize, _on: bool) {}
         fn dialog_choice(&mut self, t: &str, _m: &str, _a: &[&str]) -> i32 {
             self.dialogs.push(t.to_string());
@@ -2005,7 +2078,7 @@ mod tests {
         fn dialog_msg(&mut self, t: &str, _m: &str) {
             self.dialogs.push(t.to_string());
         }
-        fn history_popup(&mut self, _bw: u32, _x: i32, _y: i32, _d: i32) {}
+        fn history_popup(&mut self, _bw: u32, _l: Vec<i32>, _x: i32, _y: i32, _d: i32) {}
         fn page_popup(&mut self, _bw: u32, _u: Option<&DilloUrl>, _b: bool, _c: &[DilloUrl]) {}
         fn link_popup(&mut self, _bw: u32, _u: &DilloUrl, _p: Option<&DilloUrl>) {}
         fn image_popup(
@@ -2018,9 +2091,9 @@ mod tests {
         ) {
         }
         fn form_popup(&mut self, _bw: u32, _u: &DilloUrl, _f: usize, _s: bool) {}
-        fn file_popup(&mut self, _bw: u32, _w: usize) {}
+        fn file_popup(&mut self, _bw: u32, _x: i32, _y: i32) {}
         fn bugmeter_popup(&mut self, _bw: u32, _u: Option<&DilloUrl>) {}
-        fn tools_popup(&mut self, _bw: u32, _x: i32, _y: i32) {}
+        fn tools_popup(&mut self, _bw: u32, _ui: usize, _x: i32, _y: i32) {}
         fn old_working_dir(&self) -> Vec<u8> {
             b"/tmp/".to_vec()
         }
