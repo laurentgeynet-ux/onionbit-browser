@@ -130,11 +130,12 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
 | `dw/core.hh` | `[dw]::core` | not started | namespaces/traits centraux |
-| `dw/types.cc` + `.hh` | `[dw]::types` | not started | Rect, Extremes, Allocation… |
-| `dw/style.cc` + `.hh` | `[dw]::style` | not started | Style attrs + Font/Color attrs |
-| `dw/events.hh` | `[dw]::events` | not started | event types → enums |
+| `dw/types.cc` + `.hh` | `[dw]::types` | ported | Rect/Circle/Polygon/Region, Alloc/Req/Extremes, Content, stacking ctx ; `Shape::draw` via seam `View` ; quirks verbatim (borne poly `y>=maxy`, merge ≤16) |
+| `dw/style.cc` + `.hh` | `[dw]::style` | in progress | `Color`/`Shading`/`shadeColor` portés ; Style/Font/Tooltip/Length/StyleImage à faire ; pooling `Layout` différé |
+| `dw/events.hh` | `[dw]::events` | ported | ButtonState + Mouse/Button/Motion/Crossing (`Widget*`→`WidgetId`) |
+| `dw/tools.cc` + `.hh` | `[dw]::tools` | ported | SizeParams verbatim (refs→`WidgetId`) |
 | `dw/platform.hh` | `[dw]::platform` (trait) | not started | trait Platform — impl `[plat]` |
-| `dw/view.hh` | `[dw]::view` (trait) | not started | |
+| `dw/view.hh` | `[dw]::view` (trait) | in progress | 3 primitives draw_* pour `Shape::draw` ; reste de l'interface avec layout |
 | `dw/widget.cc` + `.hh` | `[dw]::widget` | not started | base widget tree |
 | `dw/layout.cc` + `.hh` | `[dw]::layout` | not started | negotiate/alloc/draw, anchors |
 | `dw/iterator.cc` + `.hh` | `[dw]::iterator` | not started | |

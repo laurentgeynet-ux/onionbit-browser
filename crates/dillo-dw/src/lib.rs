@@ -5,5 +5,19 @@
 //! findtext, hyphenator, image/ui).
 //!
 //! Le modèle de propriété de l'arbre de widgets est fixé par
-//! l'ADR-0005 (prototype `dillo-dw-proto`).
+//! l'ADR-0005 (prototype `dillo-dw-proto`) : arène plate +
+//! `WidgetId`, `enum`-dispatch des kinds, événements drainés
+//! après mutation — jamais de `&mut` sur le `kind` d'un nœud
+//! pendant un appel récursif.
 #![forbid(unsafe_code)]
+
+pub mod events;
+pub mod style;
+pub mod tools;
+pub mod types;
+pub mod view;
+
+/// Index dans l'arène de widgets (≙ `dw::core::Widget*`
+/// amont). Le proto ADR-0005 utilise `usize` ; le vrai `dw/`
+/// conserve ce choix.
+pub type WidgetId = usize;

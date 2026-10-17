@@ -7,6 +7,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `dillo-dw` fondations (phase 4, lot dw-0) : `types`
+  (`dw/types.cc/.hh` — `Rectangle`/`Circle`/`Polygon`/`Region`
+  avec quirks verbatim : borne `y>=maxy` asymétrique, fusion
+  forcée ≤16 rect, ray-casting sans garde sommet ; `Allocation`/
+  `Requisition`/`Extremes`, `Content` union→enum, stacking
+  contexts `HashSet<WidgetId>`), `events` (`dw/events.hh`),
+  `tools` (`SizeParams`, refs `Widget*`→`WidgetId`),
+  `style::Color`/`Shading`/`shadeColor` verbatim (+`view` seam :
+  3 primitives `draw_*` pour `Shape::draw` — interface
+  `dw/view.hh` complétée avec le lot layout).
+
+
 - `dillo-images` décodeurs : `gif` (LZW maison amont porté verbatim
   — spill lines, `orig_code==last_code`, entrelacé 4 passes,
   `state=999`), `png` (crate `png` — sig check, `png_composite` +

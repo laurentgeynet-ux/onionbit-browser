@@ -89,7 +89,9 @@ vraies phases. Sert aussi de banc d'essai au choix ADR-0005.
 **Prérequis : ADR-0005 résolu** (modèle de propriété de l'arbre —
 prototype phase 0).
 
-- [ ] `types`, `style`, `events`, `core.hh` traits → `dillo-dw` core
+- [~] `types`, `style`, `events`, `core.hh` traits → `dillo-dw` core
+      — types/events/tools portés, `style`/`view` partiels (Color +
+      3 primitives draw), traits complets avec widget/layout
 - [ ] `widget.cc` + `layout.cc` (size negotiate, allocation, draw,
       damage/queue-draw, anchors)
 - [ ] `iterator.cc`, `textblock.cc` + `textblock_linebreaking.cc` +
@@ -98,7 +100,7 @@ prototype phase 0).
       `listitem.cc`, `alignedtextblock.cc`
 - [ ] `findtext.cc`, `selection.cc`
 - [ ] `image.cc` (widget side), `imgrenderer.cc`
-- [ ] `tools.cc`, `ui.cc` (dw::core::ui widgets)
+- [~] `tools.cc`, `ui.cc` (dw::core::ui widgets) — `tools` porté
 
 **Audit** : `audit-05-dw-core`, `audit-06-dw-textblock`
 
