@@ -25,6 +25,7 @@ pub mod platform;
 pub mod ruler;
 pub mod selection;
 pub mod style;
+pub mod table;
 pub mod textblock;
 pub mod tools;
 pub mod types;

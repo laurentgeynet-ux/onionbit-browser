@@ -114,7 +114,19 @@ impl Layout {
         else {
             return;
         };
-        let value = self.node_tb(w, Self::listitem_get_value).unwrap_or(0);
+        // `getValue` virtuel amont : `AlignedTableCell::getValue`
+        // quand `cell == Aligned`, sinon `ListItem::getValue`
+        // (verbatim — même dispatch pour `setMaxValue` plus bas).
+        let is_cell = self
+            .node_tb(w, |tb| {
+                matches!(tb.cell, Some(crate::table::TableCellKind::Aligned { .. }))
+            })
+            .unwrap_or(false);
+        let value = if is_cell {
+            self.cell_get_value(w)
+        } else {
+            self.node_tb(w, Self::listitem_get_value).unwrap_or(0)
+        };
         let (max_value, targets) = {
             let mut l = list.borrow_mut();
             if l.values.len() <= list_pos {
@@ -135,7 +147,17 @@ impl Layout {
             }
         };
         for (target, target_value) in targets {
-            self.listitem_set_max_value(target, max_value, target_value);
+            // `setMaxValue` virtuel amont — dispatch cell/item.
+            let target_is_cell = self
+                .node_tb(target, |tb| {
+                    matches!(tb.cell, Some(crate::table::TableCellKind::Aligned { .. }))
+                })
+                .unwrap_or(false);
+            if target_is_cell {
+                self.cell_set_max_value(target, max_value, target_value);
+            } else {
+                self.listitem_set_max_value(target, max_value, target_value);
+            }
         }
     }
 

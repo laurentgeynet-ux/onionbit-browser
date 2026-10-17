@@ -7,6 +7,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `dillo-dw::table` (phase 5, lot dw-5) : `WidgetKind::Table` +
+  `TableData` verbatim `dw/table.cc` — grille `Cell`/`SpanSpace`
+  (`colspan 0`→`eff=max(numCols-curCol,1)`+`rowClosed`, `MAXSPAN`
+  100, rangées implicites/manquantes, `reallocChildren`), extrêmes
+  colonnes en deux passes (`colspan==1` puis apportionnement
+  multi-colonnes `apportion2` cumulatif entier — rounding-errors),
+  cas de largeur verbatim (min>dispo → MinMin/MaxMin ou branche
+  pourcentages `widthPartPer`, `width` forcé > Σmax → maxima /
+  colonnes spécifiées exclues via `ExtrMod::Data`, sinon Min/Max),
+  `cumHeight`+`apportionRowSpan`, `redrawX/Y`,
+  `containerSizeChanged` par colonne modifiée ; `\bug` amont
+  conservés (`numColWidthSpecified` reset 2× / jamais
+  `numColWidthPercentage`, `baseline` jamais rempli,
+  `removeChild` no-op). Cellules ≙ `TextblockData.cell :
+  Option<TableCellKind>` (`Simple`/`Aligned` ≙ sous-classes
+  amont) : `isBlockLevel`→false, `usesMaxGeneratorWidth`→true,
+  `correctAvailWidthOfChild`/`correctCorrectedRequisitionOfChild`
+  clamps, `applyPer*` sans boxDiff, `AlignedTableCell`
+  (`getValue`/`setMaxValue`, détection `textAlignChar` dans
+  `wordWrap`, `updateValue` dispatché). `TableInFlow` ≙
+  `TableIterator` (raster order, `SPAN_SPACE`→InvalidIterator).
+  `WidgetKind::Table` câblé dans tous les dispatchs (sizing,
+  OOF, iterator, detach/delete, draw, hit-test). 18 tests.
+
+- `dillo-dw::stacking` : seams verbatim `dw/stackingcontextmgr`
+  — `IMPL_POS=false` amont ⇒ `stackingContextMgr` jamais
+  instancié ; prédicats `is_establishing`/`handled_by` +
+  héritage `stackingContextWidget` fidèles, corps différé.
+
 - `dillo-dw::textblock` (phase 4, lot dw-3) : port complet du
   sous-système texte dw — modèle `Word`/`Line`/`Paragraph`/
   `BadnessAndPenalty` verbatim, construction incrémentale

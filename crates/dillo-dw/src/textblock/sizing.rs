@@ -505,6 +505,13 @@ impl Layout {
                 width = limit;
             }
         }
+        // `SimpleTableCell`/`AlignedTableCell::getAvailWidthOfChild`
+        // = `Textblock::` + `tablecell::correctAvailWidthOfChild`
+        // (clamp à `availWidth - boxDiffWidth` de la cellule —
+        // verbatim tablecell.cc:44).
+        if self.node_tb(w, |tb| tb.cell.is_some()).unwrap_or(false) {
+            width = self.cell_correct_avail_width_of_child(w, width, force_value);
+        }
         width
     }
 

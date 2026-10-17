@@ -159,6 +159,14 @@ pub enum WidgetKind {
         /// `resource` (≙ `Resource*` possédé amont).
         res: Rc<dyn crate::ui::Resource>,
     },
+    /// `dw::Table` — table (table.cc) ; `Table : OOFAwareWidget`
+    /// amont ≙ `OofAwareData` embarqué dans `TableData` — boxed
+    /// (variant volumineux).
+    Table {
+        /// Champs verbatim `table.hh` (grille `children`,
+        /// `colExtremes`, `colWidths`, `cumHeight`, `rowStyle`…).
+        tbl: Box<crate::table::TableData>,
+    },
 }
 
 // ------------------------------------------------------------------
@@ -1666,6 +1674,17 @@ impl Layout {
             // `Embed` : pas d'enfants Widget (`childWidget` vit
             // dans le layout interne — ui.cc).
             | WidgetKind::Embed { .. } => Vec::new(),
+            // `Table` : les enfants in-flow sont les widgets des
+            // cellules `Child::CELL` (≙ itérateur table, masque
+            // `WIDGET_IN_FLOW`).
+            WidgetKind::Table { tbl } => tbl
+                .children
+                .iter()
+                .filter_map(|c| match c {
+                    Some(crate::table::Child::Cell(cell)) => Some(cell.widget),
+                    _ => None,
+                })
+                .collect(),
         })
     }
 
@@ -1706,6 +1725,7 @@ impl Layout {
             Text(Rc<[u8]>),
             OofAware,
             Textblock,
+            Table,
             Embed(Rc<dyn crate::ui::Resource>),
             Empty,
         }
@@ -1727,6 +1747,11 @@ impl Layout {
             // (ui.cc:137) ; les impls amont retournent toutes
             // `EmptyIterator` (`ug Not implemented`).
             WidgetKind::Embed { res } => Dispatch::Embed(res.clone()),
+            // `Table::iterator` — `TableIterator` verbatim
+            // (`OofAwareIterator` + section en-flux = cases
+            // `children`, cellules `CELL` → `WIDGET_IN_FLOW`,
+            // table_iterator.cc).
+            WidgetKind::Table { .. } => Dispatch::Table,
             WidgetKind::Base
             | WidgetKind::Bullet
             | WidgetKind::Image { .. }
@@ -1752,6 +1777,7 @@ impl Layout {
             Dispatch::Textblock => Box::new(crate::textblock::iter::textblock_iterator(
                 self, w, mask, at_end,
             )),
+            Dispatch::Table => Box::new(crate::table::table_iterator(self, w, mask, at_end)),
             Dispatch::Embed(res) => res.iterator(mask, at_end),
             Dispatch::Empty => Box::new(crate::iterator::EmptyIterator::new(w, mask, at_end)),
         }
@@ -1810,6 +1836,8 @@ impl Layout {
             self.ruler_size_request_simpl(w, requisition);
         } else if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
             self.img_size_request_simpl(w, requisition);
+        } else if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            self.tbl_size_request_simpl(w, requisition);
         }
     }
 
@@ -1856,6 +1884,8 @@ impl Layout {
             self.ruler_get_extremes_simpl(w, extremes);
         } else if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
             self.img_get_extremes_simpl(w, extremes);
+        } else if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            self.tbl_get_extremes_simpl(w, extremes);
         }
     }
 
@@ -1891,6 +1921,12 @@ impl Layout {
             self.img_size_allocate_impl(w, allocation);
             return;
         }
+        // `Table::sizeAllocateImpl` — allocation colonnes/rangées
+        // verbatim (table.cc:165).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            self.tbl_size_allocate_impl(w, allocation);
+            return;
+        }
         // `Embed::sizeAllocateImpl` — `resource->sizeAllocate`
         // verbatim (ui.cc:65).
         if let Some(res) = self.embed_resource(w) {
@@ -1909,6 +1945,12 @@ impl Layout {
     pub(crate) fn w_resize_draw_impl(&mut self, w: WidgetId) {
         if self.node(w, |n| is_textblock_kind(&n.kind)) {
             self.tb_resize_draw_impl(w);
+            return;
+        }
+        // `Table::resizeDrawImpl` — verbatim table.cc:216
+        // (redrawX/redrawY).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            self.tbl_resize_draw_impl(w);
             return;
         }
         self.widget_queue_draw(w);
@@ -1996,12 +2038,20 @@ impl Layout {
     }
 
     /// `Widget::getAdjustMinWidth` — statique amont.
+    /// `tablecell::getAdjustMinWidth` → `Table::adjustTableMinWidth`
+    /// (tablecell.cc:31-34) ; `Table::getAdjustMinWidth` idem
+    /// (table.hh:408-410).
     pub(crate) fn w_get_adjust_min_width(&self, w: WidgetId) -> bool {
         // `Image::getAdjustMinWidth` → `false` (image.hh:180 —
         // verbatim : largeur minimale mal définie, correction
         // sans intérêt).
         if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
             return false;
+        }
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. }))
+            || self.node_tb(w, |tb| tb.cell.is_some()).unwrap_or(false)
+        {
+            return crate::table::adjust_table_min_width();
         }
         ADJUST_MIN_WIDTH.load(Ordering::Relaxed)
     }
@@ -2010,7 +2060,9 @@ impl Layout {
     /// `Ruler::usesAvailWidth` → `true` (ruler.cc:77-79).
     pub(crate) fn w_uses_avail_width(&self, w: WidgetId) -> bool {
         if self.node(w, |n| {
-            is_textblock_kind(&n.kind) || matches!(&n.kind, WidgetKind::Ruler { .. })
+            is_textblock_kind(&n.kind)
+                || matches!(&n.kind, WidgetKind::Ruler { .. })
+                || matches!(&n.kind, WidgetKind::Table { .. })
         }) {
             return true;
         }
@@ -2025,32 +2077,55 @@ impl Layout {
 
     /// `Widget::applyPerWidth` — verbatim widget.cc:1754
     /// (`multiplyWithPerLength + boxDiffWidth`).
+    /// `Table`/`tablecell` : `multiplyWithPerLength` **sans**
+    /// `boxDiff` (table.cc:316, tablecell.cc:122-128 — verbatim).
     pub(crate) fn w_apply_per_width(
         &mut self,
         w: WidgetId,
         container_width: i32,
         per_width: style::Length,
     ) -> i32 {
+        if self.node(w, |n| {
+            matches!(&n.kind, WidgetKind::Table { .. })
+                || self.node_tb(w, |tb| tb.cell.is_some()).unwrap_or(false)
+        }) {
+            return self.tbl_apply_per_width(container_width, per_width);
+        }
         multiply_with_per_length(container_width, per_width)
             + self.node(w, WidgetNode::box_diff_width)
     }
 
-    /// `Widget::applyPerHeight` — verbatim.
+    /// `Widget::applyPerHeight` — verbatim (idem `applyPerWidth`
+    /// pour `Table`/`tablecell`).
     pub(crate) fn w_apply_per_height(
         &mut self,
         w: WidgetId,
         container_height: i32,
         per_height: style::Length,
     ) -> i32 {
+        if self.node(w, |n| {
+            matches!(&n.kind, WidgetKind::Table { .. })
+                || self.node_tb(w, |tb| tb.cell.is_some()).unwrap_or(false)
+        }) {
+            return self.tbl_apply_per_height(container_height, per_height);
+        }
         multiply_with_per_length(container_height, per_height)
             + self.node(w, WidgetNode::box_diff_height)
     }
 
     /// `Widget::isBlockLevel` — `false` amont.
-    /// `Ruler::isBlockLevel` → `true` (ruler.cc:62-65).
+    /// `Ruler::isBlockLevel` → `true` (ruler.cc:62-65) ;
+    /// `Table::isBlockLevel` → `true` (table.cc:358-361) ;
+    /// `tablecell::isBlockLevel` → `false` (tablecell.cc:36-39 —
+    /// les cellules sont inline vis-à-vis du parent).
     pub(crate) fn w_is_block_level(&self, w: WidgetId) -> bool {
+        if self.node_tb(w, |tb| tb.cell.is_some()).unwrap_or(false) {
+            return false;
+        }
         if self.node(w, |n| {
-            is_textblock_kind(&n.kind) || matches!(&n.kind, WidgetKind::Ruler { .. })
+            is_textblock_kind(&n.kind)
+                || matches!(&n.kind, WidgetKind::Ruler { .. })
+                || matches!(&n.kind, WidgetKind::Table { .. })
         }) {
             return true;
         }
@@ -2072,6 +2147,12 @@ impl Layout {
     pub(crate) fn w_container_size_changed_for_children(&mut self, w: WidgetId) {
         if self.node(w, |n| is_textblock_kind(&n.kind)) {
             self.tb_container_size_changed_for_children(w);
+            return;
+        }
+        // `Table::containerSizeChangedForChildren` — verbatim
+        // table.cc:326 (cellules + OOF).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            self.tbl_container_size_changed_for_children(w);
             return;
         }
         // `Embed::containerSizeChangedForChildren` —
@@ -2136,6 +2217,12 @@ impl Layout {
         if self.node(parent, |n| is_textblock_kind(&n.kind)) {
             return self.tb_affects_size_change_container_child(parent, child);
         }
+        // `Table::affectsSizeChangeContainerChild` — `true`
+        // verbatim (table.cc:343-355 : tracking coûteux →
+        // toujours vrai).
+        if self.node(parent, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            return true;
+        }
         let _ = parent;
         let Some(s) = self.node(child, |n| n.style.clone()) else {
             return false;
@@ -2160,6 +2247,11 @@ impl Layout {
     ) -> i32 {
         if self.node(w, |n| is_textblock_kind(&n.kind)) {
             return self.tb_get_avail_width_of_child(w, child, force_value);
+        }
+        // `Table::getAvailWidthOfChild` — verbatim table.cc:224
+        // (mgr OOF ou `calcAvailWidthForDescendant`/`-1`).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            return self.tbl_get_avail_width_of_child(w, child, force_value);
         }
         // `Embed::getAvailWidthOfChild` — délègue au resource
         // verbatim (ui.cc:72).
@@ -2295,6 +2387,17 @@ impl Layout {
                 if !changed {
                     break;
                 }
+            }
+            // `SimpleTableCell`/`AlignedTableCell::
+            // correctRequisitionOfChild` = base + `tablecell::
+            // correctCorrectedRequisitionOfChild` (clamp à la
+            // largeur de cellule — verbatim).
+            if self.node_tb(w, |tb| tb.cell.is_some()).unwrap_or(false) {
+                self.cell_correct_corrected_requisition_of_child(
+                    w,
+                    requisition,
+                    allow_decrease_width,
+                );
             }
         } else {
             let e = eff.unwrap_or(w);
@@ -2547,6 +2650,13 @@ impl Layout {
             // `Textblock::removeChild` — `\bug Not implemented`
             // amont (textblock.cc:1172-1175, verbatim no-op).
             self.tb_remove_child(w, child);
+            return;
+        }
+        // `Table::removeChild` — `\bug Not implemented` amont
+        // (table.cc:457-460, verbatim no-op — n'atteint pas la
+        // version `OOFAwareWidget`).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            self.tbl_remove_child(w, child);
             return;
         }
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
@@ -3074,6 +3184,12 @@ impl Layout {
         // (verbatim ordre de destruction).
         if self.node(w, |n| is_textblock_kind(&n.kind)) {
             self.tb_drop(w);
+        }
+        // `~Table` (table.cc:74-106) : détruit les cellules
+        // `Child::CELL` (verbatim ordre — corps avant
+        // `~OOFAwareWidget` ≙ section OOF ci-dessous).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            self.tbl_drop(w);
         }
         // `~OOFAwareWidget` (oofawarewidget.cc:55) : les widgets
         // OOF sont détruits avec le container (avant le callback

@@ -423,11 +423,17 @@ impl Layout {
         }
         self.tb_accumulate_word_data(w, tb, word_index);
 
-        if tb.words[word_index as usize].content.r#type == content_type::WIDGET_OOF_REF {
+        let ret = if tb.words[word_index as usize].content.r#type == content_type::WIDGET_OOF_REF {
             self.tb_wrap_word_oof_ref(w, tb, word_index, wrap_all)
         } else {
             self.tb_wrap_word_in_flow(w, tb, word_index, wrap_all)
+        };
+        // `AlignedTableCell::wordWrap` — détection `textAlignChar`
+        // + `updateValue` verbatim (alignedtablecell.cc:152-179).
+        if matches!(tb.cell, Some(crate::table::TableCellKind::Aligned { .. })) {
+            self.cell_word_wrap_after(w, word_index);
         }
+        ret
     }
 
     /// `wrapWordInFlow` (linebreaking.cc:586-860) — boucle de
@@ -2149,9 +2155,10 @@ impl Layout {
     /// — `treatAsInline` → `false` ; sinon `toplevel ||
     /// (block && !(float|abspos|fixpos))` (verbatim).
     pub(crate) fn tb_uses_max_generator_width(&self, w: WidgetId, tb: &TextblockData) -> bool {
-        // `ListItem::usesMaxGeneratorWidth` (listitem.cc:42-44)
-        // retourne `true` inconditionnellement.
-        if tb.aligned.is_some() {
+        // `ListItem::usesMaxGeneratorWidth` (listitem.cc:42-44) et
+        // `tablecell::usesMaxGeneratorWidth` (tablecell.hh:19)
+        // retournent `true` inconditionnellement.
+        if tb.aligned.is_some() || tb.cell.is_some() {
             return true;
         }
         if tb.treat_as_inline {

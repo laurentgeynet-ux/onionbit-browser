@@ -246,9 +246,10 @@ impl std::fmt::Debug for OofAwareData {
 #[must_use]
 pub fn is_oof_aware_kind(kind: &WidgetKind) -> bool {
     match kind {
-        WidgetKind::OofAware { .. } | WidgetKind::Textblock { .. } | WidgetKind::Ruler { .. } => {
-            true
-        }
+        WidgetKind::OofAware { .. }
+        | WidgetKind::Textblock { .. }
+        | WidgetKind::Ruler { .. }
+        | WidgetKind::Table { .. } => true,
         WidgetKind::Base
         | WidgetKind::Container { .. }
         | WidgetKind::Text { .. }
@@ -473,6 +474,7 @@ impl Layout {
         self.node(w, |n| match &n.kind {
             WidgetKind::OofAware { oof } | WidgetKind::Ruler { oof } => Some(f(oof)),
             WidgetKind::Textblock { tb } => Some(f(&tb.oof)),
+            WidgetKind::Table { tbl } => Some(f(&tbl.oof)),
             _ => None,
         })
     }
@@ -486,6 +488,7 @@ impl Layout {
         self.node_mut(w, |n| match &mut n.kind {
             WidgetKind::OofAware { oof } | WidgetKind::Ruler { oof } => Some(f(oof)),
             WidgetKind::Textblock { tb } => Some(f(&mut tb.oof)),
+            WidgetKind::Table { tbl } => Some(f(&mut tbl.oof)),
             _ => None,
         })
     }
@@ -857,6 +860,12 @@ impl Layout {
             self.tb_draw_level(w, view, area, level, context);
             return;
         }
+        // `Table::drawLevel` — `SL_IN_FLOW` dessine les cellules
+        // verbatim (table.cc:377).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            self.tbl_draw_level(w, view, area, level, context);
+            return;
+        }
         self.oof_draw_level(w, view, area, level, context);
     }
 
@@ -934,6 +943,11 @@ impl Layout {
     ) -> Option<WidgetId> {
         if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
             return self.tb_get_widget_at_point_level(w, x, y, level, context);
+        }
+        // `Table::getWidgetAtPointLevel` — verbatim
+        // (table.cc:425).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
+            return self.tbl_get_widget_at_point_level(w, x, y, level, context);
         }
         self.oof_get_widget_at_point_level(w, x, y, level, context)
     }
@@ -1128,12 +1142,16 @@ impl Layout {
     }
 
     /// `OOFAwareWidget::adjustExtraSpaceWhenCorrectingRequisitionByOOF`
-    /// — verbatim : `true` (oofawarewidget.cc:611).
+    /// — verbatim : `true` (oofawarewidget.cc:611) ;
+    /// `tablecell::` → `false` (tablecell.hh:37).
     #[allow(clippy::unused_self)]
     pub(crate) fn w_adjust_extra_space_when_correcting_requisition_by_oof(
         &self,
-        _w: WidgetId,
+        w: WidgetId,
     ) -> bool {
+        if self.node_tb(w, |tb| tb.cell.is_some()).unwrap_or(false) {
+            return false;
+        }
         true
     }
 }

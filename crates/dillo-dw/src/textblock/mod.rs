@@ -604,6 +604,11 @@ pub struct TextblockData {
     /// `getValue`/`setMaxValue` purs ; `usesMaxGeneratorWidth`
     /// retourne alors `true` — listitem.cc:42-44).
     pub aligned: Option<listitem::AlignedData>,
+    /// Sous-classe cellule de table — `Some` ≙ le nœud est un
+    /// `SimpleTableCell` ou `AlignedTableCell` (sous-classes
+    /// `Textblock` amont ; les virtuels deviennent les branches
+    /// `cell.is_some()` des méthodes — tablecell.cc).
+    pub cell: Option<crate::table::TableCellKind>,
     /// `bool mustQueueResize`.
     pub must_queue_resize: bool,
     /// `bool limitTextWidth` (prefs).
@@ -686,6 +691,7 @@ impl TextblockData {
             line1_offset_eff: 0,
             ignore_line1_offset_sometimes: false,
             aligned: None,
+            cell: None,
             must_queue_resize: false,
             limit_text_width,
             treat_as_inline,

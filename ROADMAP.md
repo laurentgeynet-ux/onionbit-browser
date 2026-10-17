@@ -134,13 +134,15 @@ prototype phase 0).
 
 ## Phase 5 — Tables & positioned layout
 
-- [ ] `table.cc`/`tablecell`/`simpletablecell`/`alignedtablecell` +
-      `table_iterator.cc`
+- [x] `table.cc`/`tablecell`/`simpletablecell`/`alignedtablecell` +
+      `table_iterator.cc` — algo verbatim (apportion2 cumulatif,
+      spans, `\bug` amont conservés)
 - [x] `outofflowmgr.cc`, `oofawarewidget.cc` (+iterator)
 - [x] `ooffloatsmgr.cc` — `oofposabs{,like}mgr.cc`, `oofposrelmgr.cc`,
       `oofposfixedmgr.cc`, `oofpositionedmgr.cc` = `None` (`IMPL_POS=false`
       amont : morts et inaccessibles — vrai port si un jour activés)
-- [ ] `stackingcontextmgr.cc`, `regardingborder.cc`
+- [x] `stackingcontextmgr.cc` (seams — `IMPL_POS=false` : SCM jamais
+      instancié verbatim), `regardingborder.cc` (tag → `is_regarding_border_kind`)
 
 **Audit** : `audit-07-dw-table`, `audit-08-dw-oof`
 
