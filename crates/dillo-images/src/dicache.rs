@@ -87,39 +87,41 @@ pub type DecoderFactory =
     fn(image: Rc<RefCell<DilloImage>>, url: DilloUrl, version: i32) -> Box<dyn ImageDecoder>;
 
 /// `DICacheEntry` — une version d'une URL dans le dicache.
+/// Champs `pub(crate)` : décodeurs (`ImageDecoder`) et tests y
+/// accèdent comme amont (struct publique `dicache.h`).
 pub struct DicacheEntry {
     /// `url` — clé primaire (`a_Url_dup` amont).
-    url: DilloUrl,
+    pub(crate) url: DilloUrl,
     /// `type` — `DilloImgType`.
-    img_type: ImgType,
+    pub(crate) img_type: ImgType,
     /// `width`/`height` — depuis les données image.
-    width: u32,
+    pub(crate) width: u32,
     /// `height`.
-    height: u32,
+    pub(crate) height: u32,
     /// `Flags` — `DIF_*`.
-    flags: i16,
+    pub(crate) flags: i16,
     /// `SurvCleanup` — passes de cleanup à survivre.
-    surv_cleanup: i16,
+    pub(crate) surv_cleanup: i16,
     /// `cmap` — palette (`3*num_colors_max`).
-    cmap: Option<Vec<u8>>,
+    pub(crate) cmap: Option<Vec<u8>>,
     /// `v_imgbuf` — buffer RGB partagé (`a_Imgbuf_unref` ≙ drop `Rc`).
-    imgbuf: Option<Rc<Imgbuf>>,
+    pub(crate) imgbuf: Option<Rc<Imgbuf>>,
     /// `TotalSize` — `3*w*h` (invariant `dicache_size_total`).
-    total_size: usize,
+    pub(crate) total_size: usize,
     /// `ScanNumber` — scan courant.
-    scan_number: u32,
+    pub(crate) scan_number: u32,
     /// `BitVec` — lignes décodées.
-    bitvec: Option<Bitvec>,
+    pub(crate) bitvec: Option<Bitvec>,
     /// `State`.
-    state: DicEntryState,
+    pub(crate) state: DicEntryState,
     /// `RefCount` — compte les **clients cache** (pas l'`Rc`).
-    ref_count: i32,
+    pub(crate) ref_count: i32,
     /// `version` — numéro de version de l'URL (>0).
-    version: i32,
+    pub(crate) version: i32,
     /// `DecodedSize` — données déjà passées au décodeur.
-    decoded_size: usize,
+    pub(crate) decoded_size: usize,
     /// `Decoder`/`DecoderData` — fusionnés en objet.
-    decoder: Option<Box<dyn ImageDecoder>>,
+    pub(crate) decoder: Option<Box<dyn ImageDecoder>>,
 }
 
 /// `CachedIMGs` + `dicache_size_total` + `disabled_formats` amont.
@@ -146,7 +148,16 @@ impl Dicache {
             entries: Vec::with_capacity(256),
             size_total: 0,
             disabled: [false; DIC_MAX],
-            factories: [None, None, None, None, None],
+            // Table statique amont `{a_Gif_new, a_Png_new, a_Webp_new,
+            // a_Jpeg_new, a_Svg_new}` — câblée d'office ; les tests
+            // remplacent via `dicache_set_factory`.
+            factories: [
+                Some(crate::gif::gif_new),
+                Some(crate::png::png_new),
+                Some(crate::webp::webp_new),
+                Some(crate::jpeg::jpeg_new),
+                Some(crate::svg::svg_new),
+            ],
             log: Box::new(|_| {}),
         }
     }
@@ -580,6 +591,41 @@ pub fn dicache_image(
     Some((Box::new(dicache_callback), image_get_dw(&image)))
 }
 
+/* ------------------------------------------------------------------ */
+/* Wrappers `a_Dicache_*_image` — viewers MIME enregistrés par          */
+/* `a_Mime_init` amont (table `Mime_add_minor_type`).                   */
+
+/// Fabrique un [`MimeViewer`] ≙ `a_Dicache_{gif,png,…}_image` :
+/// `Dicache_image(DIC_x, Type, Ptr, Call, Data)`.
+fn image_viewer(fmt: usize) -> dillo_net::mime::MimeViewer {
+    Rc::new(move |mime: &str, web: &Rc<HttpWeb>| {
+        dicache_image(fmt, mime, web).map(|(call, rndr)| dillo_net::mime::ViewerOutcome {
+            call,
+            view: Some(Box::new(rndr) as Box<dyn std::any::Any>),
+        })
+    })
+}
+
+/// ≙ les `Mime_add_minor_type("image/*", a_Dicache_*_image)` de
+/// `a_Mime_init` (les viewers texte sont enregistrés par
+/// `dillo-html`/`dillo-browser` à l'init application).
+pub fn register_image_viewers() {
+    use dillo_net::mime::{mime_add_minor_type, MimeViewer};
+    let v: [(&str, MimeViewer); 8] = [
+        ("image/gif", image_viewer(DIC_GIF)),
+        ("image/jpeg", image_viewer(DIC_JPEG)),
+        ("image/pjpeg", image_viewer(DIC_JPEG)),
+        ("image/jpg", image_viewer(DIC_JPEG)),
+        ("image/png", image_viewer(DIC_PNG)),
+        ("image/x-png", image_viewer(DIC_PNG)), // deprecated amont
+        ("image/webp", image_viewer(DIC_WEBP)),
+        ("image/svg+xml", image_viewer(DIC_SVG)),
+    ];
+    for (k, f) in v {
+        mime_add_minor_type(k, f);
+    }
+}
+
 /// `a_Dicache_callback` — client cache alimentant le décodeur puis
 /// l'image (`Client->Version`, `DecodedSize < BufSize`, propagation
 /// `BitVec`/scan vers `DilloImage`, close/abort → `a_Bw_close_client`).
@@ -598,10 +644,7 @@ pub fn dicache_callback(op: i32, client: &mut CacheClient) {
     // emprunt : le décodeur rappelle `dicache_*` (réentrance `RefCell`).
     {
         let mut eb = entry.borrow_mut();
-        if op == CA_SEND
-            && eb.state < DicEntryState::Close
-            && eb.decoded_size < client.buf.len()
-        {
+        if op == CA_SEND && eb.state < DicEntryState::Close && eb.decoded_size < client.buf.len() {
             let mut dec = eb.decoder.take();
             drop(eb);
             if let Some(d) = &mut dec {
@@ -657,19 +700,15 @@ pub fn dicache_callback(op: i32, client: &mut CacheClient) {
 /// Branche `Op == CA_Send && v_imgbuf` de `a_Dicache_callback` —
 /// `set_parms` si `Image->height == 0`, puis copie des lignes selon
 /// `BitVec`/`ScanNumber` (multi-scan : lignes obsolètes nettoyées).
-fn propagate_to_image(
-    entry: &Rc<RefCell<DicacheEntry>>,
-    image: Option<&Rc<RefCell<DilloImage>>>,
-) {
+fn propagate_to_image(entry: &Rc<RefCell<DicacheEntry>>, image: Option<&Rc<RefCell<DilloImage>>>) {
     let eb = entry.borrow();
     let imb = image.map(|i| i.borrow());
-    let parms = if imb.as_ref().is_some_and(|i| i.height == 0)
-        && eb.state >= DicEntryState::SetParms
-    {
-        eb.imgbuf.clone().map(|b| (b, eb.width, eb.height))
-    } else {
-        None
-    };
+    let parms =
+        if imb.as_ref().is_some_and(|i| i.height == 0) && eb.state >= DicEntryState::SetParms {
+            eb.imgbuf.clone().map(|b| (b, eb.width, eb.height))
+        } else {
+            None
+        };
     let mut writes = Vec::new();
     let mut clear_rows = false;
     let mut new_scan_num = 0u32;

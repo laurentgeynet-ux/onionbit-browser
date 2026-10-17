@@ -12,5 +12,13 @@ workspace = true
 dillo-common.workspace = true
 dillo-dw.workspace = true
 dillo-net.workspace = true
+png.workspace = true
+jpeg-decoder.workspace = true
+image-webp.workspace = true
+resvg.workspace = true
+tiny-skia.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+jpeg-encoder.workspace = true

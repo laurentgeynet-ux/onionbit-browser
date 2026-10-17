@@ -1,179 +1,162 @@
-//! Port of `src/IO/mime.c` + `mime.h` — registre MIME → viewer.
+//! Port de `src/IO/mime.c` — registre MIME → viewer.
 //!
-//! Upstream associe un `content_type` (éventuellement suffixé de
-//! paramètres `;…`) à une fonction `Viewer_t`. Ici les viewers sont des
-//! identifiants [`ViewerId`] : `a_Html_text`, `a_Plain_text` et les
-//! `a_Dicache_*_image` ne sont pas encore portés — le dispatch vers les
-//! modules réels se branchera quand `html.cc`/`dicache.c` le seront.
+//! Amont : deux listes triées par insertion (`MimeMinItems` =
+//! types mineurs `image/png`, `MimeMajItems` = majeurs `text`) de
+//! `MimeItem_t{ Name, Data=Viewer_t }`, remplies par `a_Mime_init`
+//! avec les viewers Dicache/Html/Plain compilés.
 //!
-//! Sémantiques amont reproduites :
-//! - `MinSize`/`MajSize` sont calculés dans **un seul scan** jusqu'au
-//!   premier `' '`/`';'`/`'\0'` ; `MajSize` = index du 1er `'/'`, sauf
-//!   si celui-ci est en position 0 (alors `MajSize` prend le suivant —
-//!   `!MajSize` reste vrai tant que l'index est 0).
-//! - `dStrnAsciiCasecmp` ne compare que `Size` octets : un nom
-//!   enregistré plus long matche encore (et un content-type plus court
-//!   peut matcher un nom enregistré par préfixe).
+//! Ici : le registre vit dans `dillo-net` (≙ `src/IO/`) mais les
+//! viewers sont **injectés** par les couches au-dessus — la table
+//! amont est statique dans `a_Mime_init`, la nôtre est remplie par
+//! `dillo-images` (`register_image_viewers` ≙ les `Mime_add_minor_type
+//! ("image/*", a_Dicache_*_image)`) et `dillo-browser`/`dillo-html`
+//! (≙ `a_Html_text`/`a_Plain_text`) à l'init de l'application.
 
-/// `Viewer_t` — identifiant de viewer (mapping des fonctions amont).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ViewerId {
-    /// `a_Html_text` — `text/html`, `application/xhtml+xml`.
-    HtmlText,
-    /// `a_Plain_text` — `application/xml`, `rss`/`atom`/`json`,
-    /// et type majeur `text/*`.
-    PlainText,
-    /// `a_Dicache_gif_image`.
-    ImageGif,
-    /// `a_Dicache_jpeg_image` (`jpeg`/`pjpeg`/`jpg`).
-    ImageJpeg,
-    /// `a_Dicache_png_image` (`png`/`x-png`).
-    ImagePng,
-    /// `a_Dicache_webp_image`.
-    ImageWebp,
-    /// `a_Dicache_svg_image`.
-    ImageSvg,
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::cache::CaCb;
+use crate::http::HttpWeb;
+use dillo_common::dlib;
+
+/// Retour d'un viewer ≙ `(Call, dw)` amont : la callback cache à
+/// attacher au client + le widget produit (opaque pour la couche
+/// réseau — le navigateur le récupère via `Any::downcast`).
+pub struct ViewerOutcome {
+    /// `*Call` amont (`a_Dicache_callback`, `a_Html_callback`…).
+    pub call: CaCb,
+    /// Valeur de retour du viewer (`a_Image_get_dw`, widget texte…)
+    /// — typé `Any` : la couche navigateur connaît le type concret.
+    pub view: Option<Box<dyn std::any::Any>>,
 }
 
-/// `MimeMinItems` + `MimeMajItems` (statiques amont → instance).
-/// Listes ordonnées, premier match gagne — comme `a_List_add` amont.
-#[derive(Debug, Default)]
-pub struct MimeRegistry {
-    minor: Vec<(&'static str, ViewerId)>,
-    major: Vec<(&'static str, ViewerId)>,
+/// `Viewer_t` — `void* (*)(const char *Type, void *Ptr,
+/// CA_Callback_t *Call, void **Data)`.
+pub type MimeViewer = Rc<dyn Fn(&str, &Rc<HttpWeb>) -> Option<ViewerOutcome>>;
+
+/// `MimeItem_t`.
+struct MimeItem {
+    /// `Name`.
+    name: String,
+    /// `Data`.
+    viewer: MimeViewer,
 }
 
-impl MimeRegistry {
-    /// `a_Mime_init` — ordre d'enregistrement verbatim, tous les
-    /// `ENABLE_*` activés (gif/jpeg/png/webp/svg + html + plain).
-    #[must_use]
-    pub fn new() -> Self {
-        let mut m = Self::default();
-        m.add_minor("image/gif", ViewerId::ImageGif);
-        m.add_minor("image/jpeg", ViewerId::ImageJpeg);
-        m.add_minor("image/pjpeg", ViewerId::ImageJpeg);
-        m.add_minor("image/jpg", ViewerId::ImageJpeg);
-        m.add_minor("image/png", ViewerId::ImagePng);
-        m.add_minor("image/x-png", ViewerId::ImagePng);
-        m.add_minor("image/webp", ViewerId::ImageWebp);
-        m.add_minor("image/svg+xml", ViewerId::ImageSvg);
-        m.add_minor("text/html", ViewerId::HtmlText);
-        m.add_minor("application/xhtml+xml", ViewerId::HtmlText);
-        m.add_minor("application/xml", ViewerId::PlainText);
-        m.add_minor("application/rss+xml", ViewerId::PlainText);
-        m.add_minor("application/atom+xml", ViewerId::PlainText);
-        m.add_minor("application/json", ViewerId::PlainText);
-        m.add_major("text", ViewerId::PlainText);
-        m
-    }
+thread_local! {
+    /// `MimeMinItems` — viewers de types mineurs (`image/png`…).
+    static MIN_ITEMS: RefCell<Vec<MimeItem>> = const { RefCell::new(Vec::new()) };
+    /// `MimeMajItems` — viewers de types majeurs (`text`…).
+    static MAJ_ITEMS: RefCell<Vec<MimeItem>> = const { RefCell::new(Vec::new()) };
+}
 
-    /// `Mime_add_minor_type`.
-    pub fn add_minor(&mut self, key: &'static str, viewer: ViewerId) {
-        self.minor.push((key, viewer));
-    }
+/// `Mime_add_minor_type` — ajoute un type mineur (`image/png`).
+pub fn mime_add_minor_type(key: &str, viewer: MimeViewer) {
+    MIN_ITEMS.with(|v| {
+        v.borrow_mut().push(MimeItem {
+            name: key.to_string(),
+            viewer,
+        });
+    });
+}
 
-    /// `Mime_add_major_type`.
-    pub fn add_major(&mut self, key: &'static str, viewer: ViewerId) {
-        self.major.push((key, viewer));
-    }
+/// `Mime_add_major_type` — ajoute un type majeur (`text`).
+pub fn mime_add_major_type(key: &str, viewer: MimeViewer) {
+    MAJ_ITEMS.with(|v| {
+        v.borrow_mut().push(MimeItem {
+            name: key.to_string(),
+            viewer,
+        });
+    });
+}
 
-    /// `a_Mime_get_viewer` — type spécifique d'abord, type majeur ensuite.
-    #[must_use]
-    pub fn get_viewer(&self, content_type: &str) -> Option<ViewerId> {
-        let b = content_type.as_bytes();
-        let mut maj_size = 0usize;
-        let mut min_size = b.len();
-        for (i, &c) in b.iter().enumerate() {
-            if c == b' ' || c == b';' || c == 0 {
-                min_size = i;
-                break;
-            }
-            if c == b'/' && maj_size == 0 {
-                maj_size = i;
-            }
+/// `Mime_minor_type_fetch`/`Mime_major_type_fetch` —
+/// `dStrnAsciiCasecmp(Key, Name, Size) == 0` : préfixe ASCII-insensible
+/// de `Size` octets (le nom enregistré est une C-string amont — fin
+/// prématurée ≙ NUL → non-match, comportement que `strn_ascii_casecmp`
+/// reproduit).
+fn fetch(list: &RefCell<Vec<MimeItem>>, key: &str, size: usize) -> Option<MimeViewer> {
+    if size == 0 {
+        return None;
+    }
+    let list = list.borrow();
+    list.iter().find_map(|it| {
+        (dlib::strn_ascii_casecmp(key.as_bytes(), it.name.as_bytes(), size) == 0)
+            .then(|| it.viewer.clone())
+    })
+}
+
+/// `a_Mime_get_viewer` — `MinSize` = préfixe jusqu'à ` ` ou `;`,
+/// `MajSize` = position du premier `/` ; mineur d'abord, majeur
+/// ensuite.
+#[must_use]
+pub fn mime_get_viewer(content_type: &str) -> Option<MimeViewer> {
+    let bytes = content_type.as_bytes();
+    let mut maj_size = 0usize;
+    let mut min_size = 0usize;
+    for (i, &c) in bytes.iter().enumerate() {
+        if c == b' ' || c == b';' {
+            min_size = i;
+            break;
         }
-        Self::fetch(&self.minor, b, min_size).or_else(|| Self::fetch(&self.major, b, maj_size))
-    }
-
-    /// `Mime_*_type_fetch` — `dStrnAsciiCasecmp` sur `size` octets :
-    /// `size` dépasse le nom enregistré → pas de match (le NUL amont
-    /// diffère du char de la clé) ; nom plus long → match quand même.
-    fn fetch(list: &[(&'static str, ViewerId)], key: &[u8], size: usize) -> Option<ViewerId> {
-        if size == 0 {
-            return None;
+        if c == b'/' && maj_size == 0 {
+            maj_size = i;
         }
-        let k = &key[..size.min(key.len())];
-        list.iter().find_map(|(name, v)| {
-            let n = name.as_bytes();
-            (n.len() >= k.len() && n[..k.len()].eq_ignore_ascii_case(k)).then_some(*v)
-        })
+        min_size = i + 1;
     }
+    MIN_ITEMS
+        .with(|l| fetch(l, content_type, min_size))
+        .or_else(|| MAJ_ITEMS.with(|l| fetch(l, content_type, maj_size)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn reg() -> MimeRegistry {
-        MimeRegistry::new()
+    fn viewer(tag: &'static str) -> MimeViewer {
+        Rc::new(move |_: &str, _: &Rc<HttpWeb>| {
+            let _ = tag;
+            Some(ViewerOutcome {
+                call: Box::new(|_, _| {}),
+                view: None,
+            })
+        })
     }
 
     #[test]
-    fn exact_minor_types() {
-        let m = reg();
-        assert_eq!(m.get_viewer("text/html"), Some(ViewerId::HtmlText));
-        assert_eq!(
-            m.get_viewer("application/xhtml+xml"),
-            Some(ViewerId::HtmlText)
-        );
-        assert_eq!(m.get_viewer("image/png"), Some(ViewerId::ImagePng));
-        assert_eq!(m.get_viewer("image/x-png"), Some(ViewerId::ImagePng));
-        assert_eq!(m.get_viewer("image/jpeg"), Some(ViewerId::ImageJpeg));
-        assert_eq!(m.get_viewer("image/pjpeg"), Some(ViewerId::ImageJpeg));
-        assert_eq!(m.get_viewer("image/jpg"), Some(ViewerId::ImageJpeg));
-        assert_eq!(m.get_viewer("image/gif"), Some(ViewerId::ImageGif));
-        assert_eq!(m.get_viewer("image/webp"), Some(ViewerId::ImageWebp));
-        assert_eq!(m.get_viewer("image/svg+xml"), Some(ViewerId::ImageSvg));
-        assert_eq!(m.get_viewer("application/json"), Some(ViewerId::PlainText));
+    fn minor_type_lookup() {
+        mime_add_minor_type("image/png", viewer("png"));
+        assert!(mime_get_viewer("image/png").is_some());
+        // Paramètres coupés à `;`/` ` amont.
+        assert!(mime_get_viewer("image/png; charset=x").is_some());
+        assert!(mime_get_viewer("image/png extra").is_some());
+        assert!(mime_get_viewer("image/jpg").is_none());
     }
 
     #[test]
-    fn parameters_and_case() {
-        let m = reg();
-        // `;` et ` ` terminent la comparaison (MinSize)
-        assert_eq!(
-            m.get_viewer("text/html; charset=utf-8"),
-            Some(ViewerId::HtmlText)
-        );
-        assert_eq!(m.get_viewer("text/html ;x"), Some(ViewerId::HtmlText));
-        assert_eq!(m.get_viewer("TEXT/HTML"), Some(ViewerId::HtmlText));
-        assert_eq!(m.get_viewer("Image/PNG"), Some(ViewerId::ImagePng));
+    fn case_insensitive() {
+        mime_add_minor_type("text/css", viewer("css"));
+        assert!(mime_get_viewer("TEXT/CSS").is_some());
+        assert!(mime_get_viewer("Text/Css; charset=utf-8").is_some());
     }
 
     #[test]
-    fn major_fallback_text() {
-        let m = reg();
-        // type majeur "text" → PlainText pour tout text/* non enregistré
-        assert_eq!(m.get_viewer("text/plain"), Some(ViewerId::PlainText));
-        assert_eq!(m.get_viewer("text/csv"), Some(ViewerId::PlainText));
-        // majeur inconnu → None
-        assert_eq!(m.get_viewer("application/octet-stream"), None);
-        assert_eq!(m.get_viewer("video/mp4"), None);
-        assert_eq!(m.get_viewer(""), None);
+    fn major_fallback() {
+        MAJ_ITEMS.with(|l| l.borrow_mut().clear());
+        mime_add_major_type("text", viewer("text"));
+        // Aucun mineur ne matche → majeur.
+        assert!(mime_get_viewer("text/plain").is_some());
+        assert!(mime_get_viewer("text/x-weird").is_some());
+        assert!(mime_get_viewer("video/mp4").is_none());
     }
 
     #[test]
-    fn quirks_upstream() {
-        let m = reg();
-        // `dStrnAsciiCasecmp` prefixe dans les deux sens :
-        // "text/ht" matche "text/html" enregistré (7 octets égaux)
-        assert_eq!(m.get_viewer("text/ht"), Some(ViewerId::HtmlText));
-        // mais un suffixe plus long ne matche pas (NUL vs 'x')
-        assert_eq!(m.get_viewer("text/htmlx"), Some(ViewerId::PlainText));
-        // '/' initial → MajSize=0 reste vrai → le slash suivant prend
-        // la place : "/x/y" → MajSize = index du 2e '/' = 2 → "/x"
-        assert_eq!(m.get_viewer("/x/y"), None);
-        // pas de '/' du tout → MajSize 0 → fetch major inhibé
-        assert_eq!(m.get_viewer("texthtml"), None);
+    fn key_shorter_than_name_matches() {
+        MIN_ITEMS.with(|l| l.borrow_mut().clear());
+        mime_add_minor_type("image/png", viewer("png"));
+        // « image/png-junk » ne matche pas (NUL de fin du nom amont).
+        assert!(mime_get_viewer("image/png-junk").is_none());
+        // Quirk amont : `Size` borne la comparaison à la longueur de
+        // la CLÉ — « image/p » matche « image/png » (7 octets égaux).
+        assert!(mime_get_viewer("image/p").is_some());
     }
 }

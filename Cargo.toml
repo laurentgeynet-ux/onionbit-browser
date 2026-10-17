@@ -42,6 +42,14 @@ softbuffer = "0.4"
 cosmic-text = "0.12"
 # Sérialisation PNG des golden renders (pur Rust, dev/test).
 png = "0.17"
+# Décodeurs image (pur Rust) — ≙ libjpeg/libwebp/libpng amont.
+jpeg-decoder = { version = "0.3", default-features = false }
+image-webp = "0.2"
+# Encodeur JPEG pour les tests du décodeur (pur Rust, dev-only).
+jpeg-encoder = "0.6"
+# Rasteriseur SVG ≙ nanosvg amont (pas de raster embarqué amont
+# non plus → default-features off).
+resvg = { version = "0.45", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

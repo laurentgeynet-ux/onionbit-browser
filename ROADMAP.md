@@ -134,8 +134,13 @@ prototype phase 0).
       `dillo-browser`) — reste `bw.c` (browser windows)
 - [x] `dicache.c`, `imgbuf.cc`, `image.cc` (src) — noyau dicache
       porté (states `DIC_*`, scans, `about:dicache`, seam
-      `cache::DicacheOps` implémentée) ; reste les decoders
-      `gif.c`,`png.c`,`jpeg.c`,`webp.c`,`svg.c` → pure-Rust crates
+      `cache::DicacheOps` implémentée)
+- [x] decoders `gif.c` (LZW maison verbatim), `png.c` (crate `png`),
+      `jpeg.c` (`jpeg-decoder`), `webp.c` (`image-webp`),
+      `svg.c` (`resvg`/`usvg`) + registre `mime.c` → viewers
+      `image/*` câblés ; déviations « decode-at-completion »
+      documentées par module (affichage progressif perdu vs
+      libpng/libjpeg/libwebp amont)
 - [x] `nav.c`, `history.c`, `bookmark.c`, `auth.c`, `digest.c` (md-5),
       `cookies.c`, `domain.c`, `hsts.c` (+preload data), `bitvec.c`,
       `klist.c`

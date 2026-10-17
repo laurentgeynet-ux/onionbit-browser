@@ -6,5 +6,10 @@
 #![forbid(unsafe_code)]
 
 pub mod dicache;
+pub mod gif;
 pub mod image;
 pub mod imgbuf;
+pub mod jpeg;
+pub mod png;
+pub mod svg;
+pub mod webp;

@@ -7,6 +7,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `dillo-images` décodeurs : `gif` (LZW maison amont porté verbatim
+  — spill lines, `orig_code==last_code`, entrelacé 4 passes,
+  `state=999`), `png` (crate `png` — sig check, `png_composite` +
+  LUT gamma `png_set_gamma(2.2,·)` reproduits, gris→RGB manuel),
+  `jpeg` (`jpeg-decoder` — decode-at-EOI, CMYK_INV ≙ Adobe),
+  `webp` (`image-webp` — RIFF-complete check, composite
+  `(c*a+bg*(255-a))/0xFF` verbatim), `svg` (`resvg`/`usvg` — attente
+  `"</svg>"`, `dpi` ≙ `nsvgParse`, premultiplied→straight→composite
+  amont). Décodeurs câblés dans la table dicache (≙ table statique
+  amont) + `register_image_viewers` ≙ les `Mime_add_minor_type` de
+  `a_Mime_init`. Déviations « decode-at-completion » (pas
+  d'affichage progressif des lignes, multi-scan/interlace
+  raffiné non reproduit) documentées par module pour
+  `audit-09-images`.
+- `dillo-net::mime` : port de `src/IO/mime.c` — registre
+  `MimeMinItems`/`MimeMajItems`, `a_Mime_get_viewer` verbatim
+  (quirk : clé plus courte matche via `MinSize`), `MimeViewer`/
+  `ViewerOutcome` injectés (viewers texte → `dillo-html` plus tard).
 - Repository scaffold: mission contract (`AGENTS.md`), feasibility
   study (`docs/feasibility.md`), phase plan (`ROADMAP.md`), full
   upstream→Rust file mapping (`docs/PORTING.md`).
