@@ -265,3 +265,86 @@ Verdict addendum : les 4 modules sont **fidèles** ; les seams
 (`UiShell`, `NavIo`/`NavSched`, `DpiOps`) concentrent toute la
 déviation plateforme — à repasser en `apply` après `ui.rs` (chrome-2)
 pour la parité observable e2e.
+
+
+## Addendum 2 — `ui.rs` (`src/ui.cc` + `uicmd.cc` Cust*) — lot chrome-2
+
+### Surface couverte
+
+`UI` → `Ui` (widgets logiques auto-dessinés, ADR-0002),
+`CustGroupHorizontal`/`CustGroupVertical` → `Group`/`Ui::rearrange`,
+`CustInput`/`TipWinInput` → `LineInput` + `cust_input_key`,
+`CustProgressBox` → `WId::PageProg`/`ImgProg`, `CustTabs` +
+`Fl_Wizard`/`Fl_Pack`/`Fl_Scroll`/`CustTabButton`/`Fl_Button`(close)
+→ `Tabs`/`TabBtn`, `iconset`/`standard_icons`/`small_icons` →
+`IconSet` + `xpm_decode` (`pixmaps.rs` généré verbatim), globaux
+`tabgroups`/`UI*` → `Chrome` (impl `UiShell` + `NavSched`).
+
+### Vérifications verbatim effectuées
+
+- `CustGroupHorizontal::rearrange` — resizable reçoit `w - sum` des
+  visibles, `resizable = NULL` en cas de débordement : reproduit et
+  testé (`group_rearrange_*`).
+- `UI` ctor : `cur_ui` hérite `PanelSize`/`Small_Icons`/`Panelmode`
+  (verbatim), sinon prefs ; `fullwindow_start` → `UI_HIDDEN` +
+  `panels_toggle`.
+- Métriques panel : P_tiny 22|28, P_small 20|28, P_medium
+  42·22|45·28 avec `lbl` small_icons-only ; `nh=bh`, `fh=28`,
+  `sh=20`, `pw=70` — testés (`panel_metrics_verbatim`).
+- `make_panel` tiny : une barre `[btns, File, Clear, Location,
+  Search, Help, ImgProg, PageProg]` resizable=LocationGroup ;
+  small/medium : LocBar + NavBar resizable=Spacer. **Bug corrigé
+  en cours de port** : resizable pointait sur `Clear` (idx) au lieu
+  de `LocationGroup` (idx+1) — détecté par le test de construction.
+- `CustTabs` : `tab_w=50`, `tab_h=ui_tab_height`, `ctab_h=1`,
+  `btn_w=20`, `ctl_w=22` ; strip visible à ≥2 onglets ; switch →
+  `increase_focus_counter` + wrap u32→renum triée verbatim ;
+  `remove_tab` actif → focus `focus_num` max ; `set_tab_label`
+  ≤15 octets + `end_of_char` + `...` ; `update_pack_offset` garde
+  l'actif visible. **Bug corrigé** : troncature paniquait sur
+  label court (`[..15]` > len) → `min`.
+- `CustInput::handle` filtres verbatim (Esc remonte, Shift+←→
+  remontent, Ctrl+E/K/D/A/L consommés, Ctrl+H/O/R/Home/End remontent,
+  ↑↓/PgUp/PgDn/Tab → focus main + remontée, Enter → `location_cb` +
+  repli panel temporaire).
+- `UI::handle` FL_SHORTCUT → `ui_shortcut` : dispatch
+  `KeysCommand` complet verbatim (scroll cmds→`scroll`, HidePanels
+  →findbar d'abord + reset temporary, FocusTab1-10 index
+  zero-based verbatim).
+- `set_page_prog`/`set_img_prog`/`set_bug_prog` : formats
+  `Page
+%.1f %cB` (K/M ≥1MB) / `%d of %d` / `new_w=len*9+20`
+  verbatim — testés.
+- `set_location` : position = `size()` si focus Location sinon 0
+  (verbatim) — testé.
+- `tab_ui_new` : hérite réglages panel de l'UI courante (verbatim
+  `UI(w,h,cur_ui)`), attache `SharedView`+scroll prefs,
+  `add_new_tab` verbatim ; `tab_ui_remove` détruit la fenêtre à 0
+  onglets (verbatim `num_tabs()==0 → delete tabgroup`).
+
+### Non-bugs / seams
+
+- **NB-14** — Dialogues et menus popup (`dialog_*`, `*_popup`)
+  = stubs sûrs documentés (`dialog_choice`→0 ≙ fermé) en attente
+  des modules `dialog.rs`/`menu.rs`/`findbar.rs`/`tipwin.rs`
+  (chrome-3). Traçabilité : commentaires `chrome-3` dans `ui.rs`.
+- **NB-15** — `prefs.search_url_idx: Cell<bool>` : la mutation
+  verbatim pendant `open_urlstr` sans `&mut Prefs` permet au
+  `Rc<RefCell<Prefs>>` partagé du Chrome de coexister avec les
+  `&Prefs` des appels (pas de double-emprunt).
+- **NB-16** — Dessin chrome : `pm_box`/`pm_text`/`pm_icon`
+  reproduisent `Fl_Widget::draw` (box 3D, icône centrée, label) —
+  parité pixel non garantie (déviation ADR-0002 documentée) ;
+  géométrie/états observables fidèles.
+- **NB-17** — XPM décodé en `xpm_decode` (format `c #rrggbb`/`None`
+  verbatim) ; `*In` calculés par `desaturate`+`color_average(bg,.14)`
+  exactement comme `iconset` amont (les `*_i_xpm` embarqués restent
+  inutilisés comme amont).
+
+### Test gap analysis (ajout 2)
+
+17. **Golden chrome** : rendre une fenêtre `Chrome` headless et
+    comparer le layout de chrome à une capture amont — à faire avec
+    le harness golden (hors scope unitaire).
+18. **Wheel/shortcut tabs** : couvert côté `uicmd` ; le hit-test
+    `tab_at`/`close_at` couvert (`tab_hit_test`).

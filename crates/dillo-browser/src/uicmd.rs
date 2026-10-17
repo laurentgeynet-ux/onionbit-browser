@@ -12,7 +12,7 @@
 //! `post_id` (static dans `view_page_source`).
 //!
 //! La dispatch `nav.c` → `a_UIcmd_*` passe par `NavSeams`
-//! ([`NavIo`](crate::nav::NavIo)+[`NavSched`](crate::nav::NavSched)
+//! ([`NavIo`](crate::nav::NavIo)+[`NavSched`]
 //! liant `reg`+`shell` le temps de l'appel —
 //! verbatim, amont les deux sont globaux).
 
@@ -485,7 +485,7 @@ impl UiCmd {
 
     /// `UIcmd_find_search_str` (verbatim) — `str` commence par le
     /// préfixe d'un nom de moteur + espace → URL de recherche.
-    fn find_search_str(prefs: &mut Prefs, s: &[u8]) -> Option<Vec<u8>> {
+    fn find_search_str(prefs: &Prefs, s: &[u8]) -> Option<Vec<u8>> {
         let len = s.iter().position(|&c| c == b' ').unwrap_or(s.len());
         if len > 0 && len < s.len() {
             /* we found a ' ' in str, check whether the first part of str
@@ -498,7 +498,7 @@ impl UiCmd {
                     }
                     // verbatim : `prefs.search_url_idx` est `bool_t`
                     // amont (index tronqué à 0/1 — quirk préservé).
-                    prefs.search_url_idx = p != 0;
+                    prefs.search_url_idx.set(p != 0);
                     return Some(Self::make_search_str(prefs, &s[len + 1..]));
                 }
             }
@@ -512,7 +512,7 @@ impl UiCmd {
         &self,
         reg: &mut BwRegistry,
         shell: &mut dyn UiShell,
-        prefs: &mut Prefs,
+        prefs: &Prefs,
         bw: u32,
         urlstr: &[u8],
     ) {
@@ -1052,7 +1052,7 @@ impl UiCmd {
     /// `search_url_idx` (`bool` amont ≙ 0/1) préservé.
     fn make_search_str(prefs: &Prefs, s: &[u8]) -> Vec<u8> {
         let keys = url::encode_hex_str(s);
-        let idx = usize::from(prefs.search_url_idx);
+        let idx = usize::from(prefs.search_url_idx.get());
         let Some(src) = prefs.search_urls.get(idx) else {
             return Vec::new();
         };
@@ -1091,7 +1091,7 @@ impl UiCmd {
         &self,
         reg: &mut BwRegistry,
         shell: &mut dyn UiShell,
-        prefs: &mut Prefs,
+        prefs: &Prefs,
         bw: u32,
     ) {
         if let Some(query) = shell.dialog_input("Dillo: Search", "Search the Web:") {
@@ -2190,7 +2190,7 @@ mod tests {
     /// `search_url_idx` (bool ≙ 0/1).
     #[test]
     fn search_str_verbatim() {
-        let mut prefs = Prefs {
+        let prefs = Prefs {
             search_urls: vec![
                 b"ddg https://duckduckgo.com/?q=%s".to_vec(),
                 b"wikipedia https://en.wikipedia.org/wiki/%s".to_vec(),
@@ -2198,20 +2198,20 @@ mod tests {
             ..Default::default()
         };
         // Préfixe exact "ddg " → idx 0, %s substitué url-encodé.
-        let r = UiCmd::find_search_str(&mut prefs, b"ddg hello world");
+        let r = UiCmd::find_search_str(&prefs, b"ddg hello world");
         assert_eq!(
             r.as_deref(),
             Some(b"https://duckduckgo.com/?q=hello+world".as_slice())
         );
         // idx 1 → quirk bool : search_url_idx = true → index 1.
-        let r = UiCmd::find_search_str(&mut prefs, b"wikipedia rust lang");
+        let r = UiCmd::find_search_str(&prefs, b"wikipedia rust lang");
         assert_eq!(
             r.as_deref(),
             Some(b"https://en.wikipedia.org/wiki/rust+lang".as_slice())
         );
         // Pas d'espace / pas de préfixe → None.
-        assert!(UiCmd::find_search_str(&mut prefs, b"noSpace").is_none());
-        assert!(UiCmd::find_search_str(&mut prefs, b"foo bar").is_none());
+        assert!(UiCmd::find_search_str(&prefs, b"noSpace").is_none());
+        assert!(UiCmd::find_search_str(&prefs, b"foo bar").is_none());
     }
 
     /// `make_save_filename` verbatim — dernier composant, query,
@@ -2250,12 +2250,12 @@ mod tests {
     fn open_urlstr_search_prefix() {
         let (mut reg, mut shell, bw) = fixture();
         let uicmd = UiCmd::new(&Prefs::default());
-        let mut prefs = Prefs {
+        let prefs = Prefs {
             search_urls: vec![b"ddg https://duckduckgo.com/?q=%s".to_vec()],
             ..Default::default()
         };
-        uicmd.open_urlstr(&mut reg, &mut shell, &mut prefs, bw, b"   ");
-        uicmd.open_urlstr(&mut reg, &mut shell, &mut prefs, bw, b"ddg hello");
+        uicmd.open_urlstr(&mut reg, &mut shell, &prefs, bw, b"   ");
+        uicmd.open_urlstr(&mut reg, &mut shell, &prefs, bw, b"ddg hello");
         // nav.push a posé la location = URL de recherche (verbatim).
         assert_eq!(
             shell.location.last().map(|(_, s)| s.as_str()),

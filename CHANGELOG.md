@@ -38,6 +38,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (déviation ADR-0002 : pas de widgets natifs). `dillo-dw` :
   `Layout::copy_selection` (≙ `a_UIcmd_copy_urlstr`) +
   `ComplexButtonOps::size_allocate`. 37 tests `dillo-browser`.
+- `dillo-browser` (phase 6, lot chrome-2) : `ui.rs` — chrome
+  `src/ui.cc` verbatim en widgets logiques auto-dessinés
+  (`Ui`/`Group` ≙ `CustGroupHorizontal`/`CustGroupVertical` :
+  `rearrange` resizable+drop verbatim ; `Tabs` ≙ `CustTabs` +
+  `Fl_Wizard`/`Fl_Pack`/`Fl_Scroll` : `ctab_h`, `focus_num`
+  wrap+renumérotation, scroll offset, fermeture → focus au
+  `focus_num` max, label ≤15 octets UTF-8+`...`, strip caché à
+  1 onglet ; `LineInput` ≙ `CustInput`/`TipWinInput` + filtres
+  clavier verbatim ; métriques panel `P_tiny`/`P_small`/`P_medium`
+  verbatim, `customize` `prefs.show_*`, `panels_toggle`,
+  `PanelTemporary` ; `ui_shortcut` ≙ `UI::handle` FL_SHORTCUT ;
+  dessin `tiny-skia`/`cosmic-text` `pm_box`/`pm_text`/`pm_icon`,
+  blit vue→`Main`) ; `Chrome` ≙ globaux `tabgroups`+FLTK :
+  `UiShell` complet (fenêtres/onglets/labels/focus/location/
+  status/progress/bug-meter/sensibilité/`defer_nav`), `NavSched`.
+  `dillo-platform` : `pixmaps.rs` — 27 icônes XPM générées
+  verbatim depuis `src/pixmaps.h` (`_gen_pixmaps.py`), décodées
+  par `xpm_decode` (`*In` = `desaturate`+`color_average`
+  verbatim `iconset`) ; `View::set_scroll_prefs` +
+  `middle_click_drag`. `prefs.search_url_idx` → `Cell<bool>`
+  (mutation verbatim pendant `open_urlstr` sans `&mut` —
+  évite le double-emprunt RefCell prefs/partagé avec le shell).
+  67 tests `dillo-browser`.
 - `dillo-html` (phase 2, lot html-1) : crate complète —
   machine d'état tag-soup verbatim `src/html.cc` (`html.rs` :
   `DilloHtml` + `Html_write_raw` buffer cumulatif ≙ `Client->Buf`,

@@ -12,4 +12,5 @@ pub mod dpiapi;
 pub mod keys;
 pub mod nav;
 pub mod prefs;
+pub mod ui;
 pub mod uicmd;

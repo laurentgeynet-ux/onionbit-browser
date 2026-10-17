@@ -112,7 +112,9 @@ pub struct Prefs {
     pub right_click_closes_tab: bool,
     pub scroll_switches_tabs: bool,
     pub scroll_switches_tabs_reverse: bool,
-    pub search_url_idx: bool,
+    /// `bool_t` amont — mutation pendant `open_urlstr` (verbatim) →
+    /// `Cell` pour rester accessible via `&Prefs`.
+    pub search_url_idx: std::cell::Cell<bool>,
     pub search_urls: Vec<Vec<u8>>,
     pub save_dir: Option<Vec<u8>>,
     pub show_msg: bool,
@@ -201,7 +203,7 @@ impl Default for Prefs {
             scroll_step: 100,
             scroll_page_overlap: 50,
             search_urls: vec![PREFS_SEARCH_URL.to_vec()],
-            search_url_idx: false,
+            search_url_idx: std::cell::Cell::new(false),
             scrollbar_on_left: false,
             scrollbar_page_mode: false,
             show_back: true,

@@ -118,6 +118,8 @@ pub(crate) struct Canvas {
     scroll_step: i32,
     /// `scrollbarPageMode`.
     scrollbar_page_mode: bool,
+    /// `middleClickDrag` (verbatim `FltkViewport`).
+    middle_click_drag: bool,
     /// `mouse_x`/`mouse_y` (vue ; `-1` hors).
     mouse_x: i32,
     mouse_y: i32,
@@ -161,6 +163,7 @@ impl Canvas {
             page_overlap: 0,
             scroll_step: 0,
             scrollbar_page_mode: false,
+            middle_click_drag: false,
             mouse_x: -1,
             mouse_y: -1,
             cursor: Cursor::Default,
@@ -1284,6 +1287,31 @@ impl SkiaView {
     #[must_use]
     pub fn pixmap(&self) -> Option<Ref<'_, Pixmap>> {
         Ref::filter_map(self.canvas.borrow(), |c| c.pixmap.as_ref()).ok()
+    }
+
+    /// Préférences de scroll (verbatim setters `FltkViewport` :
+    /// `setScrollStep`, `setPageOverlap`, `setScrollbarOnLeft`,
+    /// `setScrollbarPageMode`, `setMiddleClickDrag`).
+    pub fn set_scroll_prefs(
+        &mut self,
+        scroll_step: i32,
+        page_overlap: i32,
+        scrollbar_on_left: bool,
+        scrollbar_page_mode: bool,
+        middle_click_drag: bool,
+    ) {
+        let mut c = self.canvas.borrow_mut();
+        c.scroll_step = scroll_step;
+        c.page_overlap = page_overlap;
+        c.scrollbar_on_left = scrollbar_on_left;
+        c.scrollbar_page_mode = scrollbar_page_mode;
+        c.middle_click_drag = middle_click_drag;
+    }
+
+    /// `middleClickDrag` courant.
+    #[must_use]
+    pub fn middle_click_drag(&self) -> bool {
+        self.canvas.borrow().middle_click_drag
     }
 
     /// Back-buffer mutable (dessin des scrollbars par `app.rs` —

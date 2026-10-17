@@ -72,6 +72,8 @@ pub mod keysym {
     pub const MENU: i32 = 0xff67;
     /// `FL_F + n` : F1 = `0xffbe`.
     pub const F1: i32 = 0xffbe;
+    /// `FL_KP_Enter` (`XK_KP_Enter`).
+    pub const KP_ENTER: i32 = 0xff8d;
     /// `FL_Delete`.
     pub const DELETE: i32 = 0xffff;
     /// `FL_Back` (`XF86Back`).

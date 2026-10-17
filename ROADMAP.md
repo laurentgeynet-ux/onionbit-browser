@@ -161,8 +161,11 @@ prototype phase 0).
       clipboard, cursors) — replaces `dw/fltk*.cc`
       (`platform.rs`/`view.rs`/`ui.rs`/`app.rs`/`surface.rs` +
       `golden.rs`) — clipboard in-process (déviation documentée)
-- [ ] `src/ui.cc` chrome (toolbars, tabs via `UI`/`CustTabs`),
-      `menu.cc`, `dialog.cc`, `findbar.cc`, `tipwin.cc`
+- [x] `src/ui.cc` chrome — `dillo-browser::ui` (`Ui`/`Group`/
+      `Tabs`/`LineInput`/`Chrome` : widgets logiques auto-dessinés
+      verbatim, dessin tiny-skia, icônes XPM `pixmaps.rs`,
+      `UiShell` complet) — `menu.cc`/`dialog.cc`/`findbar.cc`/
+      `tipwin.cc` restants (stubs sûrs documentés dans `Chrome`)
       (`timeout.cc` déjà porté dans `dillo-net` — la boucle de
       drain `poll_timeouts` y est partagée)
 - [x] `bw.c`/`nav.c`/`keys.cc`+`keysrc`/`uicmd.cc` — glue

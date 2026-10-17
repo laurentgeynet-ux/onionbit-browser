@@ -1,0 +1,3877 @@
+//! Port of `src/ui.cc` + `src/ui.hh` (+ `CustTabs`/`CustTabButton`/
+//! `CustInput`/`CustPasteButton`/`CustProgressBox`/`CustGroupHorizontal`/
+//! `CustGroupVertical` de `src/uicmd.cc`).
+//!
+//! Le chrome Dillo est un jeu de widgets FLTK ; le port les remplace
+//! par des widgets logiques auto-dessinés (ADR-0002) rendus en
+//! `tiny-skia`/`cosmic-text` sur le même `Pixmap` fenêtre que le
+//! contenu. La géométrie (`rearrange` des groupes, tailles de panel
+//! par `PanelSize`, `ctab_h`, troncatures de labels) est **verbatim**.
+//!
+//! Correspondances :
+//! - `CustGroupHorizontal`/`CustGroupVertical::rearrange` →
+//!   [`Group::rearrange`] / [`Ui::rearrange`]
+//! - `CustInput`/`TipWinInput` → [`LineInput`]
+//! - `CustProgressBox` → [`WId::PageProg`]/[`WId::ImgProg`]
+//! - `CustTabs`/`CustTabButton`/`Fl_Wizard`/`Fl_Pack`/`Fl_Scroll`
+//!   → [`Tabs`]/[`TabBtn`]
+//! - `UI::handle` (FL_SHORTCUT) → [`ui_shortcut`]
+//! - `UI` (par onglet) → [`Ui`] ; l'ensemble des fenêtres et l'impl
+//!   [`UiShell`] → [`Chrome`].
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::if_not_else)]
+#![allow(clippy::many_single_char_names)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::unused_self)]
+#![forbid(unsafe_code)]
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use dillo_common::utf8::end_of_char;
+use dillo_dw::layout::Layout;
+use dillo_dw::platform::Platform;
+use dillo_net::url::DilloUrl;
+use dillo_platform::platform::SkiaPlatform;
+use dillo_platform::view::{SharedView, SkiaView};
+
+use crate::bw::BwRegistry;
+use crate::keys::KeysCommand;
+use crate::nav::{NavOp, NavSched};
+use crate::prefs::{PanelSize, Prefs};
+use crate::uicmd::{UiButton, UiCmd, UiShell};
+
+// -- constantes verbatim ----------------------------------------------------
+
+/// `UI_MIN_W`/`UI_MIN_H` (`ui.hh`) — taille de construction confortable.
+pub const UI_MIN_W: i32 = 600;
+/// `UI_MIN_H`.
+pub const UI_MIN_H: i32 = 200;
+/// `DEFAULT_TAB_LABEL` (`uicmd.cc`).
+pub const DEFAULT_TAB_LABEL: &str = "-.new.-";
+/// `SCROLLBAR_THICKNESS` de la plateforme (ré-export sémantique).
+pub use dillo_platform::view::SCROLLBAR_THICKNESS;
+
+/// Fond FLTK par défaut quand `ui_main_bg_color == -1`
+/// (`Fl::get_system_colors` : `#C0C0C0` X11, `#F0F0F0` Windows —
+/// verbatim par plateforme).
+#[cfg(windows)]
+pub const FL_BG_DEFAULT: i32 = 0x00f0_f0f0;
+/// `FL_BG_DEFAULT` hors Windows (`#C0C0C0`).
+#[cfg(not(windows))]
+pub const FL_BG_DEFAULT: i32 = 0x00c0_c0c0;
+
+/// `UIPanelmode` (`ui.hh`) — `Normal` est compatible `false`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum UiPanelMode {
+    /// `UI_NORMAL`.
+    #[default]
+    Normal = 0,
+    /// `UI_HIDDEN`.
+    Hidden = 1,
+}
+
+// -- XPM --------------------------------------------------------------------
+
+/// Icône décodée (RGBA non prémultiplié, `None` → `a = 0`).
+#[derive(Clone)]
+pub struct Icon {
+    /// Largeur.
+    pub w: u32,
+    /// Hauteur.
+    pub h: u32,
+    /// Pixels `0xAARRGGBB`.
+    pub data: Vec<u32>,
+}
+
+/// Décodeur XPM (`static const char *const *_xpm[]`) — header
+/// `w h ncolors cpp`, table `c c #rrggbb`/`None`, puis pixels.
+#[must_use]
+pub fn xpm_decode(lines: &[&str]) -> Option<Icon> {
+    let hdr: Vec<&str> = lines.first()?.split_whitespace().collect();
+    if hdr.len() < 4 {
+        return None;
+    }
+    let (w, h, ncol, cpp) = (
+        hdr[0].parse::<u32>().ok()?,
+        hdr[1].parse::<u32>().ok()?,
+        hdr[2].parse::<usize>().ok()?,
+        hdr[3].parse::<usize>().ok()?,
+    );
+    let mut cmap: HashMap<&str, u32> = HashMap::new();
+    for l in lines.iter().skip(1).take(ncol) {
+        if l.len() < cpp {
+            return None;
+        }
+        let (key, rest) = l.split_at(cpp);
+        // " c #RRGGBB" ou " c None" (le `c` peut être `s`/`m` — on
+        // prend la définition `c` si présente, sinon la ligne telle
+        // quelle comme amont lit `c`).
+        let toks: Vec<&str> = rest.split_whitespace().collect();
+        let mut val = 0x0000_0000u32; // `None` → transparent
+        let mut i = 0;
+        while i + 1 < toks.len() {
+            if toks[i] == "c" {
+                let t = toks[i + 1];
+                if !t.eq_ignore_ascii_case("none") {
+                    let hex = t.trim_start_matches('#');
+                    val = 0xff00_0000 | u32::from_str_radix(hex, 16).ok()?;
+                }
+                break;
+            }
+            i += 1;
+        }
+        cmap.insert(key, val);
+    }
+    let mut data = Vec::with_capacity((w * h) as usize);
+    for l in lines.iter().skip(1 + ncol).take(h as usize) {
+        if l.len() < cpp * w as usize {
+            return None;
+        }
+        for x in 0..w as usize {
+            let key = &l[x * cpp..(x + 1) * cpp];
+            data.push(*cmap.get(key).unwrap_or(&0));
+        }
+    }
+    Some(Icon { w, h, data })
+}
+
+/// `Fl_Image::desaturate` — moyenne des canaux → gris.
+fn desaturate(px: u32) -> u32 {
+    let a = px & 0xff00_0000;
+    let r = (px >> 16) & 0xff;
+    let g = (px >> 8) & 0xff;
+    let b = px & 0xff;
+    let v = (r + g + b) / 3;
+    a | (v << 16) | (v << 8) | v
+}
+
+/// `Fl_Image::color_average(c, 0.14)` — blend vers `c` avec poids w.
+fn color_average(px: u32, c: u32, w: f32) -> u32 {
+    let a = px & 0xff00_0000;
+    let mix =
+        |p: u32, q: u32| -> u32 { (((p as f32) * (1.0 - w)) + ((q as f32) * w)).round() as u32 };
+    let r = mix((px >> 16) & 0xff, (c >> 16) & 0xff);
+    let g = mix((px >> 8) & 0xff, (c >> 8) & 0xff);
+    let b = mix(px & 0xff, c & 0xff);
+    a | (r << 16) | (g << 8) | b
+}
+
+/// `iconset` (`ui.cc`) — jeux standard et small ; `*In` dérivés
+/// (`copy` + `desaturate` + `color_average(bg, .14)` verbatim).
+pub struct IconSet {
+    /// Images indexées par [`IconKind`].
+    pub imgs: Vec<Option<Icon>>,
+    /// Arrière-plan de référence pour `color_average`.
+    pub bg: u32,
+}
+
+/// Identifiants d'icônes (champs `iconset` amont).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IconKind {
+    /// `ImgMeterOK`.
+    MeterOk = 0,
+    /// `ImgMeterBug`.
+    MeterBug,
+    /// `ImgHome`.
+    Home,
+    /// `ImgReload`.
+    Reload,
+    /// `ImgSave`.
+    Save,
+    /// `ImgBook`.
+    Book,
+    /// `ImgTools`,
+    Tools,
+    /// `ImgClear`.
+    Clear,
+    /// `ImgSearch`.
+    Search,
+    /// `ImgHelp`.
+    Help,
+    /// `ImgLeft`.
+    Left,
+    /// `ImgLeftIn` (désaturé).
+    LeftIn,
+    /// `ImgRight`.
+    Right,
+    /// `ImgRightIn`.
+    RightIn,
+    /// `ImgStop`.
+    Stop,
+    /// `ImgStopIn`.
+    StopIn,
+}
+
+impl IconSet {
+    /// `standard_icons`/`small_icons` (`ui.cc:42-83`) ; `bg` = couleur
+    /// `FL_BACKGROUND_COLOR` résolue (prefs `ui_main_bg_color` ou
+    /// défaut plateforme) pour le `color_average` des `*In`.
+    #[must_use]
+    pub fn new(small: bool, bg: u32) -> Self {
+        use dillo_platform::pixmaps as px;
+        let mut v: Vec<Option<Icon>> = vec![None; 16];
+        let mut put = |k: IconKind, data: &[&str]| {
+            v[k as usize] = xpm_decode(data);
+        };
+        put(IconKind::MeterOk, px::MINI_OK_XPM);
+        put(IconKind::MeterBug, px::MINI_BUG_XPM);
+        if small {
+            put(IconKind::Home, px::HOME_S_XPM);
+            put(IconKind::Reload, px::RELOAD_S_XPM);
+            put(IconKind::Save, px::SAVE_S_XPM);
+            put(IconKind::Book, px::BM_S_XPM);
+            put(IconKind::Tools, px::TOOLS_S_XPM);
+            put(IconKind::Left, px::LEFT_S_XPM);
+            put(IconKind::Right, px::RIGHT_S_XPM);
+            put(IconKind::Stop, px::STOP_S_XPM);
+        } else {
+            put(IconKind::Home, px::HOME_XPM);
+            put(IconKind::Reload, px::RELOAD_XPM);
+            put(IconKind::Save, px::SAVE_XPM);
+            put(IconKind::Book, px::BM_XPM);
+            put(IconKind::Tools, px::TOOLS_XPM);
+            put(IconKind::Left, px::LEFT_XPM);
+            put(IconKind::Right, px::RIGHT_XPM);
+            put(IconKind::Stop, px::STOP_XPM);
+        }
+        put(IconKind::Clear, px::NEW_S_XPM);
+        put(IconKind::Search, px::SEARCH_XPM);
+        put(IconKind::Help, px::HELP_XPM);
+        // *In : copy + desaturate + color_average (verbatim
+        // make_toolbar — pas les *_i_xpm embarqués).
+        for (k, kin) in [
+            (IconKind::Left, IconKind::LeftIn),
+            (IconKind::Right, IconKind::RightIn),
+            (IconKind::Stop, IconKind::StopIn),
+        ] {
+            if let Some(src) = &v[k as usize] {
+                let mut icn = src.clone();
+                for p in &mut icn.data {
+                    *p = color_average(desaturate(*p), bg, 0.14);
+                }
+                v[kin as usize] = Some(icn);
+            }
+        }
+        IconSet { imgs: v, bg }
+    }
+}
+
+// -- géométrie ----------------------------------------------------------------
+
+/// Rectangle entier (`x, y, w, h` ≙ `Fl_Widget`).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Rect {
+    /// `x()`.
+    pub x: i32,
+    /// `y()`.
+    pub y: i32,
+    /// `w()`.
+    pub w: i32,
+    /// `h()`.
+    pub h: i32,
+}
+
+impl Rect {
+    /// `(x, y)` ∈ rect.
+    #[must_use]
+    pub fn contains(&self, px: i32, py: i32) -> bool {
+        px >= self.x && py >= self.y && px < self.x + self.w && py < self.y + self.h
+    }
+}
+
+/// Identifiant de widget logique du chrome (≙ pointeur `Fl_Widget*`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WId {
+    /// Bouton de barre d'outils (`b1_cb`, codes `UI_*`).
+    Btn(UiButton),
+    /// `FileButton` (`filemenu_cb`).
+    FileMenu,
+    /// `Clear` (`CustPasteButton` — `clear_cb` + paste).
+    Clear,
+    /// `Search` (`search_cb`).
+    Search,
+    /// `Help` (`help_cb`).
+    Help,
+    /// `Location` (`CustInput` — `location_cb`).
+    Location,
+    /// `PProg`/`IProg` (`CustProgressBox`).
+    PageProg,
+    /// `IProg`.
+    ImgProg,
+    /// `StatusOutput` (`Fl_Output`).
+    StatusOut,
+    /// `BugMeter` (`bugmeter_cb`).
+    BugMeter,
+    /// Espaceur `Fl_Box` (resizable amont) / `LocationGroup`.
+    Spacer,
+}
+
+/// Widget logique (rect + visibilité + état + label/icône).
+#[derive(Clone)]
+pub struct WItem {
+    /// Identifiant.
+    pub id: WId,
+    /// Géométrie.
+    pub rect: Rect,
+    /// `visible()` amont.
+    pub visible: bool,
+    /// `active()` amont (sensibilité).
+    pub active: bool,
+    /// `label()` / `copy_label`.
+    pub label: String,
+    /// `set_tooltip` (affichage = tipwin, chrome-3).
+    pub tooltip: &'static str,
+    /// `image()` — icône.
+    pub icon: Option<Icon>,
+    /// `deimage()` — icône inactive.
+    pub deicon: Option<Icon>,
+    /// `value()` pressé (`FL_THIN_DOWN_FRAME` amont).
+    pub down: bool,
+}
+
+impl WItem {
+    fn new(id: WId, x: i32, w: i32, h: i32) -> Self {
+        WItem {
+            id,
+            rect: Rect { x, y: 0, w, h },
+            visible: true,
+            active: true,
+            label: String::new(),
+            tooltip: "",
+            icon: None,
+            deicon: None,
+            down: false,
+        }
+    }
+}
+
+/// Groupe horizontal (`CustGroupHorizontal`) — enfants ordonnés +
+/// `resizable` (index). La version verticale est [`Ui::rearrange`].
+#[derive(Default)]
+pub struct Group {
+    /// Rect du groupe.
+    pub rect: Rect,
+    /// Enfants (ordre = ordre `Fl_Group`).
+    pub children: Vec<WItem>,
+    /// Index de l'enfant `resizable` (reçoit l'espace restant).
+    pub resizable: Option<usize>,
+}
+
+impl Group {
+    /// `CustGroupHorizontal::rearrange` verbatim : chaque enfant prend
+    /// sa `w`, le resizable `w - sum` des visibles (0 + plus de
+    /// resizable si débordement).
+    pub fn rearrange(&mut self) {
+        let mut sum = 0;
+        for (i, c) in self.children.iter().enumerate() {
+            if Some(i) != self.resizable && c.visible {
+                sum += c.rect.w;
+            }
+        }
+        let mut x = self.rect.x;
+        let mut drop_resizable = false;
+        for (i, c) in self.children.iter_mut().enumerate() {
+            if Some(i) == self.resizable {
+                if self.rect.w > sum {
+                    c.rect = Rect {
+                        x,
+                        y: self.rect.y,
+                        w: self.rect.w - sum,
+                        h: self.rect.h,
+                    };
+                } else {
+                    /* widgets overflow width */
+                    c.rect = Rect {
+                        x,
+                        y: self.rect.y,
+                        w: 0,
+                        h: self.rect.h,
+                    };
+                    drop_resizable = true;
+                }
+            } else {
+                c.rect = Rect {
+                    x,
+                    y: self.rect.y,
+                    w: c.rect.w,
+                    h: self.rect.h,
+                };
+            }
+            if c.visible {
+                x += c.rect.w;
+            }
+        }
+        if drop_resizable {
+            self.resizable = None;
+        }
+    }
+
+    /// Hit-test (visible uniquement).
+    #[must_use]
+    pub fn widget_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.children
+            .iter()
+            .position(|c| c.visible && c.rect.contains(x, y))
+    }
+
+    /// Premier enfant de l'id donné.
+    #[must_use]
+    pub fn find(&self, id: WId) -> Option<usize> {
+        self.children.iter().position(|c| c.id == id)
+    }
+}
+
+// -- `CustInput`/`TipWinInput` → `LineInput` -----------------------------------
+
+/// Champ texte mono-ligne (`Fl_Input` sous-ensemble verbatim utilisé
+/// par `ui.cc` : `value`, `size`, `position`/`d_position`, `cut`).
+#[derive(Default)]
+pub struct LineInput {
+    /// `value()` — contenu UTF-8.
+    pub text: String,
+    /// `insert_position()` — curseur (en octets).
+    pub pos: usize,
+    /// `mark()` — autre extrémité de la sélection.
+    pub mark: usize,
+}
+
+impl LineInput {
+    /// `size()` amont.
+    #[must_use]
+    pub fn size(&self) -> usize {
+        self.text.len()
+    }
+
+    /// `value(s)` — remplace tout ; curseur au début (amont le pose
+    /// à `strlen` si focusé — géré par l'appelant [`Ui::set_location`]).
+    pub fn set_value(&mut self, s: &str) {
+        self.text = s.to_string();
+        self.pos = self.text.len();
+        self.mark = self.pos;
+    }
+
+    /// `d_position(p)` / `d_position(p,m)` — borne à `size` et à une
+    /// frontière UTF-8 (l'input FLTK borne au buffer).
+    pub fn set_position(&mut self, p: usize, m: usize) {
+        self.pos = clamp_boundary(&self.text, p);
+        self.mark = clamp_boundary(&self.text, m);
+    }
+
+    /// `cut(f,t)` — retire `[f,t)` et pose le curseur à `f`.
+    pub fn cut(&mut self, f: usize, t: usize) {
+        let (f, t) = (clamp_boundary(&self.text, f), clamp_boundary(&self.text, t));
+        if f < t {
+            self.text.replace_range(f..t, "");
+        }
+        self.set_position(f, f);
+    }
+
+    /// `insert(text)` — remplace la sélection ou insère au curseur.
+    pub fn insert(&mut self, s: &str) {
+        let (a, b) = if self.pos <= self.mark {
+            (self.pos, self.mark)
+        } else {
+            (self.mark, self.pos)
+        };
+        self.text.replace_range(a..b, s);
+        let p = a + s.len();
+        self.set_position(p, p);
+    }
+
+    /// `position(size(), 0)` — tout sélectionné (verbatim `Ctrl+A/L`
+    /// et `focus_location`/`set_location`).
+    pub fn select_all(&mut self) {
+        self.set_position(self.size(), 0);
+    }
+
+    /// Texte sélectionné (`pos..mark` ordonné).
+    #[must_use]
+    pub fn selection(&self) -> &str {
+        let (a, b) = if self.pos <= self.mark {
+            (self.pos, self.mark)
+        } else {
+            (self.mark, self.pos)
+        };
+        &self.text[a..b]
+    }
+}
+
+/// Borne `p` à `len` puis recule jusqu'à une frontière UTF-8.
+fn clamp_boundary(s: &str, p: usize) -> usize {
+    let mut p = p.min(s.len());
+    while p > 0 && !s.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
+/// Édition par touche (`Fl_Input::handle` sous-ensemble : flèches,
+/// Home/End, Backspace/Delete, Ctrl+C/X/V ≙ `kf_copy/cut/paste`,
+/// Ctrl+J/U/W omis — non utilisés par `ui.cc`). `text` = insertion.
+/// Retourne `true` si consommé.
+pub fn line_input_key(
+    input: &mut LineInput,
+    keysym: i32,
+    text: Option<&str>,
+    shift: bool,
+    ctrl: bool,
+    copy: &mut dyn FnMut(&str),
+    paste: &mut dyn FnMut() -> Option<String>,
+) -> bool {
+    use crate::keys::keysym;
+    if ctrl {
+        match keysym {
+            // CustInput intercepte Ctrl+A/L avant ici (sélection).
+            b if b == 'c' as i32 || b == 'x' as i32 => {
+                let sel = input.selection().to_string();
+                if !sel.is_empty() {
+                    copy(&sel);
+                    if b == 'x' as i32 {
+                        let (a, z) = (input.pos.min(input.mark), input.pos.max(input.mark));
+                        input.cut(a, z);
+                    }
+                }
+                return true;
+            }
+            b if b == 'v' as i32 => {
+                if let Some(t) = paste() {
+                    input.insert(&t);
+                }
+                return true;
+            }
+            _ => return false,
+        }
+    }
+    match keysym {
+        keysym::LEFT => {
+            let p = prev_boundary(&input.text, input.pos);
+            input.set_position(p, if shift { input.mark } else { p });
+            true
+        }
+        keysym::RIGHT => {
+            let p = next_boundary(&input.text, input.pos);
+            input.set_position(p, if shift { input.mark } else { p });
+            true
+        }
+        keysym::HOME => {
+            input.set_position(0, if shift { input.mark } else { 0 });
+            true
+        }
+        keysym::END => {
+            let n = input.size();
+            input.set_position(n, if shift { input.mark } else { n });
+            true
+        }
+        keysym::BACKSPACE => {
+            if input.pos != input.mark {
+                let (a, b) = (input.pos.min(input.mark), input.pos.max(input.mark));
+                input.cut(a, b);
+            } else if input.pos > 0 {
+                let f = prev_boundary(&input.text, input.pos);
+                input.cut(f, input.pos);
+            }
+            true
+        }
+        keysym::DELETE => {
+            if input.pos != input.mark {
+                let (a, b) = (input.pos.min(input.mark), input.pos.max(input.mark));
+                input.cut(a, b);
+            } else if input.pos < input.size() {
+                let t = next_boundary(&input.text, input.pos);
+                input.cut(input.pos, t);
+            }
+            true
+        }
+        _ => {
+            if let Some(t) = text {
+                if !t.is_empty() {
+                    input.insert(t);
+                    return true;
+                }
+            }
+            false
+        }
+    }
+}
+
+fn prev_boundary(s: &str, p: usize) -> usize {
+    let mut p = p.min(s.len()).saturating_sub(1);
+    while p > 0 && !s.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
+fn next_boundary(s: &str, p: usize) -> usize {
+    let mut p = (p.min(s.len()) + 1).min(s.len());
+    while p < s.len() && !s.is_char_boundary(p) {
+        p += 1;
+    }
+    p
+}
+
+// -- `UI` ---------------------------------------------------------------------
+
+/// État de focus (`Main` ≙ viewport / `Location` ≙ `CustInput`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Focus {
+    /// `Main->take_focus()`.
+    #[default]
+    Main,
+    /// `Location->take_focus()`.
+    Location,
+}
+
+/// `UI` amont (par onglet) — modèle logique complet du chrome.
+pub struct Ui {
+    /// Rect de l'onglet (`UI` hérite `CustGroupVertical`).
+    pub rect: Rect,
+    /// `LocBar` (panel non-tiny).
+    pub loc_bar: Option<Group>,
+    /// `NavBar`.
+    pub nav_bar: Option<Group>,
+    /// `StatusBar` ([`WId::StatusOut`] + [`WId::BugMeter`]).
+    pub status_bar: Group,
+    /// `Main` (zone rendue — le `SkiaView` de l'onglet est blitté là).
+    pub main: Rect,
+    /// `FindBar` rect + visibilité (`fh` hauteur quand visible).
+    pub findbar: Rect,
+    /// `FindBar->visible()`.
+    pub findbar_visible: bool,
+    /// `Location` input (état texte/curseur).
+    pub location: LineInput,
+    /// `LocationGroup` rect (input + marge `CustInput`).
+    pub location_group: Rect,
+    /// Texte `Main` (label "Welcome…" ≙ groupe placeholder).
+    pub main_label: String,
+    /// Focus courant.
+    pub focus: Focus,
+    /// Rects de la fenêtre d'appartenance (≙ `w()` du groupe).
+    pub win_w: i32,
+    /// `h()` groupe (pour `rearrange`).
+    pub win_h: i32,
+    // -- vars verbatim `ui.hh` --
+    /// `PanelSize` (`P_tiny`/`P_small`/`P_medium`).
+    pub panel_size: i32,
+    /// `Small_Icons`.
+    pub small_icons: bool,
+    /// `Panelmode`.
+    pub panel_mode: UiPanelMode,
+    /// `PanelTemporary` (`focus_location` sous panel caché).
+    pub panel_temporary: bool,
+    /// `bw`/`bh` — taille boutons.
+    pub bw: i32,
+    /// `bh`.
+    pub bh: i32,
+    /// `mh` — hauteur barre de menu (0 amont).
+    pub mh: i32,
+    /// `lh` — hauteur barre location.
+    pub lh: i32,
+    /// `nh` — hauteur NavBar.
+    pub nh: i32,
+    /// `fh` — hauteur findbar (28 verbatim).
+    pub fh: i32,
+    /// `sh` — hauteur status bar (20 verbatim).
+    pub sh: i32,
+    /// `pw` — largeur progress boxes (70 verbatim).
+    pub pw: i32,
+    /// `lbl` — labels sous les boutons.
+    pub lbl: i32,
+    /// Curseur de construction `p_xpos`.
+    pub p_xpos: i32,
+    /// `p_ypos`.
+    pub p_ypos: i32,
+    /// Vue de l'onglet (back-buffer propre ≙ `FltkViewport` par tab —
+    /// seul le pixmap de l'onglet actif est présenté).
+    pub view: Rc<RefCell<SkiaView>>,
+    /// `Location` textsize (`rint(14*font_factor)`).
+    pub loc_font_px: i32,
+}
+
+impl Ui {
+    /// `UI::UI` (verbatim) — construction complète d'un chrome
+    /// d'onglet : panel, Main, FindBar, StatusBar, `customize`,
+    /// `panels_toggle` si `UI_HIDDEN` (`fullwindow_start`).
+    pub fn new(
+        platform: &Rc<RefCell<SkiaPlatform>>,
+        prefs: &Prefs,
+        ui_w: i32,
+        ui_h: i32,
+        cur_ui: Option<&Ui>,
+    ) -> Self {
+        let mut ui = Ui {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: ui_w,
+                h: ui_h,
+            },
+            loc_bar: None,
+            nav_bar: None,
+            status_bar: Group::default(),
+            main: Rect::default(),
+            findbar: Rect::default(),
+            findbar_visible: false,
+            location: LineInput::default(),
+            location_group: Rect::default(),
+            main_label: String::new(),
+            focus: Focus::Main,
+            win_w: ui_w,
+            win_h: ui_h,
+            panel_size: 0,
+            small_icons: false,
+            panel_mode: UiPanelMode::Normal,
+            panel_temporary: false,
+            bw: 0,
+            bh: 0,
+            mh: 0,
+            lh: 0,
+            nh: 0,
+            fh: 0,
+            sh: 0,
+            pw: 0,
+            lbl: 0,
+            p_xpos: 0,
+            p_ypos: 0,
+            view: Rc::new(RefCell::new(SkiaView::new(platform, 1, 1))),
+            loc_font_px: (14.0 * prefs.font_factor).round() as i32,
+        };
+        if let Some(cur) = cur_ui {
+            ui.panel_size = cur.panel_size;
+            ui.small_icons = cur.small_icons;
+            ui.panel_mode = cur.panel_mode;
+        } else {
+            // Set some default values
+            ui.panel_size = match prefs.panel_size {
+                PanelSize::Tiny => 0,
+                PanelSize::Small => 1,
+                PanelSize::Medium => 2,
+            };
+            ui.small_icons = prefs.small_icons;
+            ui.panel_mode = if prefs.fullwindow_start {
+                UiPanelMode::Hidden
+            } else {
+                UiPanelMode::Normal
+            };
+        }
+
+        // Control panel
+        ui.make_panel(ui_w, prefs);
+
+        // Render area ("Main", placeholder "Welcome..." amont —
+        // label hérité du tab button ; l'UI amont met "Welcome..." )
+        ui.main_label = "Welcome...".to_string();
+
+        // Find text bar
+        ui.findbar = Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        }; // hidden ≙ size(0,0)
+
+        // Status Panel
+        ui.make_status_bar(ui_w, ui_h);
+        ui.rearrange();
+        ui.customize(prefs);
+
+        if ui.panel_mode == UiPanelMode::Hidden {
+            ui.panels_toggle();
+        }
+        ui
+    }
+
+    /// Taille des boutons/panel (`make_panel` verbatim — métriques
+    /// par `PanelSize` × `Small_Icons` ; `nh=bh, fh=28, sh=20, pw=70`).
+    fn panel_metrics(&mut self) {
+        self.pw = 70;
+        self.p_xpos = 0;
+        self.p_ypos = 0;
+        match self.panel_size {
+            0 /* P_tiny */ => {
+                if self.small_icons {
+                    self.bw = 22; self.bh = 22; self.mh = 0; self.lh = 22; self.lbl = 0;
+                } else {
+                    self.bw = 28; self.bh = 28; self.mh = 0; self.lh = 28; self.lbl = 0;
+                }
+            }
+            1 /* P_small */ => {
+                if self.small_icons {
+                    self.bw = 20; self.bh = 20; self.mh = 0; self.lh = 20; self.lbl = 0;
+                } else {
+                    self.bw = 28; self.bh = 28; self.mh = 0; self.lh = 28; self.lbl = 0;
+                }
+            }
+            _ /* P_medium */ => {
+                if self.small_icons {
+                    self.bw = 42; self.bh = 36; self.mh = 0; self.lh = 22; self.lbl = 1;
+                } else {
+                    self.bw = 45; self.bh = 45; self.mh = 0; self.lh = 28; self.lbl = 1;
+                }
+            }
+        }
+        self.nh = self.bh;
+        self.fh = 28;
+        self.sh = 20;
+    }
+
+    /// `make_button` (verbatim) — `FL_FLAT_BOX`/`FL_THIN_DOWN_FRAME`,
+    /// labelsize 12, `clear_visible_focus`.
+    fn make_button(
+        &mut self,
+        label: &'static str,
+        icon: Option<Icon>,
+        deicon: Option<Icon>,
+        btn: UiButton,
+        tooltip: &'static str,
+        start: bool,
+    ) -> WItem {
+        if start {
+            self.p_xpos = 0;
+        }
+        let mut b = WItem::new(WId::Btn(btn), self.p_xpos, self.bw, self.bh);
+        if self.lbl != 0 {
+            b.label = label.to_string();
+        }
+        b.icon = icon;
+        b.deicon = deicon;
+        b.tooltip = tooltip;
+        self.p_xpos += self.bw;
+        b
+    }
+
+    /// `make_toolbar` (verbatim) — boutons + tooltips ; les `*In`
+    /// sont pré-calculés dans [`IconSet`].
+    fn make_toolbar(&mut self, icons: &IconSet) -> Vec<WItem> {
+        let icon = |k: IconKind| icons.imgs[k as usize].clone();
+        vec![
+            self.make_button(
+                "Back",
+                icon(IconKind::Left),
+                icon(IconKind::LeftIn),
+                UiButton::Back,
+                "Previous page",
+                true,
+            ),
+            self.make_button(
+                "Forw",
+                icon(IconKind::Right),
+                icon(IconKind::RightIn),
+                UiButton::Forw,
+                "Next page",
+                false,
+            ),
+            self.make_button(
+                "Home",
+                icon(IconKind::Home),
+                None,
+                UiButton::Home,
+                "Go to the Home page\nMiddle-click for new tab.",
+                false,
+            ),
+            self.make_button(
+                "Reload",
+                icon(IconKind::Reload),
+                None,
+                UiButton::Reload,
+                "Reload",
+                false,
+            ),
+            self.make_button(
+                "Save",
+                icon(IconKind::Save),
+                None,
+                UiButton::Save,
+                "Save this page",
+                false,
+            ),
+            self.make_button(
+                "Stop",
+                icon(IconKind::Stop),
+                icon(IconKind::StopIn),
+                UiButton::Stop,
+                "Stop loading",
+                false,
+            ),
+            self.make_button(
+                "Book",
+                icon(IconKind::Book),
+                None,
+                UiButton::Book,
+                "View bookmarks\nMiddle-click for new tab.",
+                false,
+            ),
+            self.make_button(
+                "Tools",
+                icon(IconKind::Tools),
+                None,
+                UiButton::Tools,
+                "Settings",
+                false,
+            ),
+        ]
+    }
+
+    /// `make_filemenu_button` (verbatim) — `&F` (tiny) ou `&File`,
+    /// `w = texte + padding(=largeur "W")`, caché si `!show_filemenu`.
+    fn make_filemenu_button(&mut self, text_w: impl Fn(&str) -> i32) -> WItem {
+        // "W" mesuré ≙ padding ; label affiché sans le `&` amont
+        // (mnemonic — notre chrome n'a pas de mnemonic underline).
+        let padding = text_w("W");
+        let label = if self.panel_size == 0 { "&F" } else { "&File" };
+        let shown = label.trim_start_matches('&');
+        let w = text_w(shown) + padding;
+        let h = if self.panel_size == 0 {
+            self.bh
+        } else {
+            self.lh
+        };
+        let mut b = WItem::new(WId::FileMenu, self.p_xpos, w, h);
+        b.label = shown.to_string();
+        b.tooltip = "File menu";
+        self.p_xpos += w;
+        b
+    }
+
+    /// `make_location` (verbatim) — Clear(16) + LocationGroup + input
+    /// (`ww-p_xpos-32`) + Search(16) + Help(16).
+    fn make_location(&mut self, icons: &IconSet, ww: i32) -> Vec<WItem> {
+        let icon = |k: IconKind| icons.imgs[k as usize].clone();
+        let mut v = Vec::new();
+        let mut b = WItem::new(WId::Clear, self.p_xpos, 16, self.lh);
+        b.icon = icon(IconKind::Clear);
+        b.tooltip = "Clear the URL box.\nMiddle-click to paste a URL.";
+        self.p_xpos += 16;
+        v.push(b);
+        // LocationGroup (resizable) — l'input CustInput y vit avec
+        // marge 3 (`DILLO_INPUTBOX` ≙ dx+3/dw+3).
+        let lw = ww - self.p_xpos - 32;
+        let mut g = WItem::new(WId::Location, self.p_xpos, lw, self.lh);
+        g.tooltip = "Location";
+        self.location_group = Rect {
+            x: self.p_xpos,
+            y: 0,
+            w: lw,
+            h: self.lh,
+        };
+        self.p_xpos += lw;
+        v.push(g);
+        let mut s = WItem::new(WId::Search, self.p_xpos, 16, self.lh);
+        s.icon = icon(IconKind::Search);
+        s.tooltip = "Search the Web";
+        self.p_xpos += 16;
+        v.push(s);
+        let mut h = WItem::new(WId::Help, self.p_xpos, 16, self.lh);
+        h.icon = icon(IconKind::Help);
+        h.tooltip = "Help";
+        self.p_xpos += 16;
+        v.push(h);
+        v
+    }
+
+    /// `make_progress_bars` (verbatim) — `pw` chacun, `wide` → labels
+    /// "Images\n0 of 0"/"Page\n0.0 KB", `thin_up` → fine bordure.
+    fn make_progress_bars(&mut self, wide: bool) -> Vec<WItem> {
+        let mut v = Vec::new();
+        let mut i = WItem::new(WId::ImgProg, self.p_xpos, self.pw, self.bh);
+        i.label = if wide {
+            "Images\n0 of 0".into()
+        } else {
+            "0 of 0".into()
+        };
+        self.p_xpos += self.pw;
+        v.push(i);
+        let mut p = WItem::new(WId::PageProg, self.p_xpos, self.pw, self.bh);
+        p.label = if wide {
+            "Page\n0.0 KB".into()
+        } else {
+            "0.0 KB".into()
+        };
+        v.push(p);
+        v
+    }
+
+    /// `make_panel` (verbatim) — ordre des enfants et `resizable`.
+    pub fn make_panel(&mut self, ww: i32, prefs: &Prefs) {
+        let bg = if prefs.ui_main_bg_color != -1 {
+            prefs.ui_main_bg_color as u32
+        } else {
+            FL_BG_DEFAULT as u32
+        };
+        let icons = IconSet::new(self.small_icons, bg);
+        self.panel_metrics();
+
+        if self.panel_size == 0
+        /* P_tiny */
+        {
+            let mut nav = Group {
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: ww,
+                    h: self.nh,
+                },
+                children: Vec::new(),
+                resizable: None,
+            };
+            nav.children.extend(self.make_toolbar(&icons));
+            nav.children
+                .push(self.make_filemenu_button(|s| text_w(s, 12)));
+            // resizable = LocationGroup (2e enfant de make_location,
+            // après Clear — verbatim `resizable(LocationGroup)`).
+            let loc_idx = nav.children.len();
+            nav.children.extend(self.make_location(&icons, ww));
+            nav.resizable = Some(loc_idx + 1);
+            nav.children.extend(self.make_progress_bars(false));
+            nav.rearrange();
+            self.nav_bar = Some(nav);
+            self.loc_bar = None;
+        } else {
+            // Location
+            let mut loc = Group {
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: ww,
+                    h: self.lh,
+                },
+                children: Vec::new(),
+                resizable: None,
+            };
+            self.p_xpos = 0;
+            loc.children
+                .push(self.make_filemenu_button(|s| text_w(s, 12)));
+            let loc_idx = loc.children.len();
+            loc.children.extend(self.make_location(&icons, ww));
+            loc.resizable = Some(loc_idx + 1);
+            loc.rearrange();
+            self.loc_bar = Some(loc);
+
+            // Toolbar
+            self.p_xpos = 0;
+            self.p_ypos = 0;
+            let mut nav = Group {
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: ww,
+                    h: self.bh,
+                },
+                children: Vec::new(),
+                resizable: None,
+            };
+            nav.children.extend(self.make_toolbar(&icons));
+            // spacer resizable (Fl_Box amont)
+            let sp_idx = nav.children.len();
+            let mut sp = WItem::new(
+                WId::Spacer,
+                self.p_xpos,
+                ww - self.p_xpos - 2 * self.pw,
+                self.bh,
+            );
+            sp.label = String::new();
+            nav.children.push(sp);
+            nav.resizable = Some(sp_idx);
+            self.p_xpos = ww - 2 * self.pw;
+            nav.children
+                .extend(self.make_progress_bars(self.panel_size != 1));
+            nav.rearrange();
+            self.nav_bar = Some(nav);
+        }
+    }
+
+    /// `make_status_bar` (verbatim) — `StatusOutput` (resizable,
+    /// `ww-20`) + `BugMeter` (20).
+    fn make_status_bar(&mut self, ww: i32, wh: i32) {
+        let bm_w = 20;
+        let mut sb = Group {
+            rect: Rect {
+                x: 0,
+                y: wh - self.sh,
+                w: ww,
+                h: self.sh,
+            },
+            children: Vec::new(),
+            resizable: None,
+        };
+        let mut st = WItem::new(WId::StatusOut, 0, ww - bm_w, self.sh);
+        st.label = "https://dillo-browser.org/".to_string();
+        sb.children.push(st);
+        sb.resizable = Some(0);
+        let mut bug = WItem::new(WId::BugMeter, ww - bm_w, bm_w, self.sh);
+        bug.tooltip = "Show HTML bugs\n(right-click for menu)";
+        sb.children.push(bug);
+        sb.rearrange();
+        self.status_bar = sb;
+    }
+
+    /// `CustGroupVertical::rearrange` verbatim — ordre TopGroup :
+    /// `LocBar`?, `NavBar`?, `Main`, `FindBar`, `StatusBar` ; le
+    /// resizable (`Main`) reçoit l'espace restant.
+    pub fn rearrange(&mut self) {
+        // Somme des hauteurs visibles non-resizable.
+        let mut sum = 0;
+        let loc_h = self.loc_bar.as_ref().filter(|_| true).map_or(0, |b| {
+            if b.children.iter().any(|c| c.visible) && b.rect.h > 0 {
+                b.rect.h
+            } else {
+                0
+            }
+        });
+        // `LocBar`/`NavBar`/`StatusBar`/`FindBar` comptent si «visibles»
+        // — chez nous : barre présente = visible (hide → h=0 posée par
+        // `panels_toggle`/`findbar_toggle`, verbatim STR#2639).
+        let bars = [
+            self.loc_bar.as_ref().map_or(0, |b| b.rect.h),
+            self.nav_bar.as_ref().map_or(0, |b| b.rect.h),
+            if self.findbar_visible { self.fh } else { 0 },
+            if self.status_bar.rect.h > 0 {
+                self.status_bar.rect.h
+            } else {
+                0
+            },
+        ];
+        let _ = loc_h;
+        for h in bars {
+            sum += h;
+        }
+
+        let mut y = self.rect.y;
+        if let Some(loc) = &mut self.loc_bar {
+            let h = loc.rect.h;
+            loc.rect.y = y;
+            loc.rect.x = self.rect.x;
+            loc.rect.w = self.rect.w;
+            loc.rearrange();
+            if h > 0 {
+                y += h;
+            }
+        }
+        if let Some(nav) = &mut self.nav_bar {
+            let h = nav.rect.h;
+            nav.rect.y = y;
+            nav.rect.x = self.rect.x;
+            nav.rect.w = self.rect.w;
+            nav.rearrange();
+            if h > 0 {
+                y += h;
+            }
+        }
+        // Main (resizable)
+        let main_h = self.rect.h - sum;
+        self.main = Rect {
+            x: self.rect.x,
+            y,
+            w: self.rect.w,
+            h: main_h.max(0),
+        };
+        y += main_h.max(0);
+        // FindBar
+        if self.findbar_visible {
+            self.findbar = Rect {
+                x: self.rect.x,
+                y,
+                w: self.rect.w,
+                h: self.fh,
+            };
+            y += self.fh;
+        } else {
+            self.findbar = Rect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+            };
+        }
+        // StatusBar
+        self.status_bar.rect.y = y;
+        self.status_bar.rect.x = self.rect.x;
+        self.status_bar.rect.w = self.rect.w;
+        if self.status_bar.rect.h > 0 {
+            self.status_bar.rearrange();
+        }
+    }
+
+    /// `UI::set_render_layout` (verbatim) — `Main` = viewport ; chez
+    /// nous la vue reste attachée, on re-synchronise juste la géométrie
+    /// (`nw->resize(0,Main->y(),Main->w(),Main->h())` amont).
+    pub fn set_main_rect(&mut self) {
+        let (w, h) = (self.main.w.max(1), self.main.h.max(1));
+        self.view.borrow_mut().resize(w as u32, h as u32);
+    }
+
+    /// `UI::get_location`.
+    #[must_use]
+    pub fn get_location(&self) -> String {
+        self.location.text.clone()
+    }
+
+    /// `UI::set_location` (verbatim) — `value(str)` ; curseur à la fin
+    /// si l'input a le focus, 0 sinon.
+    pub fn set_location(&mut self, s: &str) {
+        self.location.set_value(s);
+        let p = if self.focus == Focus::Location {
+            self.location.size()
+        } else {
+            0
+        };
+        self.location.set_position(p, p);
+    }
+
+    /// `UI::focus_location` (verbatim) — si panel caché :
+    /// `panels_toggle` + `temporaryPanels(true)` ; sélection totale.
+    pub fn focus_location(&mut self) {
+        if self.panel_mode == UiPanelMode::Hidden {
+            self.panels_toggle();
+            self.panel_temporary = true;
+        }
+        self.focus = Focus::Location;
+        // Make text selected when already focused.
+        self.location.select_all();
+    }
+
+    /// `UI::focus_main`.
+    pub fn focus_main(&mut self) {
+        self.focus = Focus::Main;
+    }
+
+    /// `UI::set_status`.
+    pub fn set_status(&mut self, s: &str) {
+        if let Some(i) = self.status_bar.find(WId::StatusOut) {
+            self.status_bar.children[i].label = s.to_string();
+        }
+    }
+
+    /// `UI::set_page_prog` (verbatim) — `cmd` 0 deactivate / 1 update
+    /// ("Page\n%.1f KB" ou "%.1f KB") / 2 clear.
+    pub fn set_page_prog(&mut self, nbytes: usize, cmd: i32) {
+        let Some(i) = self.nav_bar.as_ref().and_then(|g| g.find(WId::PageProg)) else {
+            return;
+        };
+        let Some(g) = self.nav_bar.as_mut() else {
+            return;
+        };
+        let Some(w) = g.children.get_mut(i) else {
+            return;
+        };
+        if cmd == 0 {
+            w.active = false;
+            return;
+        }
+        w.active = true;
+        if cmd == 1 {
+            let (prefix, magnitude) = if nbytes >= 1024 * 1024 {
+                ('M', nbytes as f64 / (1024.0 * 1024.0))
+            } else {
+                ('K', nbytes as f64 / 1024.0)
+            };
+            w.label = format!(
+                "{}{:.1} {}B",
+                if self.panel_size == 0 { "" } else { "Page\n" },
+                magnitude,
+                prefix
+            );
+        } else if cmd == 2 {
+            w.label = String::new();
+        }
+    }
+
+    /// `UI::set_img_prog` (verbatim) — "Images\n%d of %d" / "%d of %d".
+    pub fn set_img_prog(&mut self, n_img: i32, t_img: i32, cmd: i32) {
+        let Some(i) = self.nav_bar.as_ref().and_then(|g| g.find(WId::ImgProg)) else {
+            return;
+        };
+        let Some(g) = self.nav_bar.as_mut() else {
+            return;
+        };
+        let Some(w) = g.children.get_mut(i) else {
+            return;
+        };
+        if cmd == 0 {
+            w.active = false;
+            return;
+        }
+        w.active = true;
+        if cmd == 1 {
+            w.label = format!(
+                "{}{} of {}",
+                if self.panel_size == 0 { "" } else { "Images\n" },
+                n_img,
+                t_img
+            );
+        } else if cmd == 2 {
+            w.label = String::new();
+        }
+    }
+
+    /// `UI::set_bug_prog` (verbatim) — icône OK/Bug + label `%d`,
+    /// `new_w = strlen*9 + 20`, `StatusBar->rearrange`.
+    pub fn set_bug_prog(&mut self, icons_ok: &Icon, icons_bug: &Icon, n_bug: i32) {
+        let Some(i) = self.status_bar.find(WId::BugMeter) else {
+            return;
+        };
+        let mut new_w = 20;
+        if n_bug == 0 {
+            self.status_bar.children[i].icon = Some(icons_ok.clone());
+            self.status_bar.children[i].label = String::new();
+        } else {
+            if n_bug == 1 {
+                self.status_bar.children[i].icon = Some(icons_bug.clone());
+            }
+            let str_ = format!("{n_bug}");
+            new_w = str_.len() as i32 * 9 + 20;
+            self.status_bar.children[i].label = str_;
+        }
+        self.status_bar.children[i].rect.w = new_w;
+        self.status_bar.rearrange();
+    }
+
+    /// `UI::customize` (verbatim) — `prefs.show_*` → `hide()`.
+    pub fn customize(&mut self, prefs: &Prefs) {
+        let set = |g: &mut Group, id: WId, show: bool| {
+            if let Some(i) = g.find(id) {
+                g.children[i].visible = show;
+            }
+        };
+        for g in [&mut self.loc_bar, &mut self.nav_bar].into_iter().flatten() {
+            if !prefs.show_back {
+                set(g, WId::Btn(UiButton::Back), false);
+            }
+            if !prefs.show_forw {
+                set(g, WId::Btn(UiButton::Forw), false);
+            }
+            if !prefs.show_home {
+                set(g, WId::Btn(UiButton::Home), false);
+            }
+            if !prefs.show_reload {
+                set(g, WId::Btn(UiButton::Reload), false);
+            }
+            if !prefs.show_save {
+                set(g, WId::Btn(UiButton::Save), false);
+            }
+            if !prefs.show_stop {
+                set(g, WId::Btn(UiButton::Stop), false);
+            }
+            if !prefs.show_bookmarks {
+                set(g, WId::Btn(UiButton::Book), false);
+            }
+            if !prefs.show_tools {
+                set(g, WId::Btn(UiButton::Tools), false);
+            }
+            if !prefs.show_clear_url {
+                set(g, WId::Clear, false);
+            }
+            if !prefs.show_url {
+                set(g, WId::Location, false);
+            }
+            if !prefs.show_search {
+                set(g, WId::Search, false);
+            }
+            if !prefs.show_help {
+                set(g, WId::Help, false);
+            }
+            if !prefs.show_progress_box {
+                set(g, WId::ImgProg, false);
+                set(g, WId::PageProg, false);
+            }
+        }
+        if let Some(g) = &mut self.nav_bar {
+            g.rearrange();
+        }
+        if let Some(g) = &mut self.loc_bar {
+            g.rearrange();
+        }
+    }
+
+    /// `UI::change_panel` (verbatim) — nouvelle taille d'icônes/panel
+    /// à la volée : détruit les barres, reconstruit, conserve le texte
+    /// de la location, re-focus.
+    pub fn change_panel(&mut self, prefs: &Prefs, new_size: i32, small_icons: bool) {
+        let loc_text = self.get_location();
+
+        // Remove current panel's bars
+        self.loc_bar = None;
+        self.nav_bar = None;
+
+        // Set internal vars for panel size
+        self.panel_size = new_size;
+        self.small_icons = small_icons;
+
+        // make a new panel
+        self.make_panel(self.rect.w, prefs);
+        self.customize(prefs);
+        // ≙ a_UIcmd_set_buttons_sens — fait par l'appelant (Chrome).
+
+        self.rearrange();
+        self.location.set_value(&loc_text);
+        self.focus = Focus::Location;
+    }
+
+    /// `UI::button_set_sens` (verbatim — Back/Forw/Stop seulement).
+    pub fn button_set_sens(&mut self, btn: UiButton, sens: bool) {
+        for g in [&mut self.nav_bar, &mut self.loc_bar].into_iter().flatten() {
+            if let Some(i) = g.find(WId::Btn(btn)) {
+                g.children[i].active = sens;
+            }
+        }
+    }
+
+    /// `UI::paste_url` — déclenché sur middle-click non réclamé ;
+    /// verbatim `Fl::paste(*Clear)` → sélection primaire dans Clear.
+    /// Chez nous : texte clipboard → `set_location` + `open_urlstr`
+    /// (dispatché par [`Chrome`]).
+    #[must_use]
+    pub fn wants_paste(&self) -> bool {
+        true
+    }
+
+    /// `UI::findbar_toggle` (verbatim — workaround STR#2639 : taille
+    /// 0,0 quand caché) + `findtext_reset` + `focus_main` côté appelant.
+    pub fn findbar_toggle(&mut self, add: bool) {
+        if add {
+            if !self.findbar_visible {
+                self.findbar = Rect {
+                    x: 0,
+                    y: 0,
+                    w: self.rect.w,
+                    h: self.fh,
+                };
+            }
+            self.findbar_visible = true;
+        } else {
+            // hide
+            self.findbar = Rect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+            };
+            self.findbar_visible = false;
+            // reset state + focus main — via UiCmd par Chrome.
+        }
+        self.rearrange();
+    }
+
+    /// `UI::panels_toggle` (verbatim — même workaround taille 0).
+    pub fn panels_toggle(&mut self) {
+        let hide = self.status_bar.rect.h > 0 && self.status_bar.children.iter().any(|c| c.visible);
+
+        // hide/show panels
+        if let Some(g) = &mut self.loc_bar {
+            g.rect.h = if hide { 0 } else { self.lh };
+        }
+        if let Some(g) = &mut self.nav_bar {
+            g.rect.h = if hide { 0 } else { self.nh };
+        }
+        if hide {
+            self.status_bar.rect.h = 0;
+        } else {
+            self.status_bar.rect.h = self.sh;
+            self.status_bar.rearrange();
+        }
+
+        self.rearrange();
+        self.panel_mode = if hide {
+            UiPanelMode::Hidden
+        } else {
+            UiPanelMode::Normal
+        };
+    }
+
+    /// Hit-test global du chrome (≙ sous-arbre de widgets amont).
+    /// Cherche dans LocBar/NavBar/StatusBar puis `Location`.
+    #[must_use]
+    pub fn widget_at(&self, x: i32, y: i32) -> Option<WId> {
+        for g in [&self.loc_bar, &self.nav_bar].into_iter().flatten() {
+            if let Some(i) = g.widget_at(x, y) {
+                return Some(g.children[i].id);
+            }
+        }
+        if let Some(i) = self.status_bar.widget_at(x, y) {
+            return Some(self.status_bar.children[i].id);
+        }
+        if self.location_group.contains(x, y) {
+            return Some(WId::Location);
+        }
+        None
+    }
+
+    /// Rect d'un widget (pour popup position — `wid->x(),wid->y()+h`).
+    #[must_use]
+    pub fn widget_rect(&self, id: WId) -> Option<Rect> {
+        for g in [&self.loc_bar, &self.nav_bar].into_iter().flatten() {
+            if let Some(i) = g.find(id) {
+                return Some(g.children[i].rect);
+            }
+        }
+        if let Some(i) = self.status_bar.find(id) {
+            return Some(self.status_bar.children[i].rect);
+        }
+        None
+    }
+}
+
+/// Largeur de texte chrome (cosmic-text, taille `px`, sans marge).
+/// Séparée de `Ui` pour le calcul de `make_filemenu_button` (`&File`).
+fn text_w(s: &str, px: i32) -> i32 {
+    // Approximation : 8 px/car à 12pt — le vrai `measure_label` est
+    // refait au draw (cosmic). Suffisant pour la géométrie amont.
+    (s.len() as i32) * px * 2 / 3
+}
+
+// -- `CustTabs` → `Tabs` --------------------------------------------------------
+
+/// Bouton d'onglet (`CustTabButton`) — `focus_num_` sert au choix du
+/// focus lors de la fermeture de l'onglet actif.
+pub struct TabBtn {
+    /// `ui()` — handle de l'[`Ui`] associée.
+    pub ui: usize,
+    /// `focus_num()`.
+    pub focus_num: u32,
+    /// Label affiché (tronqué `set_tab_label`).
+    pub label: String,
+    /// Largeur (`measure_label+14` ou `tab_w` initial).
+    pub w: i32,
+    /// `visible()`.
+    pub visible: bool,
+}
+
+/// `CustTabs` (verbatim `uicmd.cc`) — strip d'onglets + wizard
+/// (`active`) + scroll horizontal implicite (`scroll_x`).
+pub struct Tabs {
+    /// Fenêtre (w,h) pour les calculs de resize amont.
+    pub win_w: i32,
+    /// `h()` fenêtre.
+    pub win_h: i32,
+    /// `ctab_h` — hauteur courante du strip (`tab_h` ou 1).
+    pub ctab_h: i32,
+    /// `tab_h` (`ui_tab_height`).
+    pub tab_h: i32,
+    /// `tab_w` initial (50 verbatim).
+    pub tab_w: i32,
+    /// `btn_w` (20 verbatim).
+    pub btn_w: i32,
+    /// `ctl_w` (`1*btn_w+2` verbatim).
+    pub ctl_w: i32,
+    /// `Pack` — boutons d'onglets (ordre = ordre Wizard).
+    pub pack: Vec<TabBtn>,
+    /// `Wizard` — ui affichée (`value()` = `pack[active].ui`).
+    pub active: usize,
+    /// `Scroll->xposition()`.
+    pub scroll_x: i32,
+    /// `focus_counter`.
+    pub focus_counter: u32,
+    /// `CloseBtn` visible (≙ `ctab_h > 1`).
+    pub close_visible: bool,
+}
+
+impl Tabs {
+    /// `CustTabs` ctor (verbatim) : `tab_w=50`, `tab_h=th`,
+    /// `ctab_h=1`, `btn_w=20`, `ctl_w=btn_w+2`, strip caché.
+    #[must_use]
+    pub fn new(ww: i32, wh: i32, th: i32) -> Self {
+        Tabs {
+            win_w: ww,
+            win_h: wh,
+            ctab_h: 1,
+            tab_h: th,
+            tab_w: 50,
+            btn_w: 20,
+            ctl_w: 20 + 2,
+            pack: Vec::new(),
+            active: 0,
+            scroll_x: 0,
+            focus_counter: 0,
+            close_visible: false,
+        }
+    }
+
+    /// `num_tabs()`.
+    #[must_use]
+    pub fn num_tabs(&self) -> usize {
+        self.pack.len()
+    }
+
+    /// `Wizard->value()` — ui active (`None` si vide).
+    #[must_use]
+    pub fn value(&self) -> Option<usize> {
+        self.pack.get(self.active).map(|b| b.ui)
+    }
+
+    /// `get_btn_idx` (verbatim).
+    #[must_use]
+    pub fn get_btn_idx(&self, ui: usize) -> i32 {
+        for (i, b) in self.pack.iter().enumerate() {
+            if b.ui == ui {
+                return i as i32;
+            }
+        }
+        -1
+    }
+
+    /// `increase_focus_counter` (verbatim — wrap + renumérotation
+    /// triée par `focus_num`).
+    fn increase_focus_counter(&mut self) {
+        if self.focus_counter < u32::MAX {
+            self.focus_counter += 1;
+        } else {
+            /* wrap & normalize old numbers here */
+            let mut order: Vec<usize> = (0..self.pack.len()).collect();
+            order.sort_by_key(|&i| self.pack[i].focus_num);
+            self.focus_counter = 0;
+            for i in order {
+                self.pack[i].focus_num = self.focus_counter;
+                self.focus_counter += 1;
+            }
+        }
+    }
+
+    /// `update_pack_offset` (verbatim) — garde l'onglet actif visible
+    /// dans le scroll (`scroll_x`).
+    pub fn update_pack_offset(&mut self) {
+        if self.pack.is_empty() {
+            return;
+        }
+        let act_idx = self.active.min(self.pack.len() - 1);
+        let mut x_i = 0;
+        for b in self.pack.iter().take(act_idx) {
+            x_i += b.w;
+        }
+        let bw_ = self.pack[act_idx].w;
+        let x_f = x_i + bw_;
+        let px_i = x_i - self.scroll_x;
+        let px_f = px_i + bw_;
+        let pw = self.win_w - self.ctl_w;
+        if px_i < 0 {
+            self.scroll_x = x_i;
+        } else if px_i > pw || (px_i > 0 && px_f > pw) {
+            self.scroll_x = x_i.min(x_f - pw);
+        }
+    }
+
+    /// `switch_tab(btn)` (verbatim corps) — retourne le label de la
+    /// nouvelle ui active pour le titre fenêtre (`None` si inchangé).
+    pub fn switch_tab(&mut self, idx: i32) -> Option<usize> {
+        if idx < 0 || idx as usize >= self.pack.len() {
+            return None;
+        }
+        let idx = idx as usize;
+        if idx == self.active {
+            return None;
+        }
+        /* amont : `cbtn->ui()->show()` avant `Wizard->value()` pour
+         * éviter le bug de focus clavier — no-op chez nous, l'ordre
+         * observable est : couleurs (draw-time) puis activation. */
+        self.active = idx;
+        self.update_pack_offset();
+        self.increase_focus_counter();
+        self.pack[idx].focus_num = self.focus_counter;
+        Some(self.pack[idx].ui)
+    }
+
+    /// `prev_tab`/`next_tab` (verbatim wrap-around).
+    pub fn prev_tab(&mut self) -> Option<usize> {
+        if self.pack.is_empty() {
+            return None;
+        }
+        let idx = if self.active > 0 {
+            self.active - 1
+        } else {
+            self.pack.len() - 1
+        };
+        self.switch_tab(idx as i32)
+    }
+
+    /// `next_tab`.
+    pub fn next_tab(&mut self) -> Option<usize> {
+        if self.pack.is_empty() {
+            return None;
+        }
+        let idx = if self.active + 1 < self.pack.len() {
+            self.active + 1
+        } else {
+            0
+        };
+        self.switch_tab(idx as i32)
+    }
+
+    /// `add_new_tab` (verbatim `uicmd.cc:286-338`) — retourne `true`
+    /// si le strip vient d'apparaître (≙ redraw amont).
+    pub fn add_new_tab(&mut self, ui: usize, focus: bool, label_w: impl Fn(&str) -> i32) -> bool {
+        let mut strip_shown = false;
+        if self.num_tabs() == 1 {
+            // Show tabbar
+            self.ctab_h = self.tab_h;
+            self.close_visible = true;
+            if let Some(b0) = self.pack.first_mut() {
+                b0.w = label_w(&b0.label) + 14;
+                b0.visible = true;
+            }
+            strip_shown = true;
+        }
+        self.pack.push(TabBtn {
+            ui,
+            focus_num: 0,
+            label: DEFAULT_TAB_LABEL.to_string(),
+            w: self.tab_w,
+            visible: true,
+        });
+        if focus {
+            self.switch_tab((self.pack.len() - 1) as i32);
+        } else {
+            // set focus counter
+            self.increase_focus_counter();
+            if let Some(b) = self.pack.last_mut() {
+                b.focus_num = self.focus_counter;
+            }
+            // num_tabs()==2 → Wizard->redraw amont ≙ strip_shown
+        }
+        if self.num_tabs() == 1 {
+            if let Some(b) = self.pack.last_mut() {
+                b.visible = false;
+            }
+        }
+        self.update_pack_offset();
+        strip_shown
+    }
+
+    /// `remove_tab` (verbatim) — si l'onglet actif part, focus sur le
+    /// `focus_num` max restant ; strip re-caché à 1 onglet.
+    /// Retourne le rang (dans `pack`) retiré.
+    pub fn remove_tab(&mut self, ui: usize) -> Option<usize> {
+        let rm_idx = self.get_btn_idx(ui);
+        if rm_idx < 0 {
+            return None;
+        }
+        let rm_idx = rm_idx as usize;
+        if self.active == rm_idx {
+            // Active tab is being closed, switch to the "previous" one
+            let mut fbtn: Option<usize> = None;
+            for i in 0..self.pack.len() {
+                if i != rm_idx {
+                    match fbtn {
+                        None => fbtn = Some(i),
+                        Some(f) if self.pack[i].focus_num > self.pack[f].focus_num => {
+                            fbtn = Some(i);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(f) = fbtn {
+                // switch_tab ajuste active/focus_num
+                let _ = self.switch_tab(f as i32);
+            }
+        }
+        self.pack.remove(rm_idx);
+        if self.active > rm_idx {
+            self.active -= 1;
+        }
+        if self.active >= self.pack.len() && !self.pack.is_empty() {
+            self.active = self.pack.len() - 1;
+        }
+        self.update_pack_offset();
+
+        if self.num_tabs() == 1 {
+            // hide tabbar
+            self.ctab_h = 1;
+            self.close_visible = false;
+            if let Some(b0) = self.pack.first_mut() {
+                b0.w = 0;
+                b0.visible = false;
+            }
+        }
+        Some(rm_idx)
+    }
+
+    /// `set_tab_label` (verbatim) — label ≤15 chars sinon borne UTF-8
+    /// + `...` ; redimensionne le bouton (`measure_label + 14`).
+    pub fn set_tab_label(&mut self, ui: usize, label: &str, label_w: impl Fn(&str) -> i32) {
+        let idx = self.get_btn_idx(ui);
+        if idx < 0 {
+            return;
+        }
+        let idx = idx as usize;
+        // Make a label for this tab
+        // verbatim : limite en *octets* (snprintf 16), bornée à une
+        // frontière UTF-8 par `a_Utf8_end_of_char`.
+        let mut tab_chars = 15usize;
+        let label_len = label.len();
+        if label_len > tab_chars {
+            tab_chars = end_of_char(label.as_bytes(), tab_chars - 1) + 1;
+        }
+        let mut title =
+            String::from_utf8_lossy(&label.as_bytes()[..tab_chars.min(label_len)]).into_owned();
+        if label_len > tab_chars {
+            title.push_str("...");
+        }
+
+        // Avoid unnecessary redraws
+        if self.pack[idx].label != title {
+            self.pack[idx].w = label_w(&title) + 14;
+            self.pack[idx].label = title;
+            self.update_pack_offset();
+        }
+    }
+
+    /// Rect du bouton `i` en coords fenêtre (strip en haut,
+    /// `scroll_x` appliqué) — pour hit-test et draw.
+    #[must_use]
+    pub fn tab_rect(&self, i: usize) -> Option<Rect> {
+        let b = self.pack.get(i)?;
+        let mut x = -self.scroll_x;
+        for b in self.pack.iter().take(i) {
+            x += b.w;
+        }
+        Some(Rect {
+            x,
+            y: 0,
+            w: b.w,
+            h: self.ctab_h,
+        })
+    }
+
+    /// Hit-test strip → index de `pack` (`None` hors boutons,
+    /// `usize::MAX`-1 ≙ zone CloseBtn via [`Tabs::close_at`]).
+    #[must_use]
+    pub fn tab_at(&self, x: i32, y: i32) -> Option<usize> {
+        if y < 0 || y >= self.ctab_h {
+            return None;
+        }
+        if x >= self.win_w - self.ctl_w {
+            return None; // zone contrôle (close)
+        }
+        let rx = x + self.scroll_x;
+        let mut acc = 0;
+        for (i, b) in self.pack.iter().enumerate() {
+            if !b.visible {
+                continue;
+            }
+            if rx >= acc && rx < acc + b.w {
+                return Some(i);
+            }
+            acc += b.w;
+        }
+        None
+    }
+
+    /// `x` dans la zone `CloseBtn` (verbatim `Control` group).
+    #[must_use]
+    pub fn close_at(&self, x: i32, y: i32) -> bool {
+        self.close_visible
+            && y < self.ctab_h
+            && x >= self.win_w - self.ctl_w + 2
+            && x < self.win_w - self.ctl_w + 2 + self.btn_w
+    }
+}
+
+// -- `Chrome` : impl `UiShell` + fenêtres -----------------------------------------
+
+/// Fenêtre chrome (≙ `Tabgroup` + `Fl_Window`) — contient un
+/// [`Tabs`] ; les `Ui` vivent dans `Chrome`.
+pub struct Win {
+    /// `CustTabs` de la fenêtre.
+    pub tabs: Tabs,
+    /// Titre fenêtre (`UIcmd_set_window_labels`).
+    pub title: String,
+    /// Position demandée (`prefs.xpos/ypos` — appliquée par l'app).
+    pub pos: Option<(i32, i32)>,
+}
+
+/// Implémentation concrète de [`UiShell`] — registre des fenêtres/
+/// onglets/UIs (≙ globaux `tabgroups` + FLTK amont). Les widgets
+/// sont logiques ; le dessin passe par [`Chrome::draw_window`].
+pub struct Chrome {
+    /// Plateforme partagée (fontes/imgbuf pour les vues d'onglets).
+    platform: Rc<RefCell<SkiaPlatform>>,
+    /// Prefs partagées (≙ global `prefs` amont).
+    prefs: Rc<RefCell<Prefs>>,
+    /// `ui` handles → `Ui` (sparse : `Vec<Option<Ui>>`).
+    uis: Vec<Option<Ui>>,
+    /// Fenêtres (≙ `tabgroups`).
+    wins: Vec<Win>,
+    /// Compteur de handles `ui`/`tabs` (1-based).
+    next_handle: usize,
+    /// Layouts par ui (≙ `bw->render_layout` côté shell).
+    layouts: HashMap<usize, Rc<RefCell<Layout>>>,
+    /// Icônes (re-`IconSet::new` si `small_icons` change).
+    icons_std: IconSet,
+    /// `IconSet` small.
+    icons_small: IconSet,
+    /// File d'ops différées (`NavSched` ≙ `a_Timeout_add(0)`).
+    deferred_nav: Vec<(u32, NavOp)>,
+    /// `defer_close_all` en attente.
+    deferred_close_all: bool,
+    /// Répertoire de lancement (`Paths::getOldWorkingDir`).
+    old_cwd: Vec<u8>,
+    /// `a_Control_is_waiting` (dilloc) — posé par le shell binaire.
+    control_waiting: bool,
+    /// Chat `bookmarks` dpi (état de fonction amont → instance shell).
+    bookmarks: crate::bookmark::Bookmarks,
+}
+
+impl Chrome {
+    /// Nouveau shell — `platform` ≙ `FltkPlatform` global,
+    /// `prefs` ≙ globales amont.
+    #[must_use]
+    pub fn new(platform: Rc<RefCell<SkiaPlatform>>, prefs: Rc<RefCell<Prefs>>) -> Self {
+        let bg = {
+            let p = prefs.borrow();
+            if p.ui_main_bg_color != -1 {
+                p.ui_main_bg_color as u32
+            } else {
+                FL_BG_DEFAULT as u32
+            }
+        };
+        Chrome {
+            platform,
+            prefs,
+            uis: Vec::new(),
+            wins: Vec::new(),
+            next_handle: 1,
+            layouts: HashMap::new(),
+            icons_std: IconSet::new(false, bg),
+            icons_small: IconSet::new(true, bg),
+            deferred_nav: Vec::new(),
+            deferred_close_all: false,
+            old_cwd: std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned().into_bytes())
+                .unwrap_or_default(),
+            control_waiting: false,
+            bookmarks: crate::bookmark::Bookmarks::default(),
+        }
+    }
+
+    /// `Paths::setOldWorkingDir` ≙ répertoire capturé au démarrage.
+    pub fn set_old_working_dir(&mut self, dir: Vec<u8>) {
+        self.old_cwd = dir;
+    }
+
+    /// `a_Control_set_waiting` (dilloc `--remote`).
+    pub fn set_control_waiting(&mut self, w: bool) {
+        self.control_waiting = w;
+    }
+
+    /// Vide les ops différées (≙ `a_Timeout_add(0)` — l'app draine
+    /// entre deux events). Retourne `(bw, op)` en FIFO.
+    pub fn drain_nav(&mut self) -> Vec<(u32, NavOp)> {
+        std::mem::take(&mut self.deferred_nav)
+    }
+
+    /// `defer_close_all` en attente ?
+    #[must_use]
+    pub fn take_close_all(&mut self) -> bool {
+        std::mem::take(&mut self.deferred_close_all)
+    }
+
+    /// `Ui` d'un handle.
+    #[must_use]
+    pub fn ui(&self, ui: usize) -> Option<&Ui> {
+        self.uis.get(ui).and_then(|u| u.as_ref())
+    }
+
+    /// `Ui` mutable.
+    pub fn ui_mut(&mut self, ui: usize) -> Option<&mut Ui> {
+        self.uis.get_mut(ui).and_then(|u| u.as_mut())
+    }
+
+    /// `Tabs` contenant `ui`.
+    fn tabs_mut_of(&mut self, ui: usize) -> Option<&mut Tabs> {
+        self.wins
+            .iter_mut()
+            .find(|w| w.tabs.get_btn_idx(ui) >= 0)
+            .map(|w| &mut w.tabs)
+    }
+
+    /// Index fenêtre d'un handle `tabs`.
+    fn win_of_tabs(&mut self, tabs: usize) -> Option<&mut Win> {
+        self.wins.get_mut(tabs)
+    }
+
+    /// `a_UIcmd_get_bw_by_widget` — `wid` = handle `ui` (nos widgets
+    /// logiques n'ont pas d'identité globale ; le shell appelle avec
+    /// l'`ui` propriétaire — ≙ `ui->contains(wid)` amont).
+    #[must_use]
+    pub fn bw_by_ui(&self, reg: &BwRegistry, ui: usize) -> Option<u32> {
+        (0..reg.len() as u32).find(|&i| reg.get(i).is_some_and(|b| b.ui.get() == ui))
+    }
+
+    /// Résolution des couleurs d'onglet (`setUIColorWdef` verbatim —
+    /// `-1` → défaut FLTK : actif=BG2(blanc), inactif=BG, fg=FG(noir)).
+    #[must_use]
+    pub fn tab_colors(&self, active: bool) -> (u32, u32) {
+        let p = self.prefs.borrow();
+        let bg_main = if p.ui_main_bg_color != -1 {
+            p.ui_main_bg_color
+        } else {
+            FL_BG_DEFAULT
+        };
+        let fg_def = if p.ui_fg_color != -1 {
+            p.ui_fg_color
+        } else {
+            0
+        };
+        let (bg, fg) = if active {
+            (
+                if p.ui_tab_active_bg_color != -1 {
+                    p.ui_tab_active_bg_color
+                } else {
+                    // ≙ Fl::get_color(FL_BACKGROUND2_COLOR) = blanc
+                    if p.ui_text_bg_color != -1 {
+                        p.ui_text_bg_color
+                    } else {
+                        0x00ff_ffff
+                    }
+                },
+                if p.ui_tab_active_fg_color != -1 {
+                    p.ui_tab_active_fg_color
+                } else {
+                    fg_def
+                },
+            )
+        } else {
+            (
+                if p.ui_tab_bg_color != -1 {
+                    p.ui_tab_bg_color
+                } else {
+                    bg_main
+                },
+                if p.ui_tab_fg_color != -1 {
+                    p.ui_tab_fg_color
+                } else {
+                    fg_def
+                },
+            )
+        };
+        (bg as u32, fg as u32)
+    }
+
+    /// Icones selon `small_icons`.
+    #[must_use]
+    pub fn icons(&self, small: bool) -> &IconSet {
+        if small {
+            &self.icons_small
+        } else {
+            &self.icons_std
+        }
+    }
+}
+
+// -- UiShell pour Chrome --------------------------------------------------------
+
+impl UiShell for Chrome {
+    fn window_new(&mut self, w: i32, h: i32) -> usize {
+        let th = self.prefs.borrow().ui_tab_height;
+        self.wins.push(Win {
+            tabs: Tabs::new(w, h, th),
+            title: String::new(),
+            pos: None,
+        });
+        self.wins.len() - 1
+    }
+
+    fn window_show(&mut self, _tabs: usize) {
+        // `win->show()` — effectué par l'app (winit Window visible
+        // dès `resumed` ; marqueur pour verbatim).
+    }
+
+    fn window_position(&mut self, tabs: usize, x: i32, y: i32) {
+        if let Some(w) = self.win_of_tabs(tabs) {
+            w.pos = Some((x, y));
+        }
+    }
+
+    fn tab_ui_new(
+        &mut self,
+        tabs: usize,
+        old_ui: usize,
+        focus: bool,
+    ) -> (usize, Rc<RefCell<Layout>>) {
+        // `tabs->add_new_tab(old_ui, focus)` — old_ui sert à hériter
+        // les réglages de panel (verbatim `UI ctor` lit `cur_ui`).
+        let ui = {
+            let prefs = self.prefs.borrow();
+            let cur = self.uis.get(old_ui).and_then(|u| u.as_ref());
+            Ui::new(&self.platform, &prefs, UI_MIN_W, UI_MIN_H, cur)
+        };
+        let id = self.next_handle;
+        self.next_handle += 1;
+        if self.uis.len() <= id {
+            self.uis.resize_with(id + 1, || None);
+        }
+        self.uis[id] = Some(ui);
+
+        // `new Layout(platform)` + attach SharedView ≙ viewport
+        let p = Rc::clone(&self.platform);
+        let pdyn: Rc<RefCell<dyn Platform>> = p;
+        let limit = self.prefs.borrow().limit_text_width;
+        let layout = Rc::new(RefCell::new(Layout::new(pdyn, limit)));
+        let view = self.uis[id].as_ref().map_or_else(
+            || Rc::new(RefCell::new(SkiaView::new(&self.platform, 1, 1))),
+            |u| Rc::clone(&u.view),
+        );
+        layout
+            .borrow_mut()
+            .attach_view(Box::new(SharedView::new(&view)));
+        // verbatim UIcmd_tab_new : options viewport depuis prefs
+        {
+            let prefs = self.prefs.borrow();
+            let mut c = view.borrow_mut();
+            // setScrollStep / setPageOverlap / drag scroll / scrollbar
+            // side ≙ setters FltkViewport — exposés via Canvas.
+            c.set_scroll_prefs(
+                prefs.scroll_step,
+                prefs.scroll_page_overlap,
+                prefs.scrollbar_on_left,
+                prefs.scrollbar_page_mode,
+                prefs.middle_click_drags_page,
+            );
+        }
+        self.layouts.insert(id, layout.clone());
+
+        let mut title_ui = None;
+        if let Some(w) = self.wins.get_mut(tabs) {
+            let lw = |s: &str| text_w(s, 12);
+            if w.tabs.add_new_tab(id, focus, lw) {
+                // strip apparu — rien à faire côté modèle
+            }
+            if focus {
+                title_ui = Some(id);
+            }
+        }
+        let _ = title_ui;
+        (id, layout)
+    }
+
+    fn tab_ui_remove(&mut self, ui: usize) {
+        for w in &mut self.wins {
+            if w.tabs.get_btn_idx(ui) >= 0 {
+                w.tabs.remove_tab(ui);
+                break;
+            }
+        }
+        if let Some(u) = self.uis.get_mut(ui) {
+            *u = None;
+        }
+        self.layouts.remove(&ui);
+        // verbatim : `num_tabs()==0` → delete tabgroup + window.
+        self.wins.retain(|w| w.tabs.num_tabs() > 0);
+    }
+
+    fn tab_count(&self, tabs: usize) -> i32 {
+        self.wins.get(tabs).map_or(0, |w| w.tabs.num_tabs() as i32)
+    }
+
+    fn tabs_of(&self, ui: usize) -> Option<usize> {
+        self.wins.iter().position(|w| w.tabs.get_btn_idx(ui) >= 0)
+    }
+
+    fn switch_tab(&mut self, tabs: usize, index: i32) {
+        if let Some(w) = self.win_of_tabs(tabs) {
+            let _ = w.tabs.switch_tab(index);
+        }
+    }
+
+    fn switch_to_tab(&mut self, ui: usize) {
+        if let Some(t) = self.tabs_mut_of(ui) {
+            let idx = t.get_btn_idx(ui);
+            let _ = t.switch_tab(idx);
+        }
+    }
+
+    fn prev_tab(&mut self, tabs: usize) {
+        if let Some(w) = self.win_of_tabs(tabs) {
+            let _ = w.tabs.prev_tab();
+        }
+    }
+
+    fn next_tab(&mut self, tabs: usize) {
+        if let Some(w) = self.win_of_tabs(tabs) {
+            let _ = w.tabs.next_tab();
+        }
+    }
+
+    fn set_tab_label(&mut self, ui: usize, label: &str) {
+        if let Some(t) = self.tabs_mut_of(ui) {
+            t.set_tab_label(ui, label, |s| text_w(s, 12));
+        }
+    }
+
+    fn is_active_tab(&self, ui: usize) -> bool {
+        self.wins.iter().any(|w| w.tabs.value() == Some(ui))
+    }
+
+    fn tabs_active_ui(&self, tabs: usize) -> usize {
+        self.wins
+            .get(tabs)
+            .and_then(|w| w.tabs.value())
+            .unwrap_or(0)
+    }
+
+    fn active_ui_handles(&self) -> Vec<usize> {
+        self.wins.iter().filter_map(|w| w.tabs.value()).collect()
+    }
+
+    fn ui_contains(&self, ui: usize, wid: usize) -> bool {
+        // `wid` = handle `ui` (nos widgets sont logiques, identifiés
+        // par (ui, WId)) — `ui->contains(widget)` ≙ même onglet.
+        let _ = wid;
+        self.ui(ui).is_some()
+    }
+
+    fn ui_wh(&self, ui: usize) -> (i32, i32) {
+        self.ui(ui).map_or((0, 0), |u| (u.rect.w, u.rect.h))
+    }
+
+    fn ui_label(&self, ui: usize) -> String {
+        self.wins
+            .iter()
+            .find_map(|w| {
+                w.tabs
+                    .pack
+                    .iter()
+                    .find(|b| b.ui == ui)
+                    .map(|b| b.label.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    fn ui_copy_label(&mut self, ui: usize, title: &str) {
+        // ≙ `ui->copy_label` — le label interne = titre complet non
+        // tronqué (sert au titre fenêtre dans switch_tab amont).
+        if let Some(u) = self.ui_mut(ui) {
+            u.main_label = title.to_string();
+        }
+    }
+
+    fn set_window_title(&mut self, ui: usize, title: &str) {
+        if let Some(w) = self.wins.iter_mut().find(|w| w.tabs.get_btn_idx(ui) >= 0) {
+            w.title = title.to_string();
+        }
+    }
+
+    fn focus_main(&mut self, ui: usize) {
+        if let Some(u) = self.ui_mut(ui) {
+            u.focus_main();
+        }
+    }
+
+    fn focus_location(&mut self, ui: usize) {
+        if let Some(u) = self.ui_mut(ui) {
+            u.focus_location();
+        }
+    }
+
+    fn get_location(&self, ui: usize) -> String {
+        self.ui(ui).map_or_else(String::new, Ui::get_location)
+    }
+
+    fn set_location(&mut self, ui: usize, text: &str) {
+        if let Some(u) = self.ui_mut(ui) {
+            u.set_location(text);
+        }
+    }
+
+    fn set_status(&mut self, ui: usize, msg: &str) {
+        if let Some(u) = self.ui_mut(ui) {
+            u.set_status(msg);
+        }
+    }
+
+    fn set_page_prog(&mut self, ui: usize, nbytes: usize, cmd: i32) {
+        if let Some(u) = self.ui_mut(ui) {
+            u.set_page_prog(nbytes, cmd);
+        }
+    }
+
+    fn set_img_prog(&mut self, ui: usize, n_img: i32, t_img: i32, cmd: i32) {
+        if let Some(u) = self.ui_mut(ui) {
+            u.set_img_prog(n_img, t_img, cmd);
+        }
+    }
+
+    fn set_bug_prog(&mut self, ui: usize, n_bug: i32) {
+        let (ok, bug) = (
+            self.icons_std.imgs[IconKind::MeterOk as usize].clone(),
+            self.icons_std.imgs[IconKind::MeterBug as usize].clone(),
+        );
+        if let (Some(ok), Some(bug)) = (ok, bug) {
+            if let Some(u) = self.ui_mut(ui) {
+                u.set_bug_prog(&ok, &bug, n_bug);
+            }
+        }
+    }
+
+    fn button_set_sens(&mut self, ui: usize, btn: UiButton, sens: bool) {
+        if let Some(u) = self.ui_mut(ui) {
+            u.button_set_sens(btn, sens);
+        }
+    }
+
+    fn panels_toggle(&mut self, ui: usize) {
+        if let Some(u) = self.ui_mut(ui) {
+            u.panels_toggle();
+        }
+    }
+
+    fn findbar_toggle(&mut self, ui: usize, on: bool) {
+        if let Some(u) = self.ui_mut(ui) {
+            u.findbar_toggle(on);
+        }
+    }
+
+    // ---- dialogs / menus : implémentés par les modules dédiés
+    // (dialog.rs/menu.rs — chrome-3). Défauts sûrs en attendant : ----
+
+    fn dialog_choice(&mut self, _title: &str, _msg: &str, _alts: &[&str]) -> i32 {
+        0 // ≙ fenêtre fermée (amont `choice_answer = 0`)
+    }
+    fn dialog_input(&mut self, _title: &str, _msg: &str) -> Option<String> {
+        None
+    }
+    fn dialog_passwd(&mut self, _title: &str, _msg: &str) -> Option<String> {
+        None
+    }
+    fn dialog_save_file(
+        &mut self,
+        _title: &str,
+        _msg: Option<&str>,
+        _suggested: &str,
+    ) -> Option<String> {
+        None
+    }
+    fn dialog_select_file(
+        &mut self,
+        _title: &str,
+        _msg: Option<&str>,
+        _init: Option<&str>,
+    ) -> Option<String> {
+        None
+    }
+    fn dialog_open_file(
+        &mut self,
+        _title: &str,
+        _msg: Option<&str>,
+        _pattern: &str,
+    ) -> Option<String> {
+        None
+    }
+    fn dialog_text_window(&mut self, _title: &str, _txt: &str) {}
+    fn dialog_msg(&mut self, _title: &str, _msg: &str) {}
+
+    fn history_popup(&mut self, _bw: u32, _x: i32, _y: i32, _dir: i32) {}
+    fn page_popup(
+        &mut self,
+        _bw: u32,
+        _url: Option<&DilloUrl>,
+        _has_bugs: bool,
+        _css_urls: &[DilloUrl],
+    ) {
+    }
+    fn link_popup(&mut self, _bw: u32, _url: &DilloUrl, _page_url: Option<&DilloUrl>) {}
+    fn image_popup(
+        &mut self,
+        _bw: u32,
+        _url: &DilloUrl,
+        _loaded_img: bool,
+        _page_url: Option<&DilloUrl>,
+        _link_url: Option<&DilloUrl>,
+    ) {
+    }
+    fn form_popup(&mut self, _bw: u32, _url: &DilloUrl, _form: usize, _showing_hiddens: bool) {}
+    fn file_popup(&mut self, _bw: u32, _wid: usize) {}
+    fn bugmeter_popup(&mut self, _bw: u32, _url: Option<&DilloUrl>) {}
+    fn tools_popup(&mut self, _bw: u32, _x: i32, _y: i32) {}
+
+    fn old_working_dir(&self) -> Vec<u8> {
+        self.old_cwd.clone()
+    }
+    fn control_is_waiting(&self) -> bool {
+        self.control_waiting
+    }
+    fn control_notify_finish(&mut self, _bw: u32) {
+        self.control_waiting = false;
+    }
+    fn add_bookmark(&mut self, bw: u32, url: &DilloUrl) {
+        self.bookmarks.add(bw, &mut url.clone());
+    }
+    fn flush(&mut self) {
+        // ≙ Fl::flush — la présentation est faite par l'app.
+    }
+    fn defer_nav(&mut self, bw: u32, op: NavOp) {
+        self.deferred_nav.push((bw, op));
+    }
+    fn defer_close_all(&mut self) {
+        self.deferred_close_all = true;
+    }
+}
+
+/// `NavSched` est implémenté par `Chrome` (drain via `drain_nav`).
+impl NavSched for Chrome {
+    fn defer(&mut self, bw: u32, op: NavOp) {
+        self.deferred_nav.push((bw, op));
+    }
+}
+
+// -- événements (UI::handle / CustTabs::handle / callbacks) ----------------------
+
+/// Résultat d'un hit sur le chrome — à dispatcher par l'appelant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hit {
+    /// Bouton d'onglet (index pack).
+    Tab(usize),
+    /// `CloseBtn` du strip.
+    TabClose,
+    /// Widget chrome.
+    Wid(WId),
+    /// Zone `Main` (viewport).
+    Main,
+    /// Rien.
+    None,
+}
+
+impl Ui {
+    /// Hit-test complet (strip géré par `Tabs` côté Chrome).
+    #[must_use]
+    pub fn hit(&self, x: i32, y: i32) -> Hit {
+        if let Some(w) = self.widget_at(x, y) {
+            Hit::Wid(w)
+        } else if self.findbar_visible && self.findbar.contains(x, y) {
+            Hit::Wid(WId::Spacer) // findbar internals : chrome-3
+        } else if self.main.contains(x, y) {
+            Hit::Main
+        } else {
+            Hit::None
+        }
+    }
+}
+
+/// `location_cb` verbatim — le texte courant ouvre l'URL ; le panel
+/// temporaire se replie (`temporaryPanels` → `panels_toggle`).
+pub fn location_commit(
+    uicmd: &UiCmd,
+    reg: &mut BwRegistry,
+    shell: &mut Chrome,
+    prefs: &Prefs,
+    bw: u32,
+) {
+    let ui = reg.get(bw).map_or(0, |b| b.ui.get());
+    let text = shell.get_location(ui);
+    uicmd.open_urlstr(reg, shell, prefs, bw, text.as_bytes());
+    if let Some(u) = shell.ui_mut(ui) {
+        if u.panel_temporary {
+            u.panel_temporary = false;
+            u.panels_toggle();
+        }
+    }
+}
+
+/// `UI::handle` `FL_SHORTCUT` (verbatim ui.cc:794-863) — dispatch
+/// `KeysCommand` vers `a_UIcmd_*`. Retourne `true` si consommé.
+pub fn ui_shortcut(
+    uicmd: &UiCmd,
+    reg: &mut BwRegistry,
+    shell: &mut Chrome,
+    prefs: &Prefs,
+    bw: u32,
+    cmd: KeysCommand,
+) -> bool {
+    use KeysCommand as K;
+    let Some(b) = reg.get(bw) else { return false };
+    let ui = b.ui.get();
+    match cmd {
+        K::Nop | K::Invalid => {}
+        K::ScreenUp
+        | K::ScreenDown
+        | K::ScreenLeft
+        | K::ScreenRight
+        | K::LineUp
+        | K::LineDown
+        | K::Left
+        | K::Right
+        | K::Top
+        | K::Bottom => {
+            uicmd.scroll(reg, bw, cmd);
+        }
+        K::Back => uicmd.back(reg, shell, prefs, bw),
+        K::Forward => uicmd.forw(reg, shell, prefs, bw),
+        K::Copy => uicmd.copy(reg, bw),
+        K::ZoomIn => uicmd.zoom_in(reg, shell, prefs, bw),
+        K::ZoomOut => uicmd.zoom_out(reg, shell, prefs, bw),
+        K::ZoomReset => uicmd.zoom_reset(reg, shell, prefs, bw),
+        K::Bookmarks => uicmd.book(reg, shell, prefs, bw, false),
+        K::Find => uicmd.findbar_toggle(reg, shell, bw, true),
+        K::WebSearch => {
+            uicmd.search_dialog(reg, shell, prefs, bw);
+        }
+        K::Goto => uicmd.focus_location(reg, shell, bw),
+        K::HidePanels => {
+            /* Hide findbar if present, hide panels if not */
+            if let Some(u) = shell.ui_mut(ui) {
+                if u.findbar_visible {
+                    uicmd.findbar_toggle(reg, shell, bw, false);
+                } else {
+                    uicmd.panels_toggle(reg, shell, bw);
+                }
+                if let Some(u) = shell.ui_mut(ui) {
+                    u.panel_temporary = false;
+                }
+            }
+        }
+        K::Open => uicmd.open_file(reg, shell, prefs, bw),
+        K::Home => uicmd.home(reg, shell, prefs, bw, false),
+        K::Reload => uicmd.reload(reg, shell, prefs, bw),
+        K::Stop => uicmd.stop(reg, shell, prefs, bw),
+        K::Save => uicmd.save_page(reg, shell, bw),
+        K::FileMenu => uicmd.file_popup(shell, bw, ui),
+        K::ViewSource => {
+            let url = reg
+                .get(bw)
+                .and_then(|b| dillo_net::history::history_get_url(b.nav.borrow().get_top_uidx()));
+            if let Some(url) = url {
+                uicmd.view_page_source(reg, shell, prefs, bw, &url);
+            }
+        }
+        k if (K::FocusTab1 as i32..=K::FocusTab10 as i32).contains(&(k as i32)) => {
+            let index = (k as i32) - (K::FocusTab1 as i32); /* zero-based */
+            uicmd.focus_tab(reg, shell, bw, index);
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// `CustInput::handle` (verbatim ui.cc:154-203) — filtre clavier de
+/// la barre de location. `key` = keysym FLTK-like, `mods` =
+/// shift/ctrl/alt. Retourne `true` si consommé, `false` → remonter.
+pub fn cust_input_key(
+    uicmd: &UiCmd,
+    reg: &mut BwRegistry,
+    shell: &mut Chrome,
+    prefs: &Prefs,
+    bw: u32,
+    keysym: i32,
+    text: Option<&str>,
+    mods: i32,
+) -> bool {
+    use crate::keys::keysym;
+    const FL_SHIFT: i32 = 1;
+    const FL_CTRL: i32 = 4;
+    const FL_ALT: i32 = 8;
+    let modifier = mods & (FL_SHIFT | FL_CTRL | FL_ALT);
+    let Some(ui_id) = reg.get(bw).map(|b| b.ui.get()) else {
+        return false;
+    };
+    // La décision « laisser remonter » est calculée avant d'emprunter
+    // `u` (verbat.) — `focus_main_area` re-emprunte `shell`.
+    let forward_to_ui = (keysym == keysym::ESCAPE && modifier == 0)
+        || (modifier == FL_SHIFT && (keysym == keysym::LEFT || keysym == keysym::RIGHT))
+        || (modifier == FL_CTRL
+            && matches!(keysym, k if k == 'h' as i32 || k == 'o' as i32
+                || k == 'r' as i32 || k == keysym::HOME || k == keysym::END))
+        || (modifier == 0
+            && matches!(keysym, k if k == keysym::DOWN || k == keysym::UP || k == keysym::PAGE_DOWN
+                || k == keysym::PAGE_UP || k == keysym::TAB));
+    if forward_to_ui {
+        if modifier == 0
+            && matches!(keysym, k if k == keysym::DOWN || k == keysym::UP || k == keysym::PAGE_DOWN
+                || k == keysym::PAGE_UP || k == keysym::TAB)
+        {
+            // Give up focus and honor the key
+            uicmd.focus_main_area(reg, shell, bw);
+        }
+        return false;
+    }
+    let Some(u) = shell.ui_mut(ui_id) else {
+        return false;
+    };
+
+    if keysym == keysym::ESCAPE && modifier == 0 {
+        // Let the parent group handle this Esc key
+        return false;
+    } else if modifier == FL_SHIFT {
+        if keysym == keysym::LEFT || keysym == keysym::RIGHT {
+            // Let these keys get to the UI
+            return false;
+        }
+    } else if modifier == FL_CTRL {
+        if keysym == 'e' as i32 {
+            let n = u.location.size();
+            u.location.set_position(n, n);
+            return true;
+        } else if keysym == 'k' as i32 {
+            let n = u.location.size();
+            u.location.cut(u.location.pos, n);
+            return true;
+        } else if keysym == 'd' as i32 {
+            let (p, n) = (u.location.pos, u.location.size());
+            u.location.cut(p, (p + 1).min(n));
+            return true;
+        } else if keysym == 'a' as i32 || keysym == 'l' as i32 {
+            // Make text selected when already focused.
+            let n = u.location.size();
+            u.location.set_position(n, 0);
+            return true;
+        } else if keysym == 'h' as i32
+            || keysym == 'o' as i32
+            || keysym == 'r' as i32
+            || keysym == keysym::HOME
+            || keysym == keysym::END
+        {
+            // Let these keys get to the UI
+            return false;
+        }
+    }
+    if keysym == keysym::PAGE_DOWN || keysym == keysym::PAGE_UP {
+        // These do nothing of interest when FL_MULTILINE_INPUT isn't set.
+        return false;
+    }
+    // ≙ TipWinInput::handle — édition + Enter → location_cb
+    if keysym == keysym::ENTER || keysym == keysym::KP_ENTER {
+        location_commit(uicmd, reg, shell, prefs, bw);
+        return true;
+    }
+    let mut copy = |_s: &str| {
+        // clipboard ≙ platform — via Chrome (chrome-3 tipwin/clipboard).
+    };
+    let mut paste = || Option::<String>::None;
+    line_input_key(
+        &mut u.location,
+        keysym,
+        text,
+        false,
+        false,
+        &mut copy,
+        &mut paste,
+    )
+}
+
+// -- dessin (≙ `Fl_Widget::draw` des widgets du chrome) ------------------------
+
+/// `dw` Color i32 → `tiny_skia::Color` opaque.
+fn skc(rgb: u32) -> dillo_platform::tiny_skia::Color {
+    dillo_platform::tiny_skia::Color::from_rgba8(
+        ((rgb >> 16) & 0xff) as u8,
+        ((rgb >> 8) & 0xff) as u8,
+        (rgb & 0xff) as u8,
+        255,
+    )
+}
+
+/// Remplit un rect du pixmap (`fl_rectf`).
+fn pm_fill(pm: &mut dillo_platform::tiny_skia::Pixmap, r: Rect, rgb: u32) {
+    use dillo_platform::tiny_skia::{Paint, Path, PathBuilder, Transform};
+    let Some(tr) =
+        dillo_platform::tiny_skia::Rect::from_xywh(r.x as f32, r.y as f32, r.w as f32, r.h as f32)
+    else {
+        return;
+    };
+    let mut b = PathBuilder::new();
+    b.push_rect(tr);
+    let Some(path): Option<Path> = b.finish() else {
+        return;
+    };
+    pm.fill_path(
+        &path,
+        &Paint {
+            shader: dillo_platform::tiny_skia::Shader::SolidColor(skc(rgb)),
+            ..Paint::default()
+        },
+        dillo_platform::tiny_skia::FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+}
+
+/// `fl_rect` — bordure 1px.
+fn pm_rect(pm: &mut dillo_platform::tiny_skia::Pixmap, r: Rect, rgb: u32) {
+    use dillo_platform::tiny_skia::{Paint, PathBuilder, Stroke, Transform};
+    let Some(tr) = dillo_platform::tiny_skia::Rect::from_xywh(
+        r.x as f32 + 0.5,
+        r.y as f32 + 0.5,
+        r.w as f32 - 1.0,
+        r.h as f32 - 1.0,
+    ) else {
+        return;
+    };
+    let mut b = PathBuilder::new();
+    b.push_rect(tr);
+    let Some(path) = b.finish() else { return };
+    pm.stroke_path(
+        &path,
+        &Paint {
+            shader: dillo_platform::tiny_skia::Shader::SolidColor(skc(rgb)),
+            ..Paint::default()
+        },
+        &Stroke::default(),
+        Transform::identity(),
+        None,
+    );
+}
+
+/// Nuance `rgb` (`Color::shade` ≙ `fl_color_average`) — `fac` >1
+/// éclaircit vers blanc, <1 assombrit vers noir (convention dw).
+fn shade(rgb: u32, fac: f64) -> u32 {
+    let f = |v: u32| -> u32 {
+        if fac >= 1.0 {
+            (f64::from(v) + (255.0 - f64::from(v)) * (fac - 1.0).min(1.0)).round() as u32
+        } else {
+            (f64::from(v) * fac.max(0.0)).round() as u32
+        }
+    };
+    (f((rgb >> 16) & 0xff) << 16) | (f((rgb >> 8) & 0xff) << 8) | f(rgb & 0xff)
+}
+
+/// Cadre 3D 2px style FLTK (`FL_UP_BOX` / `FL_DOWN_BOX`) : up =
+/// light haut-gauche / dark bas-droite, down = inversé.
+fn pm_box(pm: &mut dillo_platform::tiny_skia::Pixmap, r: Rect, bg: u32, down: bool) {
+    pm_fill(pm, r, bg);
+    let (lt, dk) = if down {
+        (shade(bg, 0.55), shade(bg, 1.55))
+    } else {
+        (shade(bg, 1.55), shade(bg, 0.55))
+    };
+    // bord haut + gauche = lt, bas + droite = dk
+    pm_fill(
+        pm,
+        Rect {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: 1,
+        },
+        lt,
+    );
+    pm_fill(
+        pm,
+        Rect {
+            x: r.x,
+            y: r.y,
+            w: 1,
+            h: r.h,
+        },
+        lt,
+    );
+    pm_fill(
+        pm,
+        Rect {
+            x: r.x,
+            y: r.y + r.h - 1,
+            w: r.w,
+            h: 1,
+        },
+        dk,
+    );
+    pm_fill(
+        pm,
+        Rect {
+            x: r.x + r.w - 1,
+            y: r.y,
+            w: 1,
+            h: r.h,
+        },
+        dk,
+    );
+    // deuxième pixel (FL_UP_BOX a 2px)
+    pm_fill(
+        pm,
+        Rect {
+            x: r.x + 1,
+            y: r.y + 1,
+            w: r.w - 2,
+            h: 1,
+        },
+        if down { dk } else { shade(bg, 1.15) },
+    );
+    pm_fill(
+        pm,
+        Rect {
+            x: r.x + 1,
+            y: r.y + 1,
+            w: 1,
+            h: r.h - 2,
+        },
+        if down { dk } else { shade(bg, 1.15) },
+    );
+    pm_fill(
+        pm,
+        Rect {
+            x: r.x,
+            y: r.y + r.h - 2,
+            w: r.w,
+            h: 1,
+        },
+        if down { lt } else { shade(bg, 0.75) },
+    );
+    pm_fill(
+        pm,
+        Rect {
+            x: r.x + r.w - 2,
+            y: r.y,
+            w: 1,
+            h: r.h,
+        },
+        if down { lt } else { shade(bg, 0.75) },
+    );
+}
+
+/// Dessine du texte (`fl_draw`) — `px` taille, couleur `0xRRGGBB`,
+/// centré dans `r` (align `1` = gauche).
+fn pm_text(
+    pm: &mut dillo_platform::tiny_skia::Pixmap,
+    fs: &mut dillo_platform::cosmic_text::FontSystem,
+    sw: &mut dillo_platform::cosmic_text::SwashCache,
+    r: Rect,
+    text: &str,
+    px: i32,
+    rgb: u32,
+    left: bool,
+) {
+    use dillo_platform::cosmic_text::{Attrs, Buffer, Color as CColor, Metrics, Shaping};
+    let size = px.max(1) as f32;
+    let mut buf = Buffer::new(fs, Metrics::new(size, size * 1.2));
+    buf.set_size(fs, Some(r.w.max(1) as f32), Some(r.h.max(1) as f32));
+    buf.set_text(fs, text, Attrs::new(), Shaping::Advanced);
+    buf.shape_until_scroll(fs, true);
+    // Hauteur de ligne pour centrage vertical.
+    let lh = buf
+        .layout_runs()
+        .map(|run| run.line_height)
+        .fold(0.0f32, f32::max);
+    let tw = buf
+        .layout_runs()
+        .map(|run| run.line_w)
+        .fold(0.0f32, f32::max);
+    let ox = if left {
+        2.0
+    } else {
+        ((r.w as f32 - tw) / 2.0).max(0.0)
+    };
+    let oy = ((r.h as f32 - lh) / 2.0).max(0.0);
+    let cc = CColor::rgba(
+        ((rgb >> 16) & 0xff) as u8,
+        ((rgb >> 8) & 0xff) as u8,
+        (rgb & 0xff) as u8,
+        255,
+    );
+    buf.draw(fs, sw, cc, |px_, py_, gw, gh, col| {
+        let pc = col.as_rgba();
+        for dy in 0..gh as i32 {
+            for dx in 0..gw as i32 {
+                let (x, y) = (
+                    r.x + (ox + px_ as f32) as i32 + dx,
+                    r.y + (oy + py_ as f32) as i32 + dy,
+                );
+                if x < r.x
+                    || y < r.y
+                    || x >= r.x + r.w
+                    || y >= r.y + r.h
+                    || x < 0
+                    || y < 0
+                    || x >= pm.width() as i32
+                    || y >= pm.height() as i32
+                {
+                    continue;
+                }
+                let idx = (y as u32 * pm.width() + x as u32) as usize;
+                if let Some(p) = dillo_platform::tiny_skia::PremultipliedColorU8::from_rgba(
+                    pc[0], pc[1], pc[2], pc[3],
+                ) {
+                    if let Some(dst) = pm.pixels_mut().get_mut(idx) {
+                        *dst = p;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Blit icône RGBA (`icon.data` = `0xAARRGGBB`) dans `r` centré.
+fn pm_icon(pm: &mut dillo_platform::tiny_skia::Pixmap, r: Rect, icn: &Icon) {
+    let ox = r.x + (r.w - icn.w as i32).max(0) / 2;
+    let oy = r.y + (r.h - icn.h as i32).max(0) / 2;
+    for iy in 0..icn.h as i32 {
+        for ix in 0..icn.w as i32 {
+            let (x, y) = (ox + ix, oy + iy);
+            if x < r.x
+                || y < r.y
+                || x >= r.x + r.w
+                || y >= r.y + r.h
+                || x < 0
+                || y < 0
+                || x >= pm.width() as i32
+                || y >= pm.height() as i32
+            {
+                continue;
+            }
+            let px = icn.data[(iy * icn.w as i32 + ix) as usize];
+            let a = (px >> 24) & 0xff;
+            if a == 0 {
+                continue;
+            }
+            let idx = (y as u32 * pm.width() + x as u32) as usize;
+            if let Some(p) = dillo_platform::tiny_skia::PremultipliedColorU8::from_rgba(
+                ((px >> 16) & 0xff) as u8,
+                ((px >> 8) & 0xff) as u8,
+                (px & 0xff) as u8,
+                a as u8,
+            ) {
+                if let Some(dst) = pm.pixels_mut().get_mut(idx) {
+                    *dst = p;
+                }
+            }
+        }
+    }
+}
+
+impl Ui {
+    /// Fond barres (≙ couleur `UI`/`panel` — `ui_main_bg_color`).
+    #[must_use]
+    pub fn bar_bg(&self, prefs: &Prefs) -> u32 {
+        if prefs.ui_main_bg_color != -1 {
+            prefs.ui_main_bg_color as u32
+        } else {
+            FL_BG_DEFAULT as u32
+        }
+    }
+
+    /// Dessine un [`WItem`] (`Fl_Widget::draw` : box + icône/label).
+    pub fn draw_item(
+        &self,
+        pm: &mut dillo_platform::tiny_skia::Pixmap,
+        fs: &mut dillo_platform::cosmic_text::FontSystem,
+        sw: &mut dillo_platform::cosmic_text::SwashCache,
+        it: &WItem,
+        prefs: &Prefs,
+    ) {
+        if !it.visible || it.rect.w <= 0 || it.rect.h <= 0 {
+            return;
+        }
+        let bg = self.bar_bg(prefs);
+        match it.id {
+            WId::Spacer => {
+                pm_fill(pm, it.rect, bg);
+            }
+            WId::Location => {
+                // CustInput : boîte input (`ui_text_bg_color`) + texte.
+                let in_bg = if prefs.ui_text_bg_color != -1 {
+                    prefs.ui_text_bg_color as u32
+                } else {
+                    0x00ff_ffff
+                };
+                let fg = if prefs.ui_fg_color != -1 {
+                    prefs.ui_fg_color as u32
+                } else {
+                    0
+                };
+                pm_box(pm, it.rect, in_bg, true);
+                let inner = Rect {
+                    x: it.rect.x + 3,
+                    y: it.rect.y + 2,
+                    w: (it.rect.w - 6).max(1),
+                    h: (it.rect.h - 4).max(1),
+                };
+                // sélection (tout bleu ≙ FL_SELECTION_COLOR)
+                let (a, b) = (
+                    self.location.pos.min(self.location.mark),
+                    self.location.pos.max(self.location.mark),
+                );
+                if a < b && self.focus == Focus::Location {
+                    // largeur de préfixe ≙ approx (mesure exacte au
+                    // reflow — suffisant au caret visible)
+                    let sel_w = (b - a) as i32 * self.loc_font_px * 2 / 3;
+                    let pre_w = a as i32 * self.loc_font_px * 2 / 3;
+                    pm_fill(
+                        pm,
+                        Rect {
+                            x: inner.x + pre_w,
+                            y: inner.y,
+                            w: sel_w,
+                            h: inner.h,
+                        },
+                        0x0000_8090,
+                    );
+                }
+                pm_text(
+                    pm,
+                    fs,
+                    sw,
+                    inner,
+                    &self.location.text,
+                    self.loc_font_px,
+                    fg,
+                    true,
+                );
+                // curseur (caret 1px) quand focus
+                if self.focus == Focus::Location {
+                    let cx = inner.x + self.location.pos as i32 * self.loc_font_px * 2 / 3;
+                    pm_fill(
+                        pm,
+                        Rect {
+                            x: cx.min(inner.x + inner.w - 1),
+                            y: inner.y,
+                            w: 1,
+                            h: inner.h,
+                        },
+                        fg,
+                    );
+                }
+            }
+            WId::StatusOut => {
+                pm_fill(pm, it.rect, bg);
+                pm_rect(pm, it.rect, shade(bg, 0.7));
+                let fg = if prefs.ui_fg_color != -1 {
+                    prefs.ui_fg_color as u32
+                } else {
+                    0
+                };
+                pm_text(pm, fs, sw, it.rect, &it.label, 8, fg, true);
+            }
+            WId::PageProg | WId::ImgProg | WId::BugMeter => {
+                pm_fill(pm, it.rect, bg);
+                pm_rect(pm, it.rect, shade(bg, 0.7));
+                if let Some(icn) = &it.icon {
+                    pm_icon(pm, it.rect, icn);
+                }
+                let fg = if prefs.ui_fg_color != -1 {
+                    prefs.ui_fg_color as u32
+                } else {
+                    0
+                };
+                pm_text(
+                    pm,
+                    fs,
+                    sw,
+                    it.rect,
+                    &it.label,
+                    10,
+                    fg,
+                    it.id == WId::StatusOut,
+                );
+            }
+            _ => {
+                // Bouton : box plat, pressed → thin-down (down).
+                if it.active {
+                    pm_box(pm, it.rect, bg, it.down);
+                } else {
+                    pm_fill(pm, it.rect, bg);
+                    pm_rect(pm, it.rect, shade(bg, 0.8));
+                }
+                let icn = if it.active {
+                    it.icon.as_ref()
+                } else {
+                    it.deicon.as_ref().or(it.icon.as_ref())
+                };
+                if let Some(icn) = icn {
+                    pm_icon(pm, it.rect, icn);
+                }
+                if !it.label.is_empty() && self.lbl != 0 {
+                    let fg = if prefs.ui_fg_color != -1 {
+                        prefs.ui_fg_color as u32
+                    } else {
+                        0
+                    };
+                    pm_text(pm, fs, sw, it.rect, &it.label, 12, fg, false);
+                }
+            }
+        }
+    }
+
+    /// Dessine les barres de l'UI (LocBar/NavBar/StatusBar + findbar
+    /// fond) — la vue du contenu est blittée par `Chrome` (main).
+    pub fn draw(
+        &self,
+        pm: &mut dillo_platform::tiny_skia::Pixmap,
+        fs: &mut dillo_platform::cosmic_text::FontSystem,
+        sw: &mut dillo_platform::cosmic_text::SwashCache,
+        prefs: &Prefs,
+    ) {
+        let bg = self.bar_bg(prefs);
+        for g in [&self.loc_bar, &self.nav_bar].into_iter().flatten() {
+            if g.rect.h <= 0 {
+                continue;
+            }
+            pm_fill(pm, g.rect, bg);
+            for it in &g.children {
+                self.draw_item(pm, fs, sw, it, prefs);
+            }
+        }
+        if self.findbar_visible {
+            pm_fill(pm, self.findbar, bg);
+            pm_rect(pm, self.findbar, shade(bg, 0.7));
+        }
+        if self.status_bar.rect.h > 0 {
+            pm_fill(pm, self.status_bar.rect, bg);
+            for it in &self.status_bar.children {
+                self.draw_item(pm, fs, sw, it, prefs);
+            }
+        }
+    }
+}
+
+impl Chrome {
+    /// Dessine une fenêtre complète : strip d'onglets + chrome de
+    /// l'onglet actif + blit de sa vue contenu dans `Main`
+    /// (≙ `Fl_Window::draw` + `FltkViewport` présentation).
+    pub fn draw_window(&mut self, tabs: usize, pm: &mut dillo_platform::tiny_skia::Pixmap) {
+        let Some(w) = self.wins.get(tabs) else { return };
+        let prefs = self.prefs.borrow();
+        let fg_def = if prefs.ui_fg_color != -1 {
+            prefs.ui_fg_color as u32
+        } else {
+            0
+        };
+        let strip_bg = if prefs.ui_main_bg_color != -1 {
+            prefs.ui_main_bg_color as u32
+        } else {
+            FL_BG_DEFAULT as u32
+        };
+        let active = w.tabs.value();
+
+        // fond strip + onglets
+        let th = w.tabs.ctab_h;
+        pm_fill(
+            pm,
+            Rect {
+                x: 0,
+                y: 0,
+                w: w.tabs.win_w,
+                h: th,
+            },
+            strip_bg,
+        );
+
+        // emprunts plateforme pour le texte
+        let p = self.platform.borrow();
+        let mut fs = p.font_system().borrow_mut();
+        let mut sw = p.swash().borrow_mut();
+
+        let act_idx = w.tabs.active;
+        for i in 0..w.tabs.pack.len() {
+            let b = &w.tabs.pack[i];
+            if !b.visible {
+                continue;
+            }
+            let Some(r) = w.tabs.tab_rect(i) else {
+                continue;
+            };
+            let (bg, fg) = self.tab_colors(i == act_idx);
+            pm_box(pm, r, bg, false);
+            pm_text(pm, &mut fs, &mut sw, r, &b.label, 10, fg, false);
+        }
+        // CloseBtn (≙ `x` sur fond bouton)
+        if w.tabs.close_visible {
+            let r = Rect {
+                x: w.tabs.win_w - w.tabs.ctl_w + 2,
+                y: 0,
+                w: w.tabs.btn_w,
+                h: w.tabs.tab_h.min(th),
+            };
+            pm_box(pm, r, strip_bg, false);
+            pm_text(pm, &mut fs, &mut sw, r, "x", 10, fg_def, false);
+        }
+
+        // chrome de l'onglet actif + blit contenu
+        if let Some(ui_id) = active {
+            if let Some(u) = self.ui(ui_id) {
+                u.draw(pm, &mut fs, &mut sw, &prefs);
+                // contenu : pixmap vue → `main`
+                let c = u.view.borrow();
+                let view_pm = c.pixmap();
+                if let Some(view_pm) = view_pm.as_deref() {
+                    let mr = u.main;
+                    for y in 0..view_pm.height() as i32 {
+                        for x in 0..view_pm.width() as i32 {
+                            if x >= mr.w || y >= mr.h {
+                                continue;
+                            }
+                            let (dx, dy) = (mr.x + x, mr.y + y);
+                            if dx < 0
+                                || dy < 0
+                                || dx >= pm.width() as i32
+                                || dy >= pm.height() as i32
+                            {
+                                continue;
+                            }
+                            let sidx = (y * view_pm.width() as i32 + x) as usize;
+                            let didx = (dy * pm.width() as i32 + dx) as usize;
+                            if let (Some(src), Some(dst)) =
+                                (view_pm.pixels().get(sidx), pm.pixels_mut().get_mut(didx))
+                            {
+                                *dst = *src;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `Tabs` d'une fenêtre (lecture — hit-test event).
+    #[must_use]
+    pub fn tabs(&self, tabs: usize) -> Option<&Tabs> {
+        self.wins.get(tabs).map(|w| &w.tabs)
+    }
+
+    /// `Tabs` mutable.
+    pub fn tabs_mut(&mut self, tabs: usize) -> Option<&mut Tabs> {
+        self.wins.get_mut(tabs).map(|w| &mut w.tabs)
+    }
+
+    /// Nombre de fenêtres ouvertes.
+    #[must_use]
+    pub fn win_count(&self) -> usize {
+        self.wins.len()
+    }
+
+    /// Titre courant d'une fenêtre.
+    #[must_use]
+    pub fn win_title(&self, tabs: usize) -> Option<&str> {
+        self.wins.get(tabs).map(|w| w.title.as_str())
+    }
+
+    /// Position demandée d'une fenêtre (`prefs.xpos/ypos` appliqués).
+    #[must_use]
+    pub fn win_pos(&self, tabs: usize) -> Option<(i32, i32)> {
+        self.wins.get(tabs).and_then(|w| w.pos)
+    }
+}
+
+// -- tests ------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys::keysym;
+
+    fn platform() -> Rc<RefCell<SkiaPlatform>> {
+        Rc::new(RefCell::new(SkiaPlatform::new()))
+    }
+
+    fn ui(prefs: &Prefs) -> Ui {
+        Ui::new(&platform(), prefs, UI_MIN_W, UI_MIN_H, None)
+    }
+
+    // -- xpm_decode ---------------------------------------------------------
+
+    #[test]
+    fn xpm_decode_ok_and_none() {
+        let icn = xpm_decode(&["2 2 2 1", "a c #ff0000", "b c None", "ab", "ba"]).unwrap();
+        assert_eq!((icn.w, icn.h), (2, 2));
+        assert_eq!(icn.data[0], 0xffff_0000);
+        assert_eq!(icn.data[1], 0x0000_0000); // None → transparent
+        assert_eq!(icn.data[3], 0xffff_0000);
+        assert!(xpm_decode(&["bad"]).is_none());
+    }
+
+    #[test]
+    fn iconset_builds_all() {
+        let s = IconSet::new(false, FL_BG_DEFAULT as u32);
+        assert!(s.imgs[IconKind::Left as usize].is_some());
+        assert!(s.imgs[IconKind::LeftIn as usize].is_some());
+        assert!(s.imgs[IconKind::MeterOk as usize].is_some());
+        // *In = desaturate + color_average → pixels dérivés
+        let (a, b) = (
+            &s.imgs[IconKind::Left as usize],
+            &s.imgs[IconKind::LeftIn as usize],
+        );
+        if let (Some(a), Some(b)) = (a, b) {
+            assert_eq!((a.w, a.h), (b.w, b.h));
+            assert_ne!(a.data, b.data);
+        }
+    }
+
+    // -- Group::rearrange (CustGroupHorizontal verbatim) ---------------------
+
+    #[test]
+    fn group_rearrange_resizable_gets_rest() {
+        let mut g = Group {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 20,
+            },
+            children: vec![
+                WItem::new(WId::Clear, 0, 10, 20),
+                WItem::new(WId::Location, 10, 5, 20),
+                WItem::new(WId::Search, 90, 10, 20),
+            ],
+            resizable: Some(1),
+        };
+        g.rearrange();
+        assert_eq!(
+            g.children[0].rect,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 20
+            }
+        );
+        assert_eq!(
+            g.children[1].rect,
+            Rect {
+                x: 10,
+                y: 0,
+                w: 80,
+                h: 20
+            }
+        );
+        assert_eq!(
+            g.children[2].rect,
+            Rect {
+                x: 90,
+                y: 0,
+                w: 10,
+                h: 20
+            }
+        );
+    }
+
+    #[test]
+    fn group_rearrange_overflow_drops_resizable() {
+        let mut g = Group {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: 15,
+                h: 20,
+            },
+            children: vec![
+                WItem::new(WId::Clear, 0, 10, 20),
+                WItem::new(WId::Location, 10, 5, 20),
+                WItem::new(WId::Search, 90, 10, 20),
+            ],
+            resizable: Some(1),
+        };
+        g.rearrange();
+        assert_eq!(g.children[1].rect.w, 0);
+        assert_eq!(g.resizable, None); // verbatim: resizable perdu
+    }
+
+    #[test]
+    fn group_invisible_skipped() {
+        let mut g = Group {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 20,
+            },
+            children: vec![
+                WItem::new(WId::Clear, 0, 10, 20),
+                WItem::new(WId::Location, 10, 5, 20),
+                WItem::new(WId::Search, 90, 10, 20),
+            ],
+            resizable: Some(1),
+        };
+        g.children[0].visible = false;
+        g.rearrange();
+        // Clear caché : Location commence à 0 et récupère ses 10px.
+        assert_eq!(
+            g.children[1].rect,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 90,
+                h: 20
+            }
+        );
+        assert_eq!(g.children[2].rect.x, 90);
+    }
+
+    // -- LineInput / CustInput ----------------------------------------------
+
+    #[test]
+    fn line_input_editing() {
+        let mut li = LineInput::default();
+        li.set_value("héllo");
+        assert_eq!(li.size(), 6); // octets
+        li.set_position(0, 0);
+        li.cut(0, 1);
+        assert_eq!(li.text, "éllo");
+        // cut sur frontière invalide clampée
+        li.set_value("hé");
+        li.cut(0, 2); // 'h' + premier octet de 'é' → clampé à fin 'h'? non:
+        assert_eq!(li.text, "é"); // cut(0,1) retirerait h ; 0..2 couvre h+\xc3
+                                  // verbatim : FLTK coupe des octets — la borne UTF-8 est le garde-fou
+    }
+
+    #[test]
+    fn line_input_select_and_insert() {
+        let mut li = LineInput::default();
+        li.set_value("abcd");
+        li.select_all();
+        assert_eq!((li.pos, li.mark), (4, 0));
+        li.insert("xy");
+        assert_eq!(li.text, "xy");
+        assert_eq!(li.pos, 2);
+    }
+
+    // -- Ui metrics (verbatim make_panel) ------------------------------------
+
+    #[test]
+    fn panel_metrics_verbatim() {
+        let p = Prefs::default();
+        let mut u = ui(&p);
+        // P_tiny
+        u.panel_size = 0;
+        u.small_icons = false;
+        u.panel_metrics();
+        assert_eq!(
+            (u.bw, u.bh, u.lh, u.nh, u.fh, u.sh, u.pw),
+            (28, 28, 28, 28, 28, 20, 70)
+        );
+        // P_medium + small_icons
+        u.panel_size = 2;
+        u.small_icons = true;
+        u.panel_metrics();
+        assert_eq!((u.bw, u.bh, u.lh, u.mh, u.lbl), (42, 36, 22, 0, 1));
+        // P_small grandes icônes
+        u.panel_size = 1;
+        u.small_icons = false;
+        u.panel_metrics();
+        assert_eq!((u.bw, u.bh, u.lh, u.lbl), (28, 28, 28, 0));
+    }
+
+    #[test]
+    fn ui_constructs_tiny_single_bar() {
+        let p = Prefs {
+            panel_size: PanelSize::Tiny,
+            ..Prefs::default()
+        };
+        let u = ui(&p);
+        assert!(u.loc_bar.is_none()); // P_tiny : une seule barre
+        let nav = u.nav_bar.as_ref().unwrap();
+        // Back..Tools + File + Clear + Location + Search + Help + ImgProg + PageProg
+        assert!(nav.find(WId::Btn(UiButton::Back)).is_some());
+        assert!(nav.find(WId::FileMenu).is_some());
+        assert!(nav.find(WId::Location).is_some());
+        assert!(nav.find(WId::PageProg).is_some());
+        // resizable = Location
+        assert_eq!(nav.resizable, nav.find(WId::Location));
+    }
+
+    #[test]
+    fn ui_medium_two_bars() {
+        let p = Prefs {
+            panel_size: PanelSize::Medium,
+            ..Prefs::default()
+        };
+        let u = ui(&p);
+        assert!(u.loc_bar.is_some());
+        let nav = u.nav_bar.as_ref().unwrap();
+        // resizable = spacer
+        assert_eq!(nav.resizable, nav.find(WId::Spacer));
+        assert!(nav.find(WId::PageProg).is_some());
+    }
+
+    #[test]
+    fn status_bar_layout() {
+        let p = Prefs::default();
+        let u = ui(&p);
+        assert_eq!(u.status_bar.children.len(), 2);
+        assert_eq!(u.status_bar.children[1].id, WId::BugMeter);
+        assert_eq!(u.status_bar.children[1].rect.w, 20);
+        assert_eq!(u.status_bar.children[0].rect.w, UI_MIN_W - 20);
+    }
+
+    #[test]
+    fn rearrange_main_gets_rest() {
+        let p = Prefs::default();
+        let mut u = ui(&p);
+        u.rearrange();
+        // medium : loc(lh) + nav(nh) + main + status(sh)
+        assert_eq!(u.main.y, u.lh + u.nh);
+        assert_eq!(u.main.h, UI_MIN_H - u.lh - u.nh - u.sh);
+        assert_eq!(u.status_bar.rect.y, UI_MIN_H - u.sh);
+    }
+
+    #[test]
+    fn panels_toggle_hides_and_restores() {
+        let p = Prefs::default();
+        let mut u = ui(&p);
+        u.panels_toggle();
+        assert_eq!(u.panel_mode, UiPanelMode::Hidden);
+        assert_eq!(u.main.h, UI_MIN_H); // tout au main
+        u.panels_toggle();
+        assert_eq!(u.panel_mode, UiPanelMode::Normal);
+        assert_eq!(u.main.h, UI_MIN_H - u.lh - u.nh - u.sh);
+    }
+
+    #[test]
+    fn fullwindow_start_hides_panel() {
+        let p = Prefs {
+            fullwindow_start: true,
+            ..Prefs::default()
+        };
+        let u = ui(&p);
+        assert_eq!(u.panel_mode, UiPanelMode::Hidden);
+    }
+
+    #[test]
+    fn findbar_toggle_geometry() {
+        let p = Prefs::default();
+        let mut u = ui(&p);
+        u.findbar_toggle(true);
+        assert!(u.findbar_visible);
+        assert_eq!(u.findbar.h, 28);
+        // main réduit de fh
+        assert_eq!(u.main.h, UI_MIN_H - u.lh - u.nh - u.sh - u.fh);
+        u.findbar_toggle(false);
+        assert!(!u.findbar_visible);
+        assert_eq!(u.findbar.w, 0); // workaround STR#2639 verbatim
+    }
+
+    #[test]
+    fn location_focus_semantics() {
+        let p = Prefs::default();
+        let mut u = ui(&p);
+        u.set_location("http://x/");
+        // pas de focus → position 0 (verbatim)
+        assert_eq!(u.location.pos, 0);
+        u.focus_location();
+        assert_eq!((u.location.pos, u.location.mark), (u.location.size(), 0));
+        u.set_location("http://y/");
+        // focus Location → curseur à la fin
+        assert_eq!(u.location.pos, u.location.size());
+    }
+
+    #[test]
+    fn focus_location_unhides_temporary_panel() {
+        let p = Prefs {
+            fullwindow_start: true,
+            ..Prefs::default()
+        };
+        let mut u = ui(&p);
+        u.focus_location();
+        assert_eq!(u.panel_mode, UiPanelMode::Normal); // ré-affiché
+        assert!(u.panel_temporary);
+    }
+
+    #[test]
+    fn progress_labels_verbatim() {
+        let p = Prefs::default();
+        let mut u = ui(&p);
+        u.set_page_prog(512 * 1024, 1);
+        let i = u.nav_bar.as_ref().unwrap().find(WId::PageProg).unwrap();
+        assert_eq!(
+            u.nav_bar.as_ref().unwrap().children[i].label,
+            "Page
+512.0 KB"
+        );
+        u.set_page_prog(3 * 1024 * 1024, 1);
+        let i = u.nav_bar.as_ref().unwrap().find(WId::PageProg).unwrap();
+        assert_eq!(
+            u.nav_bar.as_ref().unwrap().children[i].label,
+            "Page
+3.0 MB"
+        );
+        u.set_img_prog(2, 5, 1);
+        let i = u.nav_bar.as_ref().unwrap().find(WId::ImgProg).unwrap();
+        assert_eq!(
+            u.nav_bar.as_ref().unwrap().children[i].label,
+            "Images
+2 of 5"
+        );
+        u.set_page_prog(0, 0);
+        let i = u.nav_bar.as_ref().unwrap().find(WId::PageProg).unwrap();
+        assert!(!u.nav_bar.as_ref().unwrap().children[i].active); // cmd 0
+    }
+
+    #[test]
+    fn bug_meter_label_and_width() {
+        let p = Prefs::default();
+        let mut u = ui(&p);
+        let ok = Icon {
+            w: 1,
+            h: 1,
+            data: vec![0xff00_ff00],
+        };
+        let bug = Icon {
+            w: 1,
+            h: 1,
+            data: vec![0xffff_0000],
+        };
+        u.set_bug_prog(&ok, &bug, 7);
+        let i = u.status_bar.find(WId::BugMeter).unwrap();
+        assert_eq!(u.status_bar.children[i].label, "7");
+        assert_eq!(u.status_bar.children[i].rect.w, 29); // verbatim
+        u.set_bug_prog(&ok, &bug, 0);
+        let i = u.status_bar.find(WId::BugMeter).unwrap();
+        assert_eq!(u.status_bar.children[i].label, "");
+        assert_eq!(u.status_bar.children[i].rect.w, 20);
+    }
+
+    #[test]
+    fn customize_hides_widgets() {
+        let p = Prefs {
+            show_back: false,
+            show_url: false,
+            show_progress_box: false,
+            ..Prefs::default()
+        };
+        let u = ui(&p);
+        let find_in = |u: &Ui, id: WId| -> bool {
+            [&u.loc_bar, &u.nav_bar]
+                .into_iter()
+                .flatten()
+                .find_map(|g| g.find(id).map(|i| g.children[i].visible))
+                .unwrap()
+        };
+        assert!(!find_in(&u, WId::Btn(UiButton::Back)));
+        assert!(find_in(&u, WId::Btn(UiButton::Forw)));
+        assert!(!find_in(&u, WId::Location));
+        assert!(!find_in(&u, WId::PageProg));
+        assert!(!find_in(&u, WId::ImgProg));
+    }
+
+    #[test]
+    fn button_sens_and_inherit() {
+        let p = Prefs::default();
+        let mut u = ui(&p);
+        u.button_set_sens(UiButton::Back, false);
+        let nav = u.nav_bar.as_ref().unwrap();
+        let i = nav.find(WId::Btn(UiButton::Back)).unwrap();
+        assert!(!nav.children[i].active);
+        // verbatim : nouvel onglet hérite panel_size/small_icons
+        let u2 = Ui::new(&platform(), &p, UI_MIN_W, UI_MIN_H, Some(&u));
+        assert_eq!(u2.panel_size, u.panel_size);
+        assert_eq!(u2.small_icons, u.small_icons);
+    }
+
+    // -- Tabs (CustTabs verbatim) --------------------------------------------
+
+    #[test]
+    fn tabs_lifecycle() {
+        let mut t = Tabs::new(600, 200, 22);
+        assert_eq!(t.ctab_h, 1);
+        assert!(!t.close_visible);
+        let lw = |s: &str| s.len() as i32 * 7;
+        assert!(!t.add_new_tab(1, true, lw)); // 1er onglet : strip caché
+        assert_eq!(t.num_tabs(), 1);
+        assert!(t.add_new_tab(2, false, lw)); // 2e : strip apparaît
+        assert_eq!(t.ctab_h, 22);
+        assert!(t.close_visible);
+        assert_eq!(t.value(), Some(1)); // focus conservé sur 1
+        t.add_new_tab(3, true, lw);
+        assert_eq!(t.value(), Some(3)); // focus → nouveau
+    }
+
+    #[test]
+    fn tabs_switch_and_remove_focus() {
+        let mut t = Tabs::new(600, 200, 22);
+        let lw = |s: &str| s.len() as i32 * 7;
+        t.add_new_tab(1, true, lw);
+        t.add_new_tab(2, true, lw);
+        t.add_new_tab(3, true, lw);
+        t.switch_tab(0); // ui 1 actif en dernier (focus_num=4)
+                         // supprimer l'actif (ui 1) → focus_num max restant = ui 3
+        t.remove_tab(1);
+        assert_eq!(t.value(), Some(3));
+        assert_eq!(t.num_tabs(), 2);
+        // supprimer l'actif (ui 3) → reste ui 2
+        t.remove_tab(3);
+        assert_eq!(t.num_tabs(), 1);
+        assert_eq!(t.ctab_h, 1); // strip re-caché verbatim
+        assert!(!t.close_visible);
+        assert_eq!(t.value(), Some(2));
+    }
+
+    #[test]
+    fn tabs_prev_next_wrap() {
+        let mut t = Tabs::new(600, 200, 22);
+        let lw = |s: &str| s.len() as i32 * 7;
+        t.add_new_tab(1, true, lw);
+        t.add_new_tab(2, false, lw);
+        t.add_new_tab(3, false, lw);
+        assert_eq!(t.value(), Some(1));
+        assert_eq!(t.next_tab(), Some(2));
+        assert_eq!(t.next_tab(), Some(3));
+        assert_eq!(t.next_tab(), Some(1)); // wrap verbatim
+        assert_eq!(t.prev_tab(), Some(3));
+    }
+
+    #[test]
+    fn tab_label_truncation_utf8() {
+        let mut t = Tabs::new(600, 200, 22);
+        let lw = |s: &str| s.len() as i32 * 7;
+        t.add_new_tab(1, true, lw);
+        t.set_tab_label(1, "12345678901234567890", lw);
+        let b = &t.pack[0];
+        assert_eq!(b.label, "123456789012345...");
+        // utf-8 : borne ajustée par end_of_char
+        t.set_tab_label(1, "12345678901234\u{00e9}7890", lw); // é = 2 octets à l'index 14
+        let b = &t.pack[0];
+        assert!(b.label.starts_with("12345678901234") && b.label.ends_with("..."));
+        t.set_tab_label(1, "short", lw);
+        assert_eq!(t.pack[0].label, "short");
+    }
+
+    #[test]
+    fn tab_hit_test() {
+        let mut t = Tabs::new(600, 200, 22);
+        let lw = |s: &str| s.len() as i32 * 7;
+        t.add_new_tab(1, true, lw);
+        t.add_new_tab(2, false, lw);
+        // onglet 0 : w = label_w+14 ; onglet 1 : tab_w=50
+        let w0 = t.pack[0].w;
+        assert_eq!(t.tab_at(w0 / 2, 5), Some(0));
+        assert_eq!(t.tab_at(w0 + 5, 5), Some(1));
+        assert_eq!(t.tab_at(0, t.ctab_h + 5), None); // sous le strip
+        assert!(t.close_at(t.win_w - t.ctl_w + 5, 5));
+    }
+
+    // -- Chrome / UiShell -----------------------------------------------------
+
+    #[test]
+    fn chrome_window_and_tabs() {
+        let p = platform();
+        let prefs = Rc::new(RefCell::new(Prefs::default()));
+        let mut c = Chrome::new(p, prefs);
+        let tabs = c.window_new(800, 600);
+        c.window_show(tabs);
+        let (ui1, _l1) = c.tab_ui_new(tabs, 0, true);
+        let (ui2, _l2) = c.tab_ui_new(tabs, ui1, false);
+        assert_eq!(c.tab_count(tabs), 2);
+        assert_eq!(c.tabs_of(ui2), Some(tabs));
+        assert!(c.is_active_tab(ui1));
+        assert!(!c.is_active_tab(ui2));
+        assert_eq!(c.tabs_active_ui(tabs), ui1);
+        c.switch_to_tab(ui2);
+        assert!(c.is_active_tab(ui2));
+        c.set_location(ui2, "http://x/");
+        assert_eq!(c.get_location(ui2), "http://x/");
+        c.set_status(ui2, "msg");
+        assert_eq!(c.ui(ui2).unwrap().status_bar.children[0].label, "msg");
+        c.tab_ui_remove(ui1);
+        c.tab_ui_remove(ui2);
+        assert_eq!(c.win_count(), 0); // fenêtre détruite à 0 onglets (verbatim)
+    }
+
+    #[test]
+    fn chrome_defer_and_close() {
+        let p = platform();
+        let prefs = Rc::new(RefCell::new(Prefs::default()));
+        let mut c = Chrome::new(p, prefs);
+        c.defer_nav(3, NavOp::Reload);
+        c.defer_nav(4, NavOp::Repush);
+        let ops = c.drain_nav();
+        assert_eq!(ops.len(), 2);
+        assert!(matches!(ops[0].1, NavOp::Reload));
+        c.defer_close_all();
+        assert!(c.take_close_all());
+        assert!(!c.take_close_all());
+    }
+
+    // -- ui_shortcut dispatch --------------------------------------------------
+
+    #[test]
+    fn shortcut_dispatch_consumes() {
+        let p = platform();
+        let prefs = Rc::new(RefCell::new(Prefs::default()));
+        let mut c = Chrome::new(p, Rc::clone(&prefs));
+        let mut reg = BwRegistry::new();
+        let uicmd = UiCmd::new(&Prefs::default());
+        let pr = prefs.borrow();
+        let bw = uicmd.browser_window_new(&mut reg, &mut c, &pr, 800, 600, None);
+        let ui_id = reg.get(bw).unwrap().ui.get();
+        // Nop → consommé sans effet ; invalid bw → non consommé
+        assert!(ui_shortcut(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            &pr,
+            bw,
+            KeysCommand::Nop
+        ));
+        assert!(!ui_shortcut(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            &pr,
+            999,
+            KeysCommand::Nop
+        ));
+        // HidePanels → panels toggled
+        let before = c.ui(ui_id).unwrap().panel_mode;
+        ui_shortcut(&uicmd, &mut reg, &mut c, &pr, bw, KeysCommand::HidePanels);
+        assert_ne!(c.ui(ui_id).unwrap().panel_mode, before);
+    }
+
+    // -- cust_input_key --------------------------------------------------------
+
+    #[test]
+    fn cust_input_key_filters() {
+        const CTRL: i32 = 4;
+        let p = platform();
+        let prefs = Rc::new(RefCell::new(Prefs::default()));
+        let mut c = Chrome::new(p, Rc::clone(&prefs));
+        let mut reg = BwRegistry::new();
+        let uicmd = UiCmd::new(&Prefs::default());
+        let pr = prefs.borrow();
+        let bw = uicmd.browser_window_new(&mut reg, &mut c, &pr, 800, 600, None);
+        let ui_id = reg.get(bw).unwrap().ui.get();
+        c.ui_mut(ui_id).unwrap().location.set_value("ab");
+        // Ctrl+E → curseur fin (verbatim)
+        assert!(cust_input_key(
+            &uicmd, &mut reg, &mut c, &pr, bw, 'e' as i32, None, CTRL
+        ));
+        assert_eq!(c.ui(ui_id).unwrap().location.pos, 2);
+        // Esc → remonte (non consommé)
+        assert!(!cust_input_key(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            &pr,
+            bw,
+            keysym::ESCAPE,
+            None,
+            0
+        ));
+        // Shift+Left → remonte
+        assert!(!cust_input_key(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            &pr,
+            bw,
+            keysym::LEFT,
+            None,
+            1
+        ));
+        // Down sans modif → focus main + non consommé
+        c.ui_mut(ui_id).unwrap().focus = Focus::Location;
+        assert!(!cust_input_key(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            &pr,
+            bw,
+            keysym::DOWN,
+            None,
+            0
+        ));
+        assert_eq!(c.ui(ui_id).unwrap().focus, Focus::Main);
+        // insertion texte
+        assert!(cust_input_key(
+            &uicmd,
+            &mut reg,
+            &mut c,
+            &pr,
+            bw,
+            0,
+            Some("z"),
+            0
+        ));
+        assert_eq!(c.ui(ui_id).unwrap().location.text, "abz");
+    }
+}

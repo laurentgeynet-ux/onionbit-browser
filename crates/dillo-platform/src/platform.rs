@@ -103,6 +103,19 @@ impl SkiaPlatform {
         }
     }
 
+    /// Accès partagé au `FontSystem` (chrome `dillo-browser::ui`
+    /// dessine son texte avec les mêmes fontes que le rendu).
+    #[must_use]
+    pub fn font_system(&self) -> &RefCell<FontSystem> {
+        &self.font_system
+    }
+
+    /// Cache de rasterisation des glyphes (chrome).
+    #[must_use]
+    pub fn swash(&self) -> &RefCell<cosmic_text::SwashCache> {
+        &self.swash
+    }
+
     /// Facteur d'échelle (≙ `Fl::screen_dpi` par moniteur).
     /// Appelé par le shell fenêtré à la création et sur
     /// `ScaleFactorChanged`.
