@@ -1247,29 +1247,118 @@ pub struct StyleImage {
     pub imgbuf_src: Option<Rc<dyn Imgbuf>>,
     /// `imgbufTiled`.
     pub imgbuf_tiled: Option<Rc<dyn Imgbuf>>,
-    /// `imgRendererDist`.
-    img_renderer_dist: RefCell<ImgRendererDist>,
+    /// `imgRendererDist` (`Rc` : accès typé `put`/`remove`).
+    img_renderer_dist: Rc<RefCell<ImgRendererDist>>,
+    /// Le même dist coercé en `dyn ImgRenderer` (amont retourne
+    /// `ImgRenderer*` — ≙ `getMainImgRenderer`).
+    main_renderer: Rc<RefCell<dyn ImgRenderer>>,
+}
+
+/// `MIN_BG_IMG_W/H` + `OPT_BG_IMG_W/H` — seuils du buffer « tiled »
+/// (style.cc:37-40, verbatim).
+const MIN_BG_IMG_W: i32 = 10;
+const MIN_BG_IMG_H: i32 = 10;
+const OPT_BG_IMG_W: i32 = 50;
+const OPT_BG_IMG_H: i32 = 50;
+
+/// `drawBackgroundLineByLine` — `false` amont (style.cc:35) :
+/// `finish` dessine la zone entière ; le chemin ligne-à-ligne est
+/// porté pour complétude (constant → branch mort, fidèle).
+const DRAW_BACKGROUND_LINE_BY_LINE: bool = false;
+
+/// `StyleImage::StyleImgRenderer` — renderer interne qui reçoit le
+/// buffer source et maintient le buffer « tiled ». `Weak` vers
+/// l'image ≙ pointeur brut amont (évite le cycle `Rc`).
+struct StyleImgRenderer {
+    image: Weak<RefCell<StyleImage>>,
+}
+
+impl ImgRenderer for StyleImgRenderer {
+    /// `StyleImgRenderer::setBuffer` — verbatim style.cc:542 :
+    /// remplace `imgbufSrc`, détruit `imgbufTiled`, reconstruit le
+    /// buffer tuilé si `src < MIN²` (`tilesX/Y = OPT/size`, ≥1).
+    fn set_buffer(&mut self, buffer: &Rc<dyn Imgbuf>, _resize: bool) {
+        let Some(image_rc) = self.image.upgrade() else {
+            return;
+        };
+        let mut image = image_rc.borrow_mut();
+        image.imgbuf_tiled = None;
+        image.imgbuf_src = Some(Rc::clone(buffer));
+        let src = buffer;
+        if src.get_root_width() * src.get_root_height() < MIN_BG_IMG_W * MIN_BG_IMG_H {
+            image.tiles_x = (OPT_BG_IMG_W / src.get_root_width()).max(1);
+            image.tiles_y = (OPT_BG_IMG_H / src.get_root_height()).max(1);
+            image.imgbuf_tiled = Some(src.create_similar_buf(
+                image.tiles_x * src.get_root_width(),
+                image.tiles_y * src.get_root_height(),
+            ));
+        }
+    }
+
+    /// `StyleImgRenderer::drawRow` — recopie la ligne `row` du
+    /// buffer source dans toutes les tuiles du buffer tuilé.
+    /// Note amont (style.cc:596) : appelable *après* d'autres
+    /// `drawRow` qui dessinent — sans gravité car le dessin réel
+    /// est différé par `queueResize`.
+    fn draw_row(&mut self, row: i32) {
+        let Some(image_rc) = self.image.upgrade() else {
+            return;
+        };
+        let image = image_rc.borrow();
+        if let (Some(tiled), Some(src)) = (&image.imgbuf_tiled, &image.imgbuf_src) {
+            let w = src.get_root_width();
+            let h = src.get_root_height();
+            for x in 0..image.tiles_x {
+                for y in 0..image.tiles_y {
+                    src.copy_to(&**tiled, x * w, y * h, 0, row, w, 1);
+                }
+            }
+        }
+    }
+
+    /// `finish` — rien (verbatim).
+    fn finish(&mut self) {}
+
+    /// `fatal` — rien (verbatim).
+    fn fatal(&mut self) {}
 }
 
 impl StyleImage {
-    /// `StyleImage::create`.
+    /// `StyleImage::create` — `imgRendererDist->put
+    /// (styleImgRenderer)` au constructeur (style.cc:626-628).
     #[must_use]
     pub fn create() -> Rc<RefCell<StyleImage>> {
-        Rc::new(RefCell::new(StyleImage {
+        let dist = Rc::new(RefCell::new(ImgRendererDist::new()));
+        let main: Rc<RefCell<dyn ImgRenderer>> = dist.clone();
+        let image = Rc::new(RefCell::new(StyleImage {
             tiles_x: 0,
             tiles_y: 0,
             imgbuf_src: None,
             imgbuf_tiled: None,
-            img_renderer_dist: RefCell::new(ImgRendererDist::new()),
-        }))
+            img_renderer_dist: dist,
+            main_renderer: main,
+        }));
+        let sir: Rc<RefCell<dyn ImgRenderer>> = Rc::new(RefCell::new(StyleImgRenderer {
+            image: Rc::downgrade(&image),
+        }));
+        image.borrow().img_renderer_dist.borrow_mut().put(&sir);
+        image
+    }
+
+    /// `getMainImgRenderer` — le distributeur (≙ `imgRendererDist`).
+    #[must_use]
+    pub fn get_main_img_renderer(&self) -> Rc<RefCell<dyn ImgRenderer>> {
+        Rc::clone(&self.main_renderer)
     }
 
     /// `getImgbufSrc`.
+    #[must_use]
     pub fn get_imgbuf_src(&self) -> Option<Rc<dyn Imgbuf>> {
         self.imgbuf_src.clone()
     }
 
     /// `getImgbufTiled (repeatX, repeatY)` — verbatim.
+    #[must_use]
     pub fn get_imgbuf_tiled(&self, repeat_x: bool, repeat_y: bool) -> Option<Rc<dyn Imgbuf>> {
         if self.imgbuf_tiled.is_some() && repeat_x && repeat_y {
             self.imgbuf_tiled.clone()
@@ -1279,6 +1368,7 @@ impl StyleImage {
     }
 
     /// `getTilesX`.
+    #[must_use]
     pub fn get_tiles_x(&self, repeat_x: bool, repeat_y: bool) -> i32 {
         if self.imgbuf_tiled.is_some() && repeat_x && repeat_y {
             self.tiles_x
@@ -1288,6 +1378,7 @@ impl StyleImage {
     }
 
     /// `getTilesY`.
+    #[must_use]
     pub fn get_tiles_y(&self, repeat_x: bool, repeat_y: bool) -> i32 {
         if self.imgbuf_tiled.is_some() && repeat_x && repeat_y {
             self.tiles_y
@@ -1524,5 +1615,1426 @@ mod tests {
         let mut f2 = f.clone();
         f2.size = 12;
         assert_ne!(h, f2.hash_value());
+    }
+}
+
+// ------------------------------------------------------------------
+// ExternalImgRenderer / ExternalWidgetImgRenderer + dessin de style
+// (`drawBorder*`/`drawBackground`/`drawBackgroundImage` — style.cc)
+// ------------------------------------------------------------------
+
+/// `StyleImage::ExternalImgRenderer` — renderer externe branché sur
+/// un `StyleImage` (widget ou layout) : `setBuffer` ne fait rien,
+/// `drawRow`/`finish` redessinent la zone de fond — les sous-traits
+/// fournissent les zones et la politique de tuilage.
+///
+/// Les méthodes `ImgRenderer` ne peuvent pas être implémentées par
+/// défaut ici : le port expose les helpers `external_img_renderer_*`
+/// que chaque implémentation appelle verbatim depuis ses méthodes
+/// `ImgRenderer` (même rôle que la classe de base amont).
+pub trait ExternalImgRenderer: ImgRenderer {
+    /// `readyToDraw` — si `false`, rien n'est dessiné.
+    fn ready_to_draw(&self) -> bool;
+    /// `getBgArea (x, y, w, h)` — zone couverte par le fond,
+    /// coordonnées canvas.
+    fn get_bg_area(&self) -> (i32, i32, i32, i32);
+    /// `getRefArea` — zone de référence du tuilage.
+    fn get_ref_area(&self) -> (i32, i32, i32, i32);
+    /// `getBackgroundImage`.
+    fn get_background_image(&self) -> Option<Rc<RefCell<StyleImage>>>;
+    /// `getBackgroundRepeat`.
+    fn get_background_repeat(&self) -> BackgroundRepeat;
+    /// `getBackgroundAttachment`.
+    fn get_background_attachment(&self) -> BackgroundAttachment;
+    /// `getBackgroundPositionX`.
+    fn get_background_position_x(&self) -> Length;
+    /// `getBackgroundPositionY`.
+    fn get_background_position_y(&self) -> Length;
+    /// `draw (x, y, w, h)` — dessine (ou enfile) une zone en
+    /// coordonnées *canvas*.
+    fn draw(&mut self, x: i32, y: i32, width: i32, height: i32);
+}
+
+/// `ExternalImgRenderer::setBuffer` — rien (style.cc:644 verbatim).
+pub fn external_img_renderer_set_buffer(_r: &mut dyn ExternalImgRenderer) {}
+
+/// `ExternalImgRenderer::drawRow` — verbatim style.cc:650 :
+/// branche `drawBackgroundLineByLine` (`false` amont → code mort
+/// fidèlement porté : tuilage ligne par ligne).
+pub fn external_img_renderer_draw_row(r: &mut dyn ExternalImgRenderer, row: i32) {
+    if DRAW_BACKGROUND_LINE_BY_LINE && r.ready_to_draw() {
+        if let Some(background_image) = r.get_background_image() {
+            let imgbuf = background_image.borrow().get_imgbuf_src();
+            if let Some(imgbuf) = imgbuf {
+                let img_width = imgbuf.get_root_width();
+                let img_height = imgbuf.get_root_height();
+                let (x, y, width, height) = r.get_bg_area();
+                let (x_ref, y_ref, width_ref, height_ref) = r.get_ref_area();
+                let v = calc_background_related_values(
+                    &background_image,
+                    r.get_background_repeat(),
+                    r.get_background_attachment(),
+                    r.get_background_position_x(),
+                    r.get_background_position_y(),
+                    x,
+                    y,
+                    width,
+                    height,
+                    x_ref,
+                    y_ref,
+                    width_ref,
+                    height_ref,
+                );
+                if v.do_draw {
+                    for tile_y in v.tile_y1..=v.tile_y2 {
+                        let x1 = (v.orig_x + v.tile_x1 * img_width).max(x);
+                        let x2 = (v.orig_x + (v.tile_x2 + 1) * img_width).min(x + width);
+                        let yt = v.orig_y + tile_y * img_height + row;
+                        if yt >= y && yt < y + height {
+                            r.draw(x1, yt, x2 - x1, 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `ExternalImgRenderer::finish` — verbatim style.cc:698 :
+/// `!drawBackgroundLineByLine` → dessine toute la zone d'un coup.
+pub fn external_img_renderer_finish(r: &mut dyn ExternalImgRenderer) {
+    if !DRAW_BACKGROUND_LINE_BY_LINE && r.ready_to_draw() {
+        let (x, y, width, height) = r.get_bg_area();
+        r.draw(x, y, width, height);
+    }
+}
+
+/// `ExternalImgRenderer::fatal` — rien (style.cc:710 verbatim).
+pub fn external_img_renderer_fatal(_r: &mut dyn ExternalImgRenderer) {}
+
+/// `StyleImage::ExternalWidgetImgRenderer` — variante widget : les
+/// getters de fond lisent le style (`getStyle` abstrait), avec les
+/// mêmes fallbacks qu'amont (`BACKGROUND_REPEAT`,
+/// `ATTACHMENT_SCROLL`, position `0%`).
+pub trait ExternalWidgetImgRenderer: ExternalImgRenderer {
+    /// `getStyle`.
+    fn get_style(&self) -> Option<Rc<Style>>;
+
+    /// `getBackgroundImage` — `style ? style->backgroundImage
+    /// : NULL` (style.cc:717).
+    fn get_widget_background_image(&self) -> Option<Rc<RefCell<StyleImage>>> {
+        self.get_style()
+            .and_then(|s| s.attrs.background_image.clone())
+    }
+
+    /// `getBackgroundRepeat` — fallback `BACKGROUND_REPEAT`.
+    fn get_widget_background_repeat(&self) -> BackgroundRepeat {
+        self.get_style()
+            .map_or(BackgroundRepeat::Repeat, |s| s.attrs.background_repeat)
+    }
+
+    /// `getBackgroundAttachment` — fallback `SCROLL`.
+    fn get_widget_background_attachment(&self) -> BackgroundAttachment {
+        self.get_style().map_or(BackgroundAttachment::Scroll, |s| {
+            s.attrs.background_attachment
+        })
+    }
+
+    /// `getBackgroundPositionX` — fallback `createPerLength (0)`.
+    fn get_widget_background_position_x(&self) -> Length {
+        self.get_style()
+            .map_or_else(|| create_per_length(0.0), |s| s.attrs.background_position_x)
+    }
+
+    /// `getBackgroundPositionY`.
+    fn get_widget_background_position_y(&self) -> Length {
+        self.get_style()
+            .map_or_else(|| create_per_length(0.0), |s| s.attrs.background_position_y)
+    }
+}
+
+// ------------------------------------------------------------------
+// drawBorderTop/Bottom/Left/Right — verbatim style.cc:757-1157.
+// Trapezes pixel-exacts (fallthroughs amont déroulés en gardes).
+// ------------------------------------------------------------------
+
+fn pt(x: i32, y: i32) -> crate::types::Point {
+    crate::types::Point { x, y }
+}
+
+/// `drawBorderTop` (style.cc:757) — verbatim.
+#[allow(clippy::too_many_lines)]
+fn draw_border_top(
+    view: &mut dyn crate::view::View,
+    style: &StyleAttrs,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+) {
+    let mut shading = Shading::Normal;
+    let Some(color) = &style.border_color[0] else {
+        return;
+    };
+    if style.border_width.top == 0 {
+        return;
+    }
+    let filled = true;
+    let convex = true;
+    match style.border_style[0] {
+        BorderStyle::None | BorderStyle::Hidden => {}
+        BorderStyle::Dotted | BorderStyle::Dashed => {
+            let w = style.border_width.top;
+            let lt = if style.border_style[0] == BorderStyle::Dotted {
+                LineType::Dotted
+            } else {
+                LineType::Dashed
+            };
+            view.draw_typed_line(
+                color,
+                shading,
+                lt,
+                w,
+                x1 + w / 2,
+                y1 + w / 2,
+                x2 - w / 2,
+                y2 + w / 2,
+            );
+        }
+        BorderStyle::Solid | BorderStyle::Inset | BorderStyle::Outset => {
+            let inset = style.border_style[0] == BorderStyle::Inset;
+            if style.border_style[0] != BorderStyle::Solid {
+                shading = if inset { Shading::Dark } else { Shading::Light };
+            }
+            if style.border_width.top == 1 {
+                view.draw_line(color, shading, x1, y1, x2, y2);
+            } else {
+                let points = [
+                    pt(x1, y1),
+                    pt(x2 + 1, y1),
+                    pt(
+                        x2 + 1 - style.border_width.right,
+                        y1 + style.border_width.top,
+                    ),
+                    pt(x1 + style.border_width.left, y1 + style.border_width.top),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+            }
+        }
+        BorderStyle::Ridge | BorderStyle::Groove => {
+            let ridge = style.border_style[0] == BorderStyle::Ridge;
+            let d = style.border_width.top & 1;
+            let points = [
+                pt(x1, y1),
+                pt(x2 + 1, y1),
+                pt(
+                    x2 - style.border_width.right / 2,
+                    y1 + style.border_width.top / 2 + d,
+                ),
+                pt(
+                    x1 + style.border_width.left / 2,
+                    y1 + style.border_width.top / 2 + d,
+                ),
+            ];
+            shading = if ridge { Shading::Light } else { Shading::Dark };
+            view.draw_polygon(color, shading, filled, convex, &points);
+            let points = [
+                pt(
+                    x1 + style.border_width.left / 2 + d,
+                    y1 + style.border_width.top / 2 + d,
+                ),
+                pt(
+                    x2 - style.border_width.right / 2 + 1 - d,
+                    y1 + style.border_width.top / 2 + d,
+                ),
+                pt(
+                    x2 - style.border_width.right + 1 - d,
+                    y1 + style.border_width.top,
+                ),
+                pt(x1 + style.border_width.left, y1 + style.border_width.top),
+            ];
+            shading = if ridge { Shading::Dark } else { Shading::Light };
+            view.draw_polygon(color, shading, filled, convex, &points);
+        }
+        BorderStyle::Double => {
+            #[allow(clippy::cast_possible_truncation)]
+            let w = (f64::from(style.border_width.top) / 3.0).round() as i32;
+            let d = if w != 0 {
+                style.border_width.top - 2 * w
+            } else {
+                0
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let w_l = (f64::from(style.border_width.left) / 3.0).round() as i32;
+            #[allow(clippy::cast_possible_truncation)]
+            let w_r = (f64::from(style.border_width.right) / 3.0).round() as i32;
+            if style.border_width.top == 1 {
+                view.draw_line(color, shading, x1, y1, x2, y2);
+            } else {
+                let points = [
+                    pt(x1, y1),
+                    pt(x2 + 1, y1),
+                    pt(x2 + 1 - w_r, y1 + w),
+                    pt(x1 + w_l, y1 + w),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+                let points = [
+                    pt(x1 + style.border_width.left - w_l, y1 + w + d),
+                    pt(x2 + 1 - style.border_width.right + w_r, y1 + w + d),
+                    pt(
+                        x2 + 1 - style.border_width.right,
+                        y1 + style.border_width.top,
+                    ),
+                    pt(x1 + style.border_width.left, y1 + style.border_width.top),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+            }
+        }
+    }
+}
+
+/// `drawBorderBottom` (style.cc:857) — verbatim.
+#[allow(clippy::too_many_lines)]
+fn draw_border_bottom(
+    view: &mut dyn crate::view::View,
+    style: &StyleAttrs,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+) {
+    let mut shading = Shading::Normal;
+    let Some(color) = &style.border_color[2] else {
+        return;
+    };
+    if style.border_width.bottom == 0 {
+        return;
+    }
+    let filled = true;
+    let convex = true;
+    match style.border_style[2] {
+        BorderStyle::None | BorderStyle::Hidden => {}
+        BorderStyle::Dotted | BorderStyle::Dashed => {
+            let w = style.border_width.bottom;
+            let lt = if style.border_style[2] == BorderStyle::Dotted {
+                LineType::Dotted
+            } else {
+                LineType::Dashed
+            };
+            view.draw_typed_line(
+                color,
+                shading,
+                lt,
+                w,
+                x1 + w / 2,
+                y1 - w / 2,
+                x2 - w / 2,
+                y2 - w / 2,
+            );
+        }
+        BorderStyle::Solid | BorderStyle::Inset | BorderStyle::Outset => {
+            let inset = style.border_style[2] == BorderStyle::Inset;
+            if style.border_style[2] != BorderStyle::Solid {
+                shading = if inset { Shading::Light } else { Shading::Dark };
+            }
+            if style.border_width.bottom == 1 {
+                view.draw_line(color, shading, x1, y1, x2, y2);
+            } else {
+                let points = [
+                    pt(x1 - 1, y1 + 1),
+                    pt(x2 + 2, y1 + 1),
+                    pt(
+                        x2 + 2 - style.border_width.right,
+                        y1 + 1 - style.border_width.bottom,
+                    ),
+                    pt(
+                        x1 - 1 + style.border_width.left,
+                        y1 + 1 - style.border_width.bottom,
+                    ),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+            }
+        }
+        BorderStyle::Ridge | BorderStyle::Groove => {
+            let ridge = style.border_style[2] == BorderStyle::Ridge;
+            let w = style.border_width.bottom;
+            let d = w & 1;
+            let points = [
+                pt(x1 - 1, y1 + 1),
+                pt(x2 + 2 - d, y1 + 1),
+                pt(
+                    x2 + 2 - d - style.border_width.right / 2,
+                    y1 + 1 - w / 2 - d,
+                ),
+                pt(x1 - 1 + style.border_width.left / 2 + d, y1 + 1 - w / 2 - d),
+            ];
+            shading = if ridge { Shading::Dark } else { Shading::Light };
+            view.draw_polygon(color, shading, filled, convex, &points);
+            let points = [
+                pt(x1 + style.border_width.left - 1, y1 - w + 1),
+                pt(x2 + 1 - style.border_width.right + 1, y1 - w + 1),
+                pt(
+                    x2 + 1 - style.border_width.right + 1 + style.border_width.right / 2,
+                    y1 - w + 1 + w / 2,
+                ),
+                pt(
+                    x1 + style.border_width.left - 1 - style.border_width.left / 2,
+                    y1 - w + 1 + w / 2,
+                ),
+            ];
+            shading = if ridge { Shading::Light } else { Shading::Dark };
+            view.draw_polygon(color, shading, filled, convex, &points);
+        }
+        BorderStyle::Double => {
+            #[allow(clippy::cast_possible_truncation)]
+            let w = (f64::from(style.border_width.bottom) / 3.0).round() as i32;
+            let d = if w != 0 {
+                style.border_width.bottom - 2 * w
+            } else {
+                0
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let w_l = (f64::from(style.border_width.left) / 3.0).round() as i32;
+            #[allow(clippy::cast_possible_truncation)]
+            let w_r = (f64::from(style.border_width.right) / 3.0).round() as i32;
+            if style.border_width.bottom == 1 {
+                view.draw_line(color, shading, x1, y1, x2, y2);
+            } else {
+                let points = [
+                    pt(x2 + 2, y1 + 1),
+                    pt(x1 - 1, y1 + 1),
+                    pt(x1 - 1 + w_l, y1 + 1 - w),
+                    pt(x2 + 2 - w_r, y1 + 1 - w),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+                let points = [
+                    pt(x2 + 2 - style.border_width.right + w_r, y1 + 1 - w - d),
+                    pt(x1 - 1 + style.border_width.left - w_l, y1 + 1 - w - d),
+                    pt(
+                        x1 - 1 + style.border_width.left,
+                        y1 + 1 - style.border_width.bottom,
+                    ),
+                    pt(
+                        x2 + 2 - style.border_width.right,
+                        y1 + 1 - style.border_width.bottom,
+                    ),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+            }
+        }
+    }
+}
+
+/// `drawBorderLeft` (style.cc:959) — verbatim.
+#[allow(clippy::too_many_lines)]
+fn draw_border_left(
+    view: &mut dyn crate::view::View,
+    style: &StyleAttrs,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+) {
+    let mut shading = Shading::Normal;
+    let Some(color) = &style.border_color[3] else {
+        return;
+    };
+    if style.border_width.left == 0 {
+        return;
+    }
+    let filled = true;
+    let convex = true;
+    match style.border_style[3] {
+        BorderStyle::None | BorderStyle::Hidden => {}
+        BorderStyle::Dotted | BorderStyle::Dashed => {
+            let w = style.border_width.left;
+            let lt = if style.border_style[3] == BorderStyle::Dotted {
+                LineType::Dotted
+            } else {
+                LineType::Dashed
+            };
+            view.draw_typed_line(
+                color,
+                shading,
+                lt,
+                w,
+                x1 + w / 2,
+                y1 + w / 2,
+                x1 + w / 2,
+                y2 - w / 2,
+            );
+        }
+        BorderStyle::Solid | BorderStyle::Inset | BorderStyle::Outset => {
+            let inset = style.border_style[3] == BorderStyle::Inset;
+            if style.border_style[3] != BorderStyle::Solid {
+                shading = if inset { Shading::Dark } else { Shading::Light };
+            }
+            if style.border_width.left == 1 {
+                view.draw_line(color, shading, x1, y1, x2, y2);
+            } else {
+                let points = [
+                    pt(x1, y1 - 1),
+                    pt(x1, y2 + 1),
+                    pt(
+                        x1 + style.border_width.left,
+                        y2 + 1 - style.border_width.bottom,
+                    ),
+                    pt(
+                        x1 + style.border_width.left,
+                        y1 - 1 + style.border_width.top,
+                    ),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+            }
+        }
+        BorderStyle::Ridge | BorderStyle::Groove => {
+            let ridge = style.border_style[3] == BorderStyle::Ridge;
+            let w = style.border_width.left;
+            let d = w & 1;
+            let points = [
+                pt(x1, y1),
+                pt(x1, y2),
+                pt(x1 + w / 2 + d, y2 - style.border_width.bottom / 2),
+                pt(x1 + w / 2 + d, y1 + style.border_width.top / 2),
+            ];
+            shading = if ridge { Shading::Light } else { Shading::Dark };
+            view.draw_polygon(color, shading, filled, convex, &points);
+            let points = [
+                pt(x1 + w / 2 + d, y1 + style.border_width.top / 2),
+                pt(x1 + w / 2 + d, y2 - style.border_width.bottom / 2),
+                pt(x1 + w, y2 - style.border_width.bottom),
+                pt(x1 + w, y1 + style.border_width.top),
+            ];
+            shading = if ridge { Shading::Dark } else { Shading::Light };
+            view.draw_polygon(color, shading, filled, convex, &points);
+        }
+        BorderStyle::Double => {
+            #[allow(clippy::cast_possible_truncation)]
+            let w = (f64::from(style.border_width.left) / 3.0).round() as i32;
+            let d = if w != 0 {
+                style.border_width.left - 2 * w
+            } else {
+                0
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let w_b = (f64::from(style.border_width.bottom) / 3.0).round() as i32;
+            #[allow(clippy::cast_possible_truncation)]
+            let w_t = (f64::from(style.border_width.top) / 3.0).round() as i32;
+            if style.border_width.left == 1 {
+                view.draw_line(color, shading, x1, y1, x2, y2 - 1);
+            } else {
+                let points = [
+                    pt(x1, y1 - 1),
+                    pt(x1, y2 + 1),
+                    pt(x1 + w, y2 + 1 - w_b),
+                    pt(x1 + w, y1 - 1 + w_t),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+                let points = [
+                    pt(x1 + w + d, y1 - 1 + style.border_width.top - w_t),
+                    pt(x1 + w + d, y2 + 1 - style.border_width.bottom + w_b),
+                    pt(x1 + w, y2 + 1 - style.border_width.bottom),
+                    pt(x1 + w, y1 - 1 + style.border_width.top),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+            }
+        }
+    }
+}
+
+/// `drawBorderRight` (style.cc:1059) — verbatim.
+#[allow(clippy::too_many_lines)]
+fn draw_border_right(
+    view: &mut dyn crate::view::View,
+    style: &StyleAttrs,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+) {
+    let mut shading = Shading::Normal;
+    let Some(color) = &style.border_color[1] else {
+        return;
+    };
+    if style.border_width.right == 0 {
+        return;
+    }
+    let filled = true;
+    let convex = true;
+    match style.border_style[1] {
+        BorderStyle::None | BorderStyle::Hidden => {}
+        BorderStyle::Dotted | BorderStyle::Dashed => {
+            let w = style.border_width.right;
+            let lt = if style.border_style[1] == BorderStyle::Dotted {
+                LineType::Dotted
+            } else {
+                LineType::Dashed
+            };
+            view.draw_typed_line(
+                color,
+                shading,
+                lt,
+                w,
+                x1 - w / 2,
+                y1 + w / 2,
+                x1 - w / 2,
+                y2 - w / 2,
+            );
+        }
+        BorderStyle::Solid | BorderStyle::Inset | BorderStyle::Outset => {
+            let inset = style.border_style[1] == BorderStyle::Inset;
+            if style.border_style[1] != BorderStyle::Solid {
+                shading = if inset { Shading::Dark } else { Shading::Light };
+            }
+            if style.border_width.right == 1 {
+                view.draw_line(color, shading, x1, y1, x2, y2);
+            } else {
+                let points = [
+                    pt(x1 + 1, y1 - 1),
+                    pt(x1 + 1, y2 + 1),
+                    pt(
+                        x1 + 1 - style.border_width.right,
+                        y2 + 1 - style.border_width.bottom,
+                    ),
+                    pt(
+                        x1 + 1 - style.border_width.right,
+                        y1 - 1 + style.border_width.top,
+                    ),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+            }
+        }
+        BorderStyle::Ridge | BorderStyle::Groove => {
+            let ridge = style.border_style[1] == BorderStyle::Ridge;
+            let w = style.border_width.right;
+            let d = w & 1;
+            let points = [
+                pt(x1 + 1, y1),
+                pt(x1 + 1, y2),
+                pt(x1 + 1 - w / 2 - d, y2 - style.border_width.bottom / 2),
+                pt(x1 + 1 - w / 2 - d, y1 + style.border_width.top / 2),
+            ];
+            shading = if ridge { Shading::Dark } else { Shading::Light };
+            view.draw_polygon(color, shading, filled, convex, &points);
+            let points = [
+                pt(x1 + 1 - w / 2 - d, y1 + style.border_width.top / 2),
+                pt(x1 + 1 - w / 2 - d, y2 - style.border_width.bottom / 2),
+                pt(x1 + 1 - w, y2 - style.border_width.bottom),
+                pt(x1 + 1 - w, y1 + style.border_width.top),
+            ];
+            shading = if ridge { Shading::Light } else { Shading::Dark };
+            view.draw_polygon(color, shading, filled, convex, &points);
+        }
+        BorderStyle::Double => {
+            #[allow(clippy::cast_possible_truncation)]
+            let w = (f64::from(style.border_width.right) / 3.0).round() as i32;
+            let d = if w != 0 {
+                style.border_width.right - 2 * w
+            } else {
+                0
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let w_b = (f64::from(style.border_width.bottom) / 3.0).round() as i32;
+            #[allow(clippy::cast_possible_truncation)]
+            let w_t = (f64::from(style.border_width.top) / 3.0).round() as i32;
+            if style.border_width.right == 1 {
+                view.draw_line(color, shading, x1, y1, x2, y2);
+            } else {
+                let points = [
+                    pt(x1 + 1, y1 - 1),
+                    pt(x1 + 1, y2 + 1),
+                    pt(x1 + 1 - w, y2 + 1 - w_b),
+                    pt(x1 + 1 - w, y1 - 1 + w_t),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+                let points = [
+                    pt(x1 + 1 - w - d, y1 - 1 + style.border_width.top - w_t),
+                    pt(x1 + 1 - w - d, y2 + 1 - style.border_width.bottom + w_b),
+                    pt(x1 + 1 - w, y2 + 1 - style.border_width.bottom),
+                    pt(x1 + 1 - w, y1 - 1 + style.border_width.top),
+                ];
+                view.draw_polygon(color, shading, filled, convex, &points);
+            }
+        }
+    }
+}
+
+/// `drawBorder` (style.cc:1167) — `x`/`y`/`width`/`height` = boîte
+/// (marge incluse), `area` = zone à dessiner, coords canvas.
+/// `layout`/`area` inutilisés amont (`\todo a lot!`) — conservés
+/// dans la signature pour le contrat.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_border(
+    view: &mut dyn crate::view::View,
+    area: &crate::types::Rectangle,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    style: &StyleAttrs,
+    _inverse: bool,
+) {
+    let _ = area;
+    // Coins externes de la bordure (style.cc:1175-1178, verbatim).
+    let xb1 = x + style.margin.left;
+    let yb1 = y + style.margin.top;
+    let xb2 = x + (if width > 0 { width - 1 } else { 0 }) - style.margin.right;
+    let yb2 = y + (if height > 0 { height - 1 } else { 0 }) - style.margin.bottom;
+
+    draw_border_right(view, style, xb2, yb1, xb2, yb2);
+    draw_border_left(view, style, xb1, yb1, xb1, yb2);
+    draw_border_top(view, style, xb1, yb1, xb2, yb1);
+    draw_border_bottom(view, style, xb1, yb2, xb2, yb2);
+}
+
+/// `drawBackground` (style.cc:1232) — `(x,y,w,h)` = boîte padding,
+/// `*Ref` = zone de référence du tuilage, coords canvas. `at_top` ≙
+/// « toplevel widget » — la couleur/image de fond du canvas est
+/// comparée via `layout_bg_color`/`layout_bg_image` (≙
+/// `layout->getBgColor()` / `getBgImage()`).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_background(
+    view: &mut dyn crate::view::View,
+    layout_bg_color: Option<&Color>,
+    layout_bg_image: Option<&Rc<RefCell<StyleImage>>>,
+    area: &crate::types::Rectangle,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    x_ref: i32,
+    y_ref: i32,
+    width_ref: i32,
+    height_ref: i32,
+    style: &StyleAttrs,
+    bg_color: Option<&Color>,
+    inverse: bool,
+    at_top: bool,
+) {
+    // `hasBgColor`/`hasBgImage` — comparaisons d'identité (≙ pointeurs
+    // amont ; `Rc::ptr_eq` pour les images).
+    let has_bg_color = bg_color.is_some()
+        && (!at_top
+            || layout_bg_color.is_none_or(|c| bg_color.is_some_and(|b| !std::ptr::eq(c, b))));
+    let has_bg_image = style
+        .background_image
+        .as_ref()
+        .is_some_and(|bi| bi.borrow().get_imgbuf_src().is_some())
+        && (!at_top
+            || layout_bg_image.is_none_or(|lbi| {
+                style
+                    .background_image
+                    .as_ref()
+                    .is_some_and(|bi| !Rc::ptr_eq(lbi, bi))
+            }));
+
+    if has_bg_color || has_bg_image {
+        let bg_area = crate::types::Rectangle {
+            x,
+            y,
+            width,
+            height,
+        };
+        if let Some(intersection) = area.intersects_with(&bg_area) {
+            if has_bg_color {
+                if let Some(c) = bg_color {
+                    view.draw_rectangle(
+                        c,
+                        if inverse {
+                            Shading::Inverse
+                        } else {
+                            Shading::Normal
+                        },
+                        true,
+                        intersection.x,
+                        intersection.y,
+                        intersection.width,
+                        intersection.height,
+                    );
+                }
+            }
+            if has_bg_image {
+                if let Some(bi) = &style.background_image {
+                    draw_background_image(
+                        view,
+                        bi,
+                        style.background_repeat,
+                        style.background_attachment,
+                        style.background_position_x,
+                        style.background_position_y,
+                        intersection.x,
+                        intersection.y,
+                        intersection.width,
+                        intersection.height,
+                        x_ref,
+                        y_ref,
+                        width_ref,
+                        height_ref,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// `drawBackgroundImage` (style.cc:1285) — tuilage calculé sur le
+/// buffer *source*, blit depuis le buffer *tuilé*.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::similar_names)]
+pub fn draw_background_image(
+    view: &mut dyn crate::view::View,
+    background_image: &Rc<RefCell<StyleImage>>,
+    background_repeat: BackgroundRepeat,
+    background_attachment: BackgroundAttachment,
+    background_position_x: Length,
+    background_position_y: Length,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    x_ref: i32,
+    y_ref: i32,
+    width_ref: i32,
+    height_ref: i32,
+) {
+    let v = calc_background_related_values(
+        background_image,
+        background_repeat,
+        background_attachment,
+        background_position_x,
+        background_position_y,
+        x,
+        y,
+        width,
+        height,
+        x_ref,
+        y_ref,
+        width_ref,
+        height_ref,
+    );
+
+    if v.do_draw {
+        let bi = background_image.borrow();
+        if let Some(imgbuf_s) = bi.get_imgbuf_src() {
+            let img_width_s = imgbuf_s.get_root_width();
+            let img_height_s = imgbuf_s.get_root_height();
+            if let Some(imgbuf_t) = bi.get_imgbuf_tiled(v.repeat_x, v.repeat_y) {
+                let img_width_t = imgbuf_t.get_root_width();
+                let img_height_t = imgbuf_t.get_root_height();
+                let tiles_x = bi.get_tiles_x(v.repeat_x, v.repeat_y);
+                let tiles_y = bi.get_tiles_y(v.repeat_x, v.repeat_y);
+                drop(bi);
+
+                let mut tile_x = v.tile_x1;
+                while tile_x <= v.tile_x2 {
+                    let mut tile_y = v.tile_y1;
+                    while tile_y <= v.tile_y2 {
+                        let xt = v.orig_x + tile_x * img_width_s;
+                        let x1 = xt.max(x);
+                        let x2 = (xt + img_width_t).min(x + width);
+                        let yt = v.orig_y + tile_y * img_height_s;
+                        let y1 = yt.max(y);
+                        let y2 = (yt + img_height_t).min(y + height);
+                        view.draw_image(&imgbuf_t, xt, yt, x1 - xt, y1 - yt, x2 - x1, y2 - y1);
+                        tile_y += tiles_y;
+                    }
+                    tile_x += tiles_x;
+                }
+            }
+        }
+    }
+}
+
+/// Valeurs calculées par `calcBackgroundRelatedValues`
+/// (style.cc:1339) — tuilage + visibilité.
+#[derive(Debug, Clone, Copy)]
+pub struct BgTile {
+    /// `repeatX`.
+    pub repeat_x: bool,
+    /// `repeatY`.
+    pub repeat_y: bool,
+    /// `origX` — origine de la tuile 0 (coords canvas).
+    pub orig_x: i32,
+    /// `origY`.
+    pub orig_y: i32,
+    /// `tileX1`.
+    pub tile_x1: i32,
+    /// `tileX2`.
+    pub tile_x2: i32,
+    /// `tileY1`.
+    pub tile_y1: i32,
+    /// `tileY2`.
+    pub tile_y2: i32,
+    /// `doDraw`.
+    pub do_draw: bool,
+}
+
+/// `calcBackgroundRelatedValues` — verbatim style.cc:1339. Les
+/// bornes de tuiles utilisent les mêmes formules qu'amont
+/// (troncature C `int/int` — `imgWidth` ≥ 1 garanti par le clamp
+/// `1×1` des buffers ; sinon aucune tuile).
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+#[allow(clippy::similar_names)]
+pub fn calc_background_related_values(
+    background_image: &Rc<RefCell<StyleImage>>,
+    background_repeat: BackgroundRepeat,
+    _background_attachment: BackgroundAttachment,
+    background_position_x: Length,
+    background_position_y: Length,
+    x_draw: i32,
+    y_draw: i32,
+    width_draw: i32,
+    height_draw: i32,
+    x_ref: i32,
+    y_ref: i32,
+    width_ref: i32,
+    height_ref: i32,
+) -> BgTile {
+    let imgbuf = background_image.borrow().get_imgbuf_src();
+    let (img_width, img_height) =
+        imgbuf.map_or((0, 0), |b| (b.get_root_width(), b.get_root_height()));
+
+    let repeat_x = matches!(
+        background_repeat,
+        BackgroundRepeat::Repeat | BackgroundRepeat::RepeatX
+    );
+    let repeat_y = matches!(
+        background_repeat,
+        BackgroundRepeat::Repeat | BackgroundRepeat::RepeatY
+    );
+
+    let orig_x = x_ref
+        + if is_per_length(background_position_x) {
+            multiply_with_per_length(width_ref - img_width, background_position_x)
+        } else {
+            abs_length_val(background_position_x)
+        };
+    let orig_y = y_ref
+        + if is_per_length(background_position_y) {
+            multiply_with_per_length(height_ref - img_height, background_position_y)
+        } else {
+            abs_length_val(background_position_y)
+        };
+
+    let (mut tile_x1, mut tile_x2, mut tile_y1, mut tile_y2) = if img_width > 0 && img_height > 0 {
+        (
+            if x_draw < orig_x {
+                -(orig_x - x_draw + img_width - 1) / img_width
+            } else {
+                (x_draw - orig_x) / img_width
+            },
+            if orig_x < x_draw + width_draw {
+                (x_draw + width_draw - orig_x - 1) / img_width
+            } else {
+                -(orig_x - (x_draw + width_draw) + img_width - 1) / img_width
+            },
+            if y_draw < orig_y {
+                -(orig_y - y_draw + img_height - 1) / img_height
+            } else {
+                (y_draw - orig_y) / img_height
+            },
+            if orig_y < y_draw + height_draw {
+                (y_draw + height_draw - orig_y - 1) / img_height
+            } else {
+                -(orig_y - (y_draw + height_draw) + img_height - 1) / img_height
+            },
+        )
+    } else {
+        (0, -1, 0, -1)
+    };
+
+    let mut do_draw = true;
+    if !repeat_x {
+        if tile_x1 <= 0 && tile_x2 >= 0 {
+            tile_x1 = 0;
+            tile_x2 = 0;
+        } else {
+            do_draw = false;
+        }
+    }
+    if !repeat_y {
+        if tile_y1 <= 0 && tile_y2 >= 0 {
+            tile_y1 = 0;
+            tile_y2 = 0;
+        } else {
+            do_draw = false;
+        }
+    }
+
+    BgTile {
+        repeat_x,
+        repeat_y,
+        orig_x,
+        orig_y,
+        tile_x1,
+        tile_x2,
+        tile_y1,
+        tile_y2,
+        do_draw,
+    }
+}
+
+// ------------------------------------------------------------------
+// Tests — dessin de style (bordures, background, tuilage)
+// ------------------------------------------------------------------
+
+#[cfg(test)]
+mod draw_tests {
+    use super::*;
+    use crate::imgbuf::Imgbuf;
+    use crate::types::{Point, Rectangle};
+
+    /// `Imgbuf` factice — seules les dimensions comptent pour le
+    /// calcul de tuilage.
+    struct MockBuf {
+        w: i32,
+        h: i32,
+    }
+
+    impl Imgbuf for MockBuf {
+        fn set_cmap(&self, _colors: &[i32]) {}
+        fn copy_row(&self, _row: i32, _data: &[u8]) {}
+        fn new_scan(&self) {}
+        fn get_scaled_buf(self: Rc<Self>, _w: i32, _h: i32) -> Rc<dyn Imgbuf> {
+            self
+        }
+        fn get_row_area(&self, _row: i32, _area: &mut Rectangle) {}
+        fn get_root_width(&self) -> i32 {
+            self.w
+        }
+        fn get_root_height(&self) -> i32 {
+            self.h
+        }
+        fn width(&self) -> i32 {
+            self.w
+        }
+        fn height(&self) -> i32 {
+            self.h
+        }
+        fn create_similar_buf(&self, width: i32, height: i32) -> Rc<dyn Imgbuf> {
+            Rc::new(MockBuf {
+                w: width,
+                h: height,
+            })
+        }
+        fn rgb_row(&self, _y: i32) -> Vec<u8> {
+            Vec::new()
+        }
+        fn write_rgb_span(&self, _x: i32, _y: i32, _data: &[u8]) {}
+        fn ref_(&self) {}
+        fn unref(&self) {}
+        fn last_reference(&self) -> bool {
+            true
+        }
+        fn set_delete_on_unref(&self, _d: bool) {}
+        fn is_referred(&self) -> bool {
+            true
+        }
+    }
+
+    fn mock_buf(w: i32, h: i32) -> Rc<dyn Imgbuf> {
+        Rc::new(MockBuf { w, h })
+    }
+
+    /// `StyleImage` avec un buffer source `w×h` directement posé.
+    fn style_image_with_src(w: i32, h: i32) -> Rc<RefCell<StyleImage>> {
+        let si = StyleImage::create();
+        si.borrow_mut().imgbuf_src = Some(mock_buf(w, h));
+        si
+    }
+
+    /// `View` enregistreuse — chaque primitive devient une entrée.
+    #[derive(Default)]
+    struct RecView {
+        polys: Vec<Vec<Point>>,
+        lines: Vec<(i32, i32, i32, i32)>,
+        typed_lines: Vec<(i32, i32, i32, i32, i32)>,
+        rects: Vec<(i32, i32, i32, i32)>,
+        images: Vec<(i32, i32, i32, i32)>,
+    }
+
+    impl crate::view::View for RecView {
+        fn set_layout(&mut self, _l: Option<usize>) {}
+        fn set_canvas_size(&mut self, _w: i32, _a: i32, _d: i32) {}
+        fn set_cursor(&mut self, _c: Cursor) {}
+        fn set_bg_color(&mut self, _c: &Color) {}
+        fn uses_viewport(&mut self) -> bool {
+            false
+        }
+        fn get_h_scrollbar_thickness(&mut self) -> i32 {
+            0
+        }
+        fn get_v_scrollbar_thickness(&mut self) -> i32 {
+            0
+        }
+        fn get_scrollbar_on_left(&mut self) -> i32 {
+            0
+        }
+        fn scroll_to(&mut self, _x: i32, _y: i32) {}
+        fn set_viewport_size(&mut self, _w: i32, _h: i32, _ht: i32, _vt: i32) {}
+        fn start_drawing(&mut self, _a: &Rectangle) {}
+        fn finish_drawing(&mut self, _a: &Rectangle) {}
+        fn queue_draw(&mut self, _a: &Rectangle) {}
+        fn queue_draw_total(&mut self) {}
+        fn cancel_queue_draw(&mut self) {}
+        fn draw_point(&mut self, _c: &Color, _s: Shading, _x: i32, _y: i32) {}
+        fn draw_line(&mut self, _c: &Color, _s: Shading, x1: i32, y1: i32, x2: i32, y2: i32) {
+            self.lines.push((x1, y1, x2, y2));
+        }
+        fn draw_typed_line(
+            &mut self,
+            _c: &Color,
+            _s: Shading,
+            _t: LineType,
+            w: i32,
+            x1: i32,
+            y1: i32,
+            x2: i32,
+            y2: i32,
+        ) {
+            self.typed_lines.push((w, x1, y1, x2, y2));
+        }
+        fn draw_rectangle(
+            &mut self,
+            _c: &Color,
+            _s: Shading,
+            _f: bool,
+            x: i32,
+            y: i32,
+            w: i32,
+            h: i32,
+        ) {
+            self.rects.push((x, y, w, h));
+        }
+        fn draw_arc(
+            &mut self,
+            _c: &Color,
+            _s: Shading,
+            _f: bool,
+            _cx: i32,
+            _cy: i32,
+            _w: i32,
+            _h: i32,
+            _a1: i32,
+            _a2: i32,
+        ) {
+        }
+        fn draw_polygon(&mut self, _c: &Color, _s: Shading, _f: bool, _cv: bool, points: &[Point]) {
+            self.polys.push(points.to_vec());
+        }
+        fn draw_text(&mut self, _f: &Font, _c: &Color, _s: Shading, _x: i32, _y: i32, _t: &[u8]) {}
+        fn draw_simple_wrapped_text(
+            &mut self,
+            _f: &Font,
+            _c: &Color,
+            _s: Shading,
+            _x: i32,
+            _y: i32,
+            _w: i32,
+            _h: i32,
+            _t: &[u8],
+        ) {
+        }
+        fn draw_image(
+            &mut self,
+            _b: &Rc<dyn Imgbuf>,
+            _xr: i32,
+            _yr: i32,
+            x: i32,
+            y: i32,
+            w: i32,
+            h: i32,
+        ) {
+            self.images.push((x, y, w, h));
+        }
+        fn get_clipping_view(
+            &mut self,
+            _x: i32,
+            _y: i32,
+            _w: i32,
+            _h: i32,
+        ) -> std::boxed::Box<dyn crate::view::View> {
+            std::boxed::Box::new(RecView::default())
+        }
+        fn merge_clipping_view(&mut self, _cv: std::boxed::Box<dyn crate::view::View>) {}
+    }
+
+    /// `StyleAttrs` avec les 4 bordures configurées.
+    fn attrs_with_border(style: BorderStyle, width: i32) -> StyleAttrs {
+        StyleAttrs {
+            border_color: [
+                Some(Color::new(0x0011_2233)),
+                Some(Color::new(0x0044_5566)),
+                Some(Color::new(0x0077_8899)),
+                Some(Color::new(0x00aa_bbcc)),
+            ],
+            border_style: [style; 4],
+            border_width: Box {
+                top: width,
+                right: width,
+                bottom: width,
+                left: width,
+            },
+            ..StyleAttrs::default()
+        }
+    }
+
+    #[test]
+    fn calc_bg_repeat_both_axes() {
+        // Image 10×10, zone 100×100 : tuiles 0..9 dans les deux axes,
+        // origine en (0,0) — position abs 0.
+        let si = style_image_with_src(10, 10);
+        let v = calc_background_related_values(
+            &si,
+            BackgroundRepeat::Repeat,
+            BackgroundAttachment::Scroll,
+            create_abs_length(0),
+            create_abs_length(0),
+            0,
+            0,
+            100,
+            100,
+            0,
+            0,
+            100,
+            100,
+        );
+        assert!(v.do_draw);
+        assert!(v.repeat_x && v.repeat_y);
+        assert_eq!((v.orig_x, v.orig_y), (0, 0));
+        assert_eq!((v.tile_x1, v.tile_x2), (0, 9));
+        assert_eq!((v.tile_y1, v.tile_y2), (0, 9));
+    }
+
+    #[test]
+    fn calc_bg_no_repeat_clamps_to_tile_zero() {
+        // NoRepeat : tuiles forcées 0..0 même sur grande zone ;
+        // origine négative hors zone → do_draw = false (verbatim).
+        let si = style_image_with_src(10, 10);
+        let v = calc_background_related_values(
+            &si,
+            BackgroundRepeat::NoRepeat,
+            BackgroundAttachment::Scroll,
+            create_abs_length(0),
+            create_abs_length(0),
+            0,
+            0,
+            100,
+            100,
+            0,
+            0,
+            100,
+            100,
+        );
+        assert!(v.do_draw);
+        assert_eq!((v.tile_x1, v.tile_x2), (0, 0));
+        assert_eq!((v.tile_y1, v.tile_y2), (0, 0));
+
+        // Origine à -50 (position abs) : la tuile 0 ne couvre pas
+        // la zone [0,100) → tuiles [-5,-2], pas de 0 → rien.
+        let v2 = calc_background_related_values(
+            &si,
+            BackgroundRepeat::NoRepeat,
+            BackgroundAttachment::Scroll,
+            create_abs_length(-50),
+            create_abs_length(0),
+            0,
+            0,
+            100,
+            100,
+            0,
+            0,
+            100,
+            100,
+        );
+        assert!(!v2.do_draw);
+    }
+
+    #[test]
+    fn calc_bg_percent_position() {
+        // `50%` → orig = ref + (ref_size − img_size) × 0.5 = 45.
+        let si = style_image_with_src(10, 10);
+        let v = calc_background_related_values(
+            &si,
+            BackgroundRepeat::Repeat,
+            BackgroundAttachment::Scroll,
+            create_per_length(0.5),
+            create_per_length(0.5),
+            0,
+            0,
+            100,
+            100,
+            0,
+            0,
+            100,
+            100,
+        );
+        assert_eq!((v.orig_x, v.orig_y), (45, 45));
+        // Tuiles négatives couvertes à gauche/haut de l'origine.
+        assert_eq!(v.tile_x1, -5);
+        assert_eq!(v.tile_y1, -5);
+    }
+
+    #[test]
+    fn style_image_small_creates_tiled_buffer() {
+        // 4×4 < MIN² (10×10) → buffer tuilé `OPT/4` = 12×12 tuiles,
+        // buffer 48×48. Sélection : tuilé seulement si repeat_x &&
+        // repeat_y (verbatim `getImgbufTiled`).
+        let si = StyleImage::create();
+        let src = mock_buf(4, 4);
+        let mr = si.borrow().get_main_img_renderer();
+        mr.borrow_mut().set_buffer(&src, false);
+        let b = si.borrow();
+        let tiled = b
+            .imgbuf_tiled
+            .as_ref()
+            .map_or((0, 0), |t| (t.get_root_width(), t.get_root_height()));
+        assert_eq!(tiled, (48, 48));
+        assert_eq!(b.get_tiles_x(true, true), 12);
+        assert_eq!(b.get_tiles_y(true, true), 12);
+        assert!(Rc::ptr_eq(
+            &b.get_imgbuf_tiled(true, true)
+                .unwrap_or_else(|| mock_buf(0, 0)),
+            b.imgbuf_tiled.as_ref().unwrap_or(&src)
+        ));
+        // Une seule direction de repeat → buffer SOURCE.
+        assert!(Rc::ptr_eq(
+            &b.get_imgbuf_tiled(true, false)
+                .unwrap_or_else(|| mock_buf(0, 0)),
+            &src
+        ));
+        assert_eq!(b.get_tiles_x(true, false), 1);
+    }
+
+    #[test]
+    fn style_image_large_no_tiled_buffer() {
+        // ≥ MIN² → pas de buffer tuilé, `getImgbufTiled` = src.
+        let si = StyleImage::create();
+        let src = mock_buf(20, 20);
+        let mr = si.borrow().get_main_img_renderer();
+        mr.borrow_mut().set_buffer(&src, false);
+        let b = si.borrow();
+        assert!(b.imgbuf_tiled.is_none());
+        assert!(Rc::ptr_eq(
+            &b.get_imgbuf_tiled(true, true)
+                .unwrap_or_else(|| mock_buf(0, 0)),
+            &src
+        ));
+    }
+
+    #[test]
+    fn border_hidden_draws_nothing() {
+        let mut v = RecView::default();
+        let attrs = attrs_with_border(BorderStyle::Hidden, 2);
+        let area = Rectangle {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        draw_border(&mut v, &area, 0, 0, 100, 100, &attrs, false);
+        assert!(v.polys.is_empty() && v.lines.is_empty() && v.typed_lines.is_empty());
+    }
+
+    #[test]
+    fn border_solid_one_pixel_draws_lines() {
+        // `borderWidth == 1` → `drawLine` (pas de polygone).
+        let mut v = RecView::default();
+        let attrs = attrs_with_border(BorderStyle::Solid, 1);
+        let area = Rectangle {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        };
+        draw_border(&mut v, &area, 0, 0, 10, 10, &attrs, false);
+        assert_eq!(v.lines.len(), 4);
+        assert_eq!(v.polys.len(), 0);
+        // Top : (0,0)-(9,0) ; bottom : (0,9)-(10? ) — verbatim :
+        // bottom y2 = y + h - 1 = 9 ; left/right idem.
+        assert_eq!(v.lines[2], (0, 0, 9, 0));
+    }
+
+    #[test]
+    fn border_solid_wide_draws_trapezoids() {
+        // width 2 → 4 trapèzes, coins déduits des marges (0 ici).
+        let mut v = RecView::default();
+        let attrs = attrs_with_border(BorderStyle::Solid, 2);
+        let area = Rectangle {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        };
+        draw_border(&mut v, &area, 0, 0, 10, 10, &attrs, false);
+        assert_eq!(v.polys.len(), 4);
+        // Top (drawBorderTop) : [(0,0),(10,0),(10-2,2),(2,2)] =
+        // verbatim style.cc (x2+1 = 10).
+        assert_eq!(v.polys[2], vec![pt(0, 0), pt(10, 0), pt(8, 2), pt(2, 2)]);
+    }
+
+    #[test]
+    fn border_double_draws_two_bands() {
+        // `BORDER_DOUBLE` width 6 → 2 trapèzes par côté.
+        let mut v = RecView::default();
+        let attrs = attrs_with_border(BorderStyle::Double, 6);
+        let area = Rectangle {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        draw_border(&mut v, &area, 0, 0, 20, 20, &attrs, false);
+        assert_eq!(v.polys.len(), 8);
+    }
+
+    #[test]
+    fn border_dotted_uses_typed_line() {
+        let mut v = RecView::default();
+        let attrs = attrs_with_border(BorderStyle::Dotted, 3);
+        let area = Rectangle {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        draw_border(&mut v, &area, 0, 0, 20, 20, &attrs, false);
+        assert_eq!(v.typed_lines.len(), 4);
+        assert!(v.typed_lines.iter().all(|t| t.0 == 3));
+    }
+
+    #[test]
+    fn draw_background_color_fills_intersection() {
+        // Fond opaque → un rectangle = zone ∩ boîte padding.
+        let mut v = RecView::default();
+        let mut attrs = StyleAttrs::default();
+        let bg = Color::new(0x0000_00ff);
+        let area = Rectangle {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        };
+        attrs.background_image = None;
+        draw_background(
+            &mut v,
+            None,
+            None,
+            &area,
+            0,
+            0,
+            20,
+            20,
+            0,
+            0,
+            20,
+            20,
+            &attrs,
+            Some(&bg),
+            false,
+            false,
+        );
+        assert_eq!(v.rects, vec![(0, 0, 10, 10)]);
     }
 }

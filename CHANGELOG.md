@@ -322,6 +322,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `about:dicache` verbatim, impl `cache::DicacheOps`. Glue :
   `HttpWeb::image` (`Any`≙`web->Image`), `cache_close_client`,
   `NavBw::bg_color`≙`a_Web_new(bw->bgColor)`. 16 nouveaux tests.
+### dw-1c — platform/view/style draw complet
+- `[dw]::platform` trait `dw::core::Platform` verbatim (attachement
+  layout/view, mesures texte, navigation glyphes, DPI, idle,
+  factories font/color/tooltip/imgbuf, copie sélection,
+  `resourceFactory`).
+- `[dw]::view` trait `dw::core::View` complet (viewport/scroll/
+  queue_draw, toutes primitives draw_*, clipping views) —
+  `Layout*`→handle `usize` (modèle D).
+- `[dw]::style` fin dw-1c : `StyleImage` + `StyleImgRenderer` +
+  `ImgRendererDist` (buffer tuilé `MIN/OPT_BG_IMG` verbatim),
+  `ExternalImgRenderer`/`ExternalWidgetImgRenderer` traits + helpers,
+  `drawBorder{Top,Bottom,Left,Right}` trapèzes pixel-verbatim
+  (7 styles + double), `drawBackground`/`drawBackgroundImage`/
+  `calcBackgroundRelatedValues` (tuilage, positions %/abs,
+  `drawBackgroundLineByLine=false` porté en const).
+- `[dw]::imgbuf` : receveurs `&self` (mutabilité intérieure ≙
+  méthodes appelées via `Imgbuf*` partagés amont) ; `copy_to` prend
+  `&dyn Imgbuf`. 8 nouveaux tests (tuilage, bordures, fond).
 ### dw-1b — imgbuf dw/imgbridge aligné
 - `[dw]::imgbuf` trait complet (`set_cmap`/`copy_row`/`new_scan`/
   `get_scaled_buf`/`get_row_area`/`root_w·h`/`similar_buf`/`copy_to`/

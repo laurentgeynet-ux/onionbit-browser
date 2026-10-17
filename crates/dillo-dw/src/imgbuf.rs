@@ -41,12 +41,14 @@ pub trait Imgbuf {
      * Appelés depuis le décodage d'image
      */
 
-    /// `setCMap (colors, num_colors)`.
-    fn set_cmap(&mut self, colors: &[i32]);
+    /// `setCMap (colors, num_colors)` — receveur `&self` :
+    /// amont appelle ces méthodes via `Imgbuf*` partagés ; les
+    /// impls utilisent la mutabilité intérieure.
+    fn set_cmap(&self, colors: &[i32]);
     /// `copyRow (row, data)` — `row` en coordonnées ROOT.
-    fn copy_row(&mut self, row: i32, data: &[u8]);
+    fn copy_row(&self, row: i32, data: &[u8]);
     /// `newScan` — nouveau passage (progressif/interlacé).
-    fn new_scan(&mut self);
+    fn new_scan(&self);
 
     /*
      * Appelés depuis dw::Image
@@ -82,7 +84,7 @@ pub trait Imgbuf {
     /// Écrit `data` à la position `(x, y)` du buffer (≙ écriture
     /// directe `rawdata` — hors limites : muet comme amont via
     /// clipping de `copyTo`).
-    fn write_rgb_span(&mut self, x: i32, y: i32, data: &[u8]);
+    fn write_rgb_span(&self, x: i32, y: i32, data: &[u8]);
 
     /// `copyTo (dest, xDestRoot, yDestRoot, xSrc, ySrc, w, h)` —
     /// verbatim : clip `xSrc2/ySrc2` contre `dest` puis blit
@@ -91,7 +93,7 @@ pub trait Imgbuf {
     #[allow(clippy::too_many_arguments, clippy::cast_sign_loss)]
     fn copy_to(
         &self,
-        dest: &mut dyn Imgbuf,
+        dest: &dyn Imgbuf,
         x_dest_root: i32,
         y_dest_root: i32,
         x_src: i32,
@@ -122,13 +124,13 @@ pub trait Imgbuf {
      */
 
     /// `ref`.
-    fn ref_(&mut self);
+    fn ref_(&self);
     /// `unref`.
-    fn unref(&mut self);
+    fn unref(&self);
     /// `lastReference`.
     fn last_reference(&self) -> bool;
     /// `setDeleteOnUnref`.
-    fn set_delete_on_unref(&mut self, delete_on_unref: bool);
+    fn set_delete_on_unref(&self, delete_on_unref: bool);
     /// `isReferred`.
     fn is_referred(&self) -> bool;
 }

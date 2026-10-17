@@ -91,10 +91,13 @@ prototype phase 0).
 
 - [~] `types`, `style`, `events`, `core.hh` traits → `dillo-dw` core
       — types/events/tools portés, `style` complet (pool/table tl,
-      `Font`, `numtostr`…), traits `imgbuf`/`imgrenderer` + seam
-      `view` ; `[img]::imgbuf` impl le trait dw (arbre scaled-buffers
-      ≙`fltkimgbuf`, `scaleMode=SIMPLE` vs `BEAUTIFUL_GAMMA` amont —
-      déviation documentée) ; `image.cc` aligné `Rc<dyn Imgbuf>`
+      `Font`, `numtostr`, `StyleImage`+buffer tuilé, renderers
+      externes, `drawBorder`/`drawBackground*` trapezes verbatim),
+      traits `imgbuf`/`imgrenderer`, traits `platform`/`view`
+      complets ; `[img]::imgbuf` impl le trait dw (arbre
+      scaled-buffers ≙`fltkimgbuf`, `scaleMode=SIMPLE` vs
+      `BEAUTIFUL_GAMMA` amont — déviation documentée) ; `image.cc`
+      aligné `Rc<dyn Imgbuf>`
 - [ ] `widget.cc` + `layout.cc` (size negotiate, allocation, draw,
       damage/queue-draw, anchors)
 - [ ] `iterator.cc`, `textblock.cc` + `textblock_linebreaking.cc` +

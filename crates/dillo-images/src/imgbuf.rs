@@ -342,17 +342,17 @@ fn excessive_image_dimensions(width: u32, height: u32) -> bool {
 impl DwImgbuf for Imgbuf {
     /// `setCMap` — **vide amont** pour `FltkImgbuf` (RGB only — la
     /// cmap est appliquée dans `Imgbuf_rgb_line` côté dicache).
-    fn set_cmap(&mut self, _colors: &[i32]) {}
+    fn set_cmap(&self, _colors: &[i32]) {}
 
     /// `copyRow` (≙ `assert(isRoot)` — sur un fils, délègue).
-    fn copy_row(&mut self, row: i32, data: &[u8]) {
+    fn copy_row(&self, row: i32, data: &[u8]) {
         if row >= 0 {
             Imgbuf::copy_row(self, row as u32, data);
         }
     }
 
     /// `newScan`.
-    fn new_scan(&mut self) {
+    fn new_scan(&self) {
         Imgbuf::new_scan(self);
     }
 
@@ -474,7 +474,7 @@ impl DwImgbuf for Imgbuf {
 
     /// Écriture `rawdata` à `(x,y)` (≙ `copyTo` amont via
     /// `rawdata` direct).
-    fn write_rgb_span(&mut self, x: i32, y: i32, data: &[u8]) {
+    fn write_rgb_span(&self, x: i32, y: i32, data: &[u8]) {
         if x < 0 || y < 0 || y >= self.height as i32 {
             return;
         }
@@ -485,14 +485,14 @@ impl DwImgbuf for Imgbuf {
     }
 
     /// `ref` — refcount manuel amont (init 1).
-    fn ref_(&mut self) {
+    fn ref_(&self) {
         self.ref_count.set(self.ref_count.get() + 1);
     }
 
     /// `unref` — amont supprime si 0 et conditions ; ici `Rc`
     /// gère la destruction — le compteur reste la sémantique
     /// observable (`lastReference`/`isReferred`).
-    fn unref(&mut self) {
+    fn unref(&self) {
         self.ref_count.set(self.ref_count.get() - 1);
     }
 
@@ -502,7 +502,7 @@ impl DwImgbuf for Imgbuf {
     }
 
     /// `setDeleteOnUnref` (root only amont — muet sur fils).
-    fn set_delete_on_unref(&mut self, delete_on_unref: bool) {
+    fn set_delete_on_unref(&self, delete_on_unref: bool) {
         if self.root.is_none() {
             self.delete_on_unref.set(delete_on_unref);
         }
