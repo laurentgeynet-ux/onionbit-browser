@@ -13,9 +13,11 @@
 //!   comportement observable, pas les pixels) ;
 //! - sortie tiny-skia **premultiplied** : on dé-premultiplie puis on
 //!   applique la formule de composite amont exacte ;
-//! - `nsvgParse` prenait `currentColor = Image->fg_color` : usvg ne
-//!   permet pas de l'injecter — `currentColor` suit la valeur usvg
-//!   par défaut ;
+//! - `nsvgParse(str, "px", dpi, currentColor)` : amont injecte
+//!   `Image->fg_color` pour chaque token `currentColor`
+//!   (`strncmp(value,"currentColor",12)` — préfixe littéral) ; ici
+//!   le token est remplacé textuellement par `#rrggbb` avant le
+//!   parse usvg — sémantique identique ;
 //! - amont réessaie à chaque `CA_Send` tant que `"</svg>"` manque ;
 //!   ici pareil — un SVG tronqué ne produit rien (identique).
 
@@ -45,9 +47,8 @@ pub struct DilloSvg {
     version: i32,
     /// `bgcolor`/`fgcolor` — capturés à `a_Svg_new`.
     bgcolor: i32,
-    /// `fgcolor` — inutilisé en l'état (usvg ne prend pas
-    /// `currentColor`) mais conservé comme amont.
-    #[allow(dead_code)]
+    /// `fgcolor` — ≙ `NSVG_RGB(fg_r, fg_g, fg_b)` : substitué à
+    /// chaque token `currentColor` du document.
     fgcolor: i32,
     /// `dpi` — `Image->dpi` passé à `nsvgParse` ≙ `usvg::Options.dpi`.
     dpi: f32,
@@ -87,7 +88,15 @@ impl DilloSvg {
             return;
         }
         self.done = true;
-        let text = String::from_utf8_lossy(buf);
+        // `nsvgParse` prenait `current_color = Image->fg_color` —
+        // nanosvg substituait cette couleur à chaque occurrence du
+        // token `currentColor` (fill, stroke, fallbacks) ; même
+        // résultat par remplacement littéral avant le parse.
+        let mut text = String::from_utf8_lossy(buf).into_owned();
+        if text.contains("currentColor") {
+            let hex = format!("#{:06x}", self.fgcolor & 0xff_ffff);
+            text = text.replace("currentColor", &hex);
+        }
         let opt = usvg::Options {
             dpi: self.dpi,
             ..usvg::Options::default()

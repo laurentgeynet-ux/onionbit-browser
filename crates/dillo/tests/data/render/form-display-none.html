@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Test form inputs with display:none</title>
+    <style>
+      /* * { border: solid 1px blue; margin: 5px; padding: 5px; } */
+      .container { display: none; }
+    </style>
+  </head>
+  <body>
+    <hr>
+    <p>There are some elements below, but you shouldn't see any. Disable CSS to
+    see them.</p>
+    <!-- inherited from container -->
+    <div class="container">
+      <form method="POST" enctype="multipart/form-data">
+        <label for="text">First name:</label>
+        <input type="text" id="text" name="text">
+        <input type="password" id="password" name="password">
+        <label for="cars">Choose a car:</label>
+        <select id="cars" name="cars">
+          <option value="volvo">Volvo</option>
+          <option value="saab">Saab</option>
+          <option value="fiat">Fiat</option>
+          <option value="audi">Audi</option>
+        </select>
+        <textarea name="message" rows="4" cols="30">
+          The cat was playing in the garden.
+        </textarea>
+        <input type="submit" id="submit" name="submit" value="Submit!">
+        <input type="reset" id="reset" name="reset" value="Reset!">
+        <input type="file" id="file" name="file" value="Select file...">
+        <label>
+          <input type="checkbox" id="checkbox" name="checkbox" value="">
+          Select me!
+        </label>
+        <label>
+          <input type="radio" id="radio-fast" name="radio" value="fast" checked>
+          Fast
+        </label>
+        <label>
+          <input type="radio" id="radio-slow" name="radio" value="slow">
+          Slow
+        </label>
+        <input type="hidden" id="hidden" name="hidden" value="Hidden value">
+        <input type="image" id="image" name="image" src="pic.png">
+        <input type="button" id="button" name="button" value="Button!">
+        <input type="unknown" id="unknown" name="unknown">
+        <button>Hello</button>
+      </form>
+    </div>
+    <hr>
+    <p>The ones below are outside the form</p>
+    <input style="display: none" type="text" name="out-text">
+    <button style="display: none">Look at this <img src="pic.png"> image</button>
+    <isindex style="display: none" prompt="Search for " id="isindex">
+    <textarea style="display: none" name="message" rows="4" cols="30">
+      The cat was playing in the garden.
+    </textarea>
+    <label style="display:none">
+      <input type="radio" id="radio-slow" name="radio" value="slow">
+      Slow
+    </label>
+    <hr>
+  </body>
+</html>

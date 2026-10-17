@@ -97,6 +97,23 @@ pub struct Icon {
     pub data: Vec<u32>,
 }
 
+/// `#RGB`/`#RRGGBB`/`#RRRGGGBBB`/`#RRRRGGGGBBBB` → `0xRRGGBB`
+/// (XPM : 1–4 chiffres hex par canal ; troncation au top-byte
+/// ≙ FLTK `Fl_Pixmap`).
+fn xpm_rgb(hex: &str) -> Option<u32> {
+    if hex.is_empty() || hex.len() % 3 != 0 || hex.len() > 12 {
+        return None;
+    }
+    let n = hex.len() / 3; // chiffres par canal (1..=4)
+    let mut c = [0u32; 3];
+    for (i, ch) in c.iter_mut().enumerate() {
+        let v = u32::from_str_radix(&hex[i * n..(i + 1) * n], 16).ok()?;
+        // n≥2 → top byte (troncation) ; n=1 → digit ×17.
+        *ch = if n == 1 { v * 17 } else { v >> (4 * (n - 2)) };
+    }
+    Some((c[0] << 16) | (c[1] << 8) | c[2])
+}
+
 /// Décodeur XPM (`static const char *const *_xpm[]`) — header
 /// `w h ncolors cpp`, table `c c #rrggbb`/`None`, puis pixels.
 #[must_use]
@@ -126,9 +143,9 @@ pub fn xpm_decode(lines: &[&str]) -> Option<Icon> {
         while i + 1 < toks.len() {
             if toks[i] == "c" {
                 let t = toks[i + 1];
-                if !t.eq_ignore_ascii_case("none") {
-                    let hex = t.trim_start_matches('#');
-                    val = 0xff00_0000 | u32::from_str_radix(hex, 16).ok()?;
+                let hex = t.trim_start_matches('#');
+                if !hex.eq_ignore_ascii_case("none") {
+                    val = 0xff00_0000 | xpm_rgb(hex)?;
                 }
                 break;
             }
@@ -3265,10 +3282,19 @@ fn pm_text(
                     continue;
                 }
                 let idx = (y as u32 * pm.width() + x as u32) as usize;
-                if let Some(p) = dillo_platform::tiny_skia::PremultipliedColorU8::from_rgba(
-                    pc[0], pc[1], pc[2], pc[3],
-                ) {
-                    if let Some(dst) = pm.pixels_mut().get_mut(idx) {
+                if let Some(dst) = pm.pixels_mut().get_mut(idx) {
+                    // Source-over ≙ `blend_pixel` de `SkiaView` : la
+                    // couverture AA est semi-transparente — remplacer
+                    // `dst` laisserait `fg*α` sans le fond, affiché fondu
+                    // sur noir au present opaque.
+                    let a = u16::from(pc[3]);
+                    let inv = 255 - a;
+                    let r = (u16::from(pc[0]) * a / 255 + u16::from(dst.red()) * inv / 255) as u8;
+                    let g = (u16::from(pc[1]) * a / 255 + u16::from(dst.green()) * inv / 255) as u8;
+                    let b = (u16::from(pc[2]) * a / 255 + u16::from(dst.blue()) * inv / 255) as u8;
+                    if let Some(p) =
+                        dillo_platform::tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, 255)
+                    {
                         *dst = p;
                     }
                 }
@@ -3453,16 +3479,36 @@ impl Ui {
                 } else {
                     it.deicon.as_ref().or(it.icon.as_ref())
                 };
+                // `FL_ALIGN_IMAGE_OVER_TEXT` (défaut FLTK, flag=0) :
+                // icône au-dessus, label dans la bande basse du bouton.
+                let label_h = if !it.label.is_empty() && self.lbl != 0 && icn.is_some() {
+                    14
+                } else {
+                    0
+                };
                 if let Some(icn) = icn {
-                    pm_icon(pm, it.rect, icn);
+                    let ir = Rect {
+                        h: (it.rect.h - label_h).max(1),
+                        ..it.rect
+                    };
+                    pm_icon(pm, ir, icn);
                 }
                 if !it.label.is_empty() && self.lbl != 0 {
+                    let tr = if label_h > 0 {
+                        Rect {
+                            y: it.rect.y + it.rect.h - label_h,
+                            h: label_h,
+                            ..it.rect
+                        }
+                    } else {
+                        it.rect
+                    };
                     let fg = if prefs.ui_fg_color != -1 {
                         prefs.ui_fg_color as u32
                     } else {
                         0
                     };
-                    pm_text(pm, fs, sw, it.rect, &it.label, 12, fg, false);
+                    pm_text(pm, fs, sw, tr, &it.label, 12, fg, false);
                 }
             }
         }
@@ -3604,6 +3650,18 @@ impl Chrome {
     #[must_use]
     pub fn layout_of(&self, ui: usize) -> Option<Rc<RefCell<Layout>>> {
         self.layouts.get(&ui).cloned()
+    }
+
+    /// Drain des callbacks idle de **tous** les layouts d'onglets —
+    /// ≙ `Fl::add_idle(generalIdle)` amont (une fonction par passe
+    /// et par plateforme/layout). Indispensable : en mode shell la
+    /// boucle ne connaît pas `w.layout` (mode standalone) — sans ce
+    /// drain, `scrollIdle`/`resizeIdle` ne se résolvent jamais et
+    /// `Layout::draw` diffère à l'infini (canvas blanc).
+    pub fn drain_layouts(&mut self) {
+        for l in self.layouts.values() {
+            l.borrow_mut().drain_idles();
+        }
     }
 
     /// Repose les rects `Ui` d'une fenêtre après resize ou bascule
@@ -3955,6 +4013,120 @@ mod tests {
         assert_eq!(icn.data[1], 0x0000_0000); // None → transparent
         assert_eq!(icn.data[3], 0xffff_0000);
         assert!(xpm_decode(&["bad"]).is_none());
+    }
+
+    #[test]
+    fn xpm_decode_hash_none_and_wide_channels() {
+        use dillo_platform::pixmaps as px;
+        // `TOOLS_XPM` amont : `c #None` + couleurs 12 hex
+        // (16 bits/canal → top byte ≙ `Fl_Pixmap`).
+        let icn = xpm_decode(&[
+            "2 2 3 1",
+            "a c #ff0000",
+            "b c #None",
+            "c c #696977777676",
+            "ab",
+            "ca",
+        ])
+        .unwrap();
+        assert_eq!(icn.data[1], 0x0000_0000); // `#None` → transparent
+        assert_eq!(icn.data[2], 0xff69_7776);
+        // Ressources embarquées réelles : aucune ne doit échouer.
+        for d in [
+            px::HOME_XPM,
+            px::LEFT_XPM,
+            px::RIGHT_XPM,
+            px::SAVE_XPM,
+            px::RELOAD_XPM,
+            px::STOP_XPM,
+            px::BM_XPM,
+            px::TOOLS_XPM,
+            px::TOOLS_S_XPM,
+            px::HELP_XPM,
+            px::SEARCH_XPM,
+            px::MINI_OK_XPM,
+            px::MINI_BUG_XPM,
+            px::NEW_S_XPM,
+            px::HOME_S_XPM,
+            px::LEFT_S_XPM,
+            px::RIGHT_S_XPM,
+            px::SAVE_S_XPM,
+            px::RELOAD_S_XPM,
+            px::STOP_S_XPM,
+            px::BM_S_XPM,
+        ] {
+            assert!(xpm_decode(d).is_some());
+        }
+    }
+
+    #[test]
+    fn pm_icon_blits_centered_argb() {
+        // `Icon.data` = `0xAARRGGBB` : rouge opaque + transparent.
+        let icn = Icon {
+            w: 2,
+            h: 2,
+            data: vec![0xffff_0000, 0, 0, 0xff00_00ff],
+        };
+        let mut pm = dillo_platform::tiny_skia::Pixmap::new(8, 8).unwrap();
+        pm_icon(
+            &mut pm,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 8,
+            },
+            &icn,
+        );
+        // Centré → icône 2×2 aux pixels (3,3)..(4,4).
+        let px_at = |x: u32, y: u32| pm.pixel(x, y).unwrap();
+        assert_eq!(
+            (px_at(3, 3).red(), px_at(3, 3).alpha()),
+            (255, 255),
+            "R opaque"
+        );
+        assert_eq!(px_at(3, 4).alpha(), 0, "transparent → non écrit");
+        assert_eq!(px_at(4, 4).blue(), 255, "B opaque");
+    }
+
+    #[test]
+    fn pm_text_blends_aa_coverage() {
+        // Le canal alpha des glyphes swash est une *couverture* :
+        // src-over, pas remplacement — sinon `fg*α` sans fond se
+        // présente fondu sur noir (texte de l'Entry « fondu »).
+        use dillo_platform::cosmic_text::FontSystem;
+        let mut pm = dillo_platform::tiny_skia::Pixmap::new(120, 24).unwrap();
+        pm.fill(dillo_platform::tiny_skia::Color::from_rgba8(
+            0xff, 0xff, 0xff, 0xff,
+        ));
+        let mut fs = FontSystem::new();
+        let mut sw = dillo_platform::cosmic_text::SwashCache::new();
+        pm_text(
+            &mut pm,
+            &mut fs,
+            &mut sw,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 24,
+            },
+            "URL",
+            14,
+            0,
+            true,
+        );
+        // Texte noir sur blanc : chaque pixel touché doit être
+        // opaque (255) avec luminance < 255 — pas de pixel
+        // semi-transparent résiduel.
+        for p in pm.pixels() {
+            assert_eq!(p.alpha(), 255, "dst doit rester opaque");
+        }
+        let dark = pm
+            .pixels()
+            .iter()
+            .any(|p| p.red() < 0x80 && p.green() < 0x80 && p.blue() < 0x80);
+        assert!(dark, "des pixels de glyphe doivent être présents");
     }
 
     #[test]

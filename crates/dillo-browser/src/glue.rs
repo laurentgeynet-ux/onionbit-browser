@@ -951,6 +951,10 @@ impl ShellGlue for Glue {
         timeout::poll_timeouts();
         let _ = capi::capi_poll();
         self.pump_control();
+        // ≙ `Fl::add_idle` — drain des idles de tous les layouts
+        // d'onglets (scrollIdle/resizeIdle) ; sans lui, les draws
+        // différés pendant scroll ne repartent jamais.
+        self.chrome.drain_layouts();
         self.drain_queue();
         while let Some(op) = self.chrome.app_ops.pop_front() {
             self.apply_win_op(app, op);

@@ -227,7 +227,14 @@ prototype phase 0).
 
 ## Phase 9 — Hardening & release
 
-- [ ] `test/html/render` golden suite ≥ upstream coverage
+- [x] `test/html/render` golden suite ≥ upstream coverage —
+      `dillo/tests/render_ref.rs` : 39 paires `.html`/`.ref.html`
+      pixel-identiques via la vraie pipeline (parser→style→layout→
+      tiny-skia, images réelles dicache, canvas 780×580 verbatim
+      `PREFS_GEOMETRY_DEFAULT_*`) ; `ALLOWED` = les 4 XFAIL amont
+      (`margin-auto`, `max-width-html`, `span-padding`,
+      `table-td-width-percent`) + `svg-current-color` (AA du
+      rasterizer resvg ≠ nanosvg, sémantique `currentColor` ok)
 - [ ] Fuzzing (html, css, decode, dpi, cookies files)
 - [ ] Parity sign-off : all audits `apply` merged, PORTING.md 100%
       resolved

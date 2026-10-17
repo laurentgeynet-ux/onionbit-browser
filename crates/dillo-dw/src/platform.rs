@@ -53,19 +53,25 @@ pub trait Platform {
     /// `addIdle` — enregistre une fonction idle (un seul appel,
     /// retirée après exécution) ; retour = id pour `removeIdle`.
     /// L'id -1 = « aucun idle enregistré » (usage amont).
-    fn add_idle(&mut self, func: IdleCallback) -> i32;
+    /// `layout` tague le [`crate::layout::Layout`] propriétaire
+    /// (amont : `FltkPlatform` *par onglet* — sa file est privée ;
+    /// notre plateforme peut être partagée entre onglets, le tag
+    /// rend le routage exact — équivalent sémantique).
+    fn add_idle(&mut self, layout: usize, func: IdleCallback) -> i32;
 
     /// `removeIdle` — retire un idle pas encore exécuté.
     fn remove_idle(&mut self, idle_id: i32);
 
-    /// Collecte les callbacks idle dus — seam du port : amont
-    /// la plateforme appelle elle-même les callbacks (elle tient
-    /// `Layout*`) ; le modèle D n'a pas de `&mut Layout`
-    /// flottant, la plateforme expose les callbacks « dus » et
-    /// [`crate::layout::Layout::drain_idles`] les appelle sur
-    /// `&mut self`. L'ordre/la priorité restent choix de
-    /// l'implémentation plateforme.
-    fn take_pending_idles(&mut self) -> Vec<crate::layout::IdleCallback> {
+    /// Collecte les callbacks idle dus pour `layout` — seam du
+    /// port : amont la plateforme appelle elle-même les callbacks
+    /// (elle tient `Layout*`) ; le modèle D n'a pas de
+    /// `&mut Layout` flottant, la plateforme expose les callbacks
+    /// « dus » et [`crate::layout::Layout::drain_idles`] les
+    /// appelle sur `&mut self`. Seules les entrées taguées
+    /// `layout` sont retirées — verbatim la file privée par
+    /// plateforme/onglet amont.
+    fn take_pending_idles(&mut self, layout: usize) -> Vec<crate::layout::IdleCallback> {
+        let _ = layout;
         Vec::new()
     }
 

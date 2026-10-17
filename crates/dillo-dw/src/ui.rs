@@ -866,7 +866,7 @@ mod tests {
     #[derive(Default)]
     struct MockPlatform {
         /// `(id, callback)` en attente.
-        pending: Vec<(i32, IdleCallback)>,
+        pending: Vec<(i32, usize, IdleCallback)>,
         /// Prochain id.
         next_id: i32,
     }
@@ -896,19 +896,20 @@ mod tests {
         fn dpi_y(&mut self) -> f64 {
             96.0
         }
-        fn add_idle(&mut self, cb: IdleCallback) -> i32 {
+        fn add_idle(&mut self, layout: usize, cb: IdleCallback) -> i32 {
             self.next_id += 1;
-            self.pending.push((self.next_id, cb));
+            self.pending.push((self.next_id, layout, cb));
             self.next_id
         }
         fn remove_idle(&mut self, id: i32) {
-            self.pending.retain(|(i, _)| *i != id);
+            self.pending.retain(|(i, _, _)| *i != id);
         }
-        fn take_pending_idles(&mut self) -> Vec<IdleCallback> {
-            std::mem::take(&mut self.pending)
+        fn take_pending_idles(&mut self, layout: usize) -> Vec<IdleCallback> {
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
                 .into_iter()
-                .map(|(_, cb)| cb)
-                .collect()
+                .partition(|(_, l, _)| *l == layout);
+            self.pending = rest;
+            mine.into_iter().map(|(_, _, cb)| cb).collect()
         }
         fn create_font(&mut self, attrs: &FontAttrs, _te: bool) -> Rc<Font> {
             Rc::new(Font {

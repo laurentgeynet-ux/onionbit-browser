@@ -1039,7 +1039,7 @@ impl Layout {
             self.resize_idle_id = self
                 .platform
                 .borrow_mut()
-                .add_idle(Rc::new(Layout::resize_idle));
+                .add_idle(self.id, Rc::new(Layout::resize_idle));
         }
         self.emitter
             .emit_void(|r| r.resize_queued(extremes_changed));
@@ -1159,7 +1159,7 @@ impl Layout {
     /// plateforme *décide* des callbacks dus ; le port les
     /// collecte puis les appelle sur `self`).
     pub fn drain_idles(&mut self) {
-        let cbs = self.platform.borrow_mut().take_pending_idles();
+        let cbs = self.platform.borrow_mut().take_pending_idles(self.id);
         for cb in cbs {
             cb(self);
         }
@@ -1227,7 +1227,7 @@ impl Layout {
                 self.scroll_idle_id = self
                     .platform
                     .borrow_mut()
-                    .add_idle(Rc::new(Layout::scroll_idle));
+                    .add_idle(self.id, Rc::new(Layout::scroll_idle));
                 self.scroll_idle_not_interrupted = true;
             }
             self.scroll_idle_not_interrupted =
@@ -1878,8 +1878,8 @@ mod tests {
     /// `Platform` mock : file d'idles drainée par le test.
     #[derive(Default)]
     struct MockPlatform {
-        /// `(id, callback)` en attente — ≙ file toolkit.
-        pending: Vec<(i32, IdleCallback)>,
+        /// `(id, layout, callback)` en attente — ≙ file toolkit.
+        pending: Vec<(i32, usize, IdleCallback)>,
         /// Prochain id (amont plateforme alloue).
         next_id: i32,
     }
@@ -1909,19 +1909,20 @@ mod tests {
         fn dpi_y(&mut self) -> f64 {
             96.0
         }
-        fn add_idle(&mut self, cb: IdleCallback) -> i32 {
+        fn add_idle(&mut self, layout: usize, cb: IdleCallback) -> i32 {
             self.next_id += 1;
-            self.pending.push((self.next_id, cb));
+            self.pending.push((self.next_id, layout, cb));
             self.next_id
         }
         fn remove_idle(&mut self, id: i32) {
-            self.pending.retain(|(i, _)| *i != id);
+            self.pending.retain(|(i, _, _)| *i != id);
         }
-        fn take_pending_idles(&mut self) -> Vec<IdleCallback> {
-            std::mem::take(&mut self.pending)
+        fn take_pending_idles(&mut self, layout: usize) -> Vec<IdleCallback> {
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
                 .into_iter()
-                .map(|(_, cb)| cb)
-                .collect()
+                .partition(|(_, l, _)| *l == layout);
+            self.pending = rest;
+            mine.into_iter().map(|(_, _, cb)| cb).collect()
         }
         fn create_font(&mut self, attrs: &FontAttrs, _te: bool) -> Rc<Font> {
             Rc::new(Font {
@@ -2680,5 +2681,38 @@ mod tests {
         // le vrai draw.
         l.drain_idles();
         assert_eq!(l.scroll_idle_id, -1);
+    }
+
+    /// Régression : plateforme partagée entre layouts (onglets) —
+    /// l'idle de A doit être routé vers A, jamais exécuté sur B
+    /// (amont : `FltkPlatform` par onglet = file privée). Sinon le
+    /// `scroll_idle_id` de A reste posé → draws différés à
+    /// l'infini → canvas blanc (bug réel mode shell).
+    #[test]
+    fn idle_callbacks_route_to_owning_layout() {
+        let platform: Rc<RefCell<dyn Platform>> = Rc::new(RefCell::new(MockPlatform {
+            pending: Vec::new(),
+            next_id: 0,
+        }));
+        let mut a = Layout::new(Rc::clone(&platform), true);
+        let mut b = Layout::new(Rc::clone(&platform), true);
+        a.attach_view(RecView::viewport());
+        a.scroll_to(
+            crate::types::HPosition::NoChange,
+            crate::types::VPosition::Top,
+            0,
+            0,
+            0,
+            0,
+        );
+        assert_ne!(a.scroll_idle_id, -1);
+
+        // B draine : l'idle de A ne doit pas se résoudre.
+        b.drain_idles();
+        assert_ne!(a.scroll_idle_id, -1);
+
+        // A draine : son idle se résout.
+        a.drain_idles();
+        assert_eq!(a.scroll_idle_id, -1);
     }
 }

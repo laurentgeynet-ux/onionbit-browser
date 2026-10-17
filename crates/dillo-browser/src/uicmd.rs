@@ -2104,11 +2104,11 @@ mod tests {
         fn dpi_y(&mut self) -> f64 {
             96.0
         }
-        fn add_idle(&mut self, _cb: dillo_dw::platform::IdleCallback) -> i32 {
+        fn add_idle(&mut self, _l: usize, _cb: dillo_dw::platform::IdleCallback) -> i32 {
             0
         }
         fn remove_idle(&mut self, _id: i32) {}
-        fn take_pending_idles(&mut self) -> Vec<dillo_dw::platform::IdleCallback> {
+        fn take_pending_idles(&mut self, _l: usize) -> Vec<dillo_dw::platform::IdleCallback> {
             Vec::new()
         }
         fn create_font(

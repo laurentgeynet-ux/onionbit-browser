@@ -108,12 +108,12 @@ mod tests {
         fn dpi_y(&mut self) -> f64 {
             96.0
         }
-        fn add_idle(&mut self, _cb: IdleCallback) -> i32 {
+        fn add_idle(&mut self, _l: usize, _cb: IdleCallback) -> i32 {
             self.next_id += 1;
             self.next_id
         }
         fn remove_idle(&mut self, _id: i32) {}
-        fn take_pending_idles(&mut self) -> Vec<IdleCallback> {
+        fn take_pending_idles(&mut self, _l: usize) -> Vec<IdleCallback> {
             Vec::new()
         }
         fn create_font(&mut self, attrs: &FontAttrs, _te: bool) -> Rc<Font> {

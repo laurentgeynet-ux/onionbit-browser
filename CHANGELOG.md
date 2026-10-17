@@ -7,6 +7,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **phase 9 — golden render harness** : `dillo/tests/render_ref.rs`
+  rejoue les 39 paires `test/html/render/*.html`/`.ref.html` via la
+  vraie pipeline (`DilloHtml`→`StyleEngine`→`Layout`→`SkiaView`→
+  tiny-skia), images réelles via dicache (`pic.png`), canvas 780×580
+  + scrollbar 15 px verbatim `PREFS_GEOMETRY_DEFAULT_*`/
+  `SCROLLBAR_THICKNESS`. Comparaison pixel `golden::diff_pixmaps`,
+  dumps PNG/textblock via `DILLO_GOLDEN_DUMP`. `ALLOWED` documenté :
+  les 4 XFAIL amont (`margin-auto`, `max-width-html`, `span-padding`,
+  `table-td-width-percent` — non-supports assumés par Dillo) +
+  `svg-current-color` (AA de bords resvg ≠ nanosvg seulement).
+
+- `dillo-browser` : test `icon_probe` (décodage XPM `#RGB`/
+  `#RRGGBB`/12&16 bits/canal, `#None`→transparent, ressources
+  embarquées réelles).
+
+### Fixed
+
+- **phase 9 — bugs réels trouvés par le golden harness** :
+  `dillo-platform` : fontes — quand la requête `fontdb` par famille
+  échoue (familles génériques non taguées sous Windows), les
+  métriques proviennent désormais de la face effectivement choisie
+  par le fallback shaping cosmic-text (probe `glyph.font_id`) —
+  restaure `space_width` ≠ 0 (espaces inter-mots réelles, fixe
+  `white-space`) ; poids quantifiés verbatim FLTK
+  (`weight ≥ 500 → bold`, `fltkfont.cc` — fixe `table-thead-tfoot*`
+  où 700 vs 900 doivent donner la même face). `dillo-images::svg` :
+  `currentColor` résolu par injection de la `fg_color` (≙
+  `p->image->current_color` amont) — diff 12 194 → 1 614 px, reste =
+  AA rasterizer. `dillo-dw` : les callbacks idle `Platform` sont
+  tagués par `Layout` propriétaire (`add_idle`/`take_pending_idles`
+  prennent l'id) — verbatim la file privée par `FltkPlatform`/onglet
+  ; sans routage, une plateforme partagée exécutait l'idle d'un
+  onglet sur un autre (canvas blanc). `words.rs` : `i16` négatif
+  borné à 0 avant cast `usize` (verbatim `textWidth` `len>0`).
+  `dillo-browser::ui` : `xpm_rgb` ajouté (couleurs XPM `#RGB`,
+  12/16 bits par canal — `ui.cc`).
+
 - **phases 7+8 — DPI complet** : `dillo-net::dpi` (verbatim
   `src/IO/dpi.c` — `Dpi_blocking_start_dpid`, auth, `dpi_ccc`
   4 branches), `dillo-dpi::dpip` serveur (`DpIo`/`DpIoTcp`/

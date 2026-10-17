@@ -56,8 +56,11 @@ pub struct SkiaPlatform {
     interned: RefCell<HashSet<&'static str>>,
     /// ≙ `colorsTable` — shades pré-calculées (base,shading)→rgb.
     shades: RefCell<HashMap<(i32, i32), i32>>,
-    /// ≙ `idleQueue` + `idleFuncId`.
-    idles: RefCell<VecDeque<(i32, IdleCallback)>>,
+    /// ≙ `idleQueue` + `idleFuncId` — entrées taguées du
+    /// `Layout::id` propriétaire (amont : plateforme par onglet,
+    /// file privée ; notre plateforme est partagée — le tag rend
+    /// le drain par-layout exact).
+    idles: RefCell<VecDeque<(i32, usize, IdleCallback)>>,
     /// Compteur d'id ≙ `idleFuncId`.
     next_idle: Cell<i32>,
     /// Layout courant ≙ `layout` (id arène).
@@ -148,11 +151,24 @@ impl SkiaPlatform {
         }
     }
 
+    /// `weight >= 500 → FL_BOLD` (fltkfont.cc:107) — FLTK ne
+    /// connaît que 2 graisses (variante bold de la famille) ;
+    /// quantifier pour que 700 et 900 résolvent la même face,
+    /// sinon 700/900 prennent des faces différentes et le rendu
+    /// diverge d'amont (test `table-thead-tfoot`).
+    pub(crate) fn fltk_weight(weight: i32) -> Weight {
+        if weight >= 500 {
+            Weight::BOLD
+        } else {
+            Weight::NORMAL
+        }
+    }
+
     /// `Attrs` cosmic pour `FontAttrs` (≙ `Fl_Font` + `fl_font`).
     pub(crate) fn cosmic_attrs(&self, attrs: &FontAttrs) -> Attrs<'static> {
         Attrs::new()
             .family(self.family(&attrs.name))
-            .weight(Weight(attrs.weight.clamp(1, 1000) as u16))
+            .weight(Self::fltk_weight(attrs.weight))
             .style(match attrs.style {
                 FontStyle::Normal => cosmic_text::Style::Normal,
                 FontStyle::Italic => cosmic_text::Style::Italic,
@@ -175,18 +191,37 @@ impl SkiaPlatform {
         if let Some(&id) = self.resolved.borrow().get(attrs) {
             return id;
         }
-        let fs = self.font_system.borrow();
         let family = self.family(&attrs.name);
-        let id = fs.db().query(&fontdb::Query {
-            families: &[family],
-            weight: fontdb::Weight(attrs.weight.clamp(1, 1000) as u16),
-            style: match attrs.style {
-                FontStyle::Normal => fontdb::Style::Normal,
-                FontStyle::Italic => fontdb::Style::Italic,
-                FontStyle::Oblique => fontdb::Style::Oblique,
-            },
-            ..fontdb::Query::default()
-        });
+        let mut id = {
+            let fs = self.font_system.borrow();
+            fs.db().query(&fontdb::Query {
+                families: &[family],
+                weight: fontdb::Weight(Self::fltk_weight(attrs.weight).0),
+                style: match attrs.style {
+                    FontStyle::Normal => fontdb::Style::Normal,
+                    FontStyle::Italic => fontdb::Style::Italic,
+                    FontStyle::Oblique => fontdb::Style::Oblique,
+                },
+                ..fontdb::Query::default()
+            })
+        };
+        if id.is_none() {
+            // `query` échoue pour les familles génériques ou les
+            // noms absents (fontdb ne tague pas les faces système
+            // par famille générique sous Windows) : probe-shape un
+            // caractère et prendre la face choisie par le fallback
+            // du shaping — celle qui sera réellement rasterisée
+            // (≙ `fl_font` qui retombe sur une fonte connue).
+            let mut fs = self.font_system.borrow_mut();
+            let size = attrs.size.max(1) as f32;
+            let mut buf = Buffer::new(&mut fs, Metrics::new(size, size));
+            buf.set_text(&mut fs, "x", self.cosmic_attrs(attrs), Shaping::Advanced);
+            buf.shape_until_scroll(&mut fs, true);
+            id = buf
+                .layout_runs()
+                .next()
+                .and_then(|r| r.glyphs.first().map(|g| g.font_id));
+        }
         self.resolved.borrow_mut().insert(attrs.clone(), id);
         id
     }
@@ -401,23 +436,27 @@ impl Platform for SkiaPlatform {
 
     /// `addIdle` — file FIFO + id croissant (verbatim ; l'armement
     /// du drain est côté `app.rs` ≙ `Fl::add_idle`).
-    fn add_idle(&mut self, func: IdleCallback) -> i32 {
+    fn add_idle(&mut self, layout: usize, func: IdleCallback) -> i32 {
         let id = self.next_idle.get() + 1;
         self.next_idle.set(id);
-        self.idles.borrow_mut().push_back((id, func));
+        self.idles.borrow_mut().push_back((id, layout, func));
         id
     }
 
     /// `removeIdle`.
     fn remove_idle(&mut self, idle_id: i32) {
-        self.idles.borrow_mut().retain(|(id, _)| *id != idle_id);
+        self.idles.borrow_mut().retain(|(id, _, _)| *id != idle_id);
     }
 
-    /// `generalIdle` — une fonction par drain (verbatim `getFirst`).
-    fn take_pending_idles(&mut self) -> Vec<IdleCallback> {
+    /// `generalIdle` — une fonction par drain (verbatim `getFirst`)
+    /// — la première *de ce layout* (≙ file privée amont).
+    fn take_pending_idles(&mut self, layout: usize) -> Vec<IdleCallback> {
         let mut v = Vec::new();
-        if let Some((_, f)) = self.idles.borrow_mut().pop_front() {
-            v.push(f);
+        let mut q = self.idles.borrow_mut();
+        if let Some(pos) = q.iter().position(|(_, l, _)| *l == layout) {
+            if let Some((_, _, f)) = q.remove(pos) {
+                v.push(f);
+            }
         }
         v
     }

@@ -297,12 +297,17 @@ impl BadnessAndPenalty {
             if total_stretchability == 0 {
                 self.badness_state = BadnessState::NotStretchable;
             } else {
-                self.ratio = 100 * (ideal_width - total_width) / total_stretchability;
+                // `wrapping_*` ≙ arithmétique `int` C (wrap silencieux
+                // — un `totalStretchability` pathologique ≤ 0 rend
+                // `ratio` grand négatif, `ratio³` wrappe amont,
+                // panic sinon en build debug).
+                self.ratio = 100i32.wrapping_mul(ideal_width.wrapping_sub(total_width))
+                    / total_stretchability;
                 if self.ratio > 1024 {
                     self.badness_state = BadnessState::QuiteLoose;
                 } else {
                     self.badness_state = BadnessState::Value;
-                    self.badness = self.ratio * self.ratio * self.ratio;
+                    self.badness = self.ratio.wrapping_mul(self.ratio).wrapping_mul(self.ratio);
                 }
             }
         } else {
@@ -311,12 +316,17 @@ impl BadnessAndPenalty {
                 self.badness_state = BadnessState::TooTight;
             } else {
                 // ratio négatif ici
-                self.ratio = 100 * (ideal_width - total_width) / total_shrinkability;
+                self.ratio = 100i32.wrapping_mul(ideal_width.wrapping_sub(total_width))
+                    / total_shrinkability;
                 if self.ratio <= -100 {
                     self.badness_state = BadnessState::TooTight;
                 } else {
                     self.badness_state = BadnessState::Value;
-                    self.badness = -self.ratio * self.ratio * self.ratio;
+                    self.badness = self
+                        .ratio
+                        .wrapping_neg()
+                        .wrapping_mul(self.ratio)
+                        .wrapping_mul(self.ratio);
                 }
             }
         }
@@ -784,6 +794,104 @@ impl Layout {
             }
         });
         Some(r)
+    }
+
+    /// Dump textuel des lignes/mots de `w` (et des textblocks enfants
+    /// `WIDGET_IN_FLOW`) — outil de diagnostic des golden renders
+    /// (hors API stable, aucune garantie de format).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn tb_dump(&self, w: WidgetId) -> String {
+        let mut out = String::new();
+        self.tb_dump_into(w, 0, &mut out);
+        out
+    }
+
+    fn tb_dump_into(&self, w: WidgetId, depth: usize, out: &mut String) {
+        use std::fmt::Write as _;
+        let pad = "  ".repeat(depth);
+        if w >= self.arena.borrow().nodes.len() {
+            let _ = writeln!(out, "{pad}w={w:?} (invalid)");
+            return;
+        }
+        // Table : descendre dans les cellules (textblocks enfants).
+        let tbl_cells = self.node(w, |n| match &n.kind {
+            WidgetKind::Table { tbl } => {
+                let cells: Vec<WidgetId> = tbl
+                    .children
+                    .iter()
+                    .filter_map(|c| match c {
+                        Some(crate::table::Child::Cell(cd)) => Some(cd.widget),
+                        _ => None,
+                    })
+                    .collect();
+                Some(cells)
+            }
+            _ => None,
+        });
+        if let Some(cells) = tbl_cells {
+            let _ = writeln!(out, "{pad}w={w:?} table cells={}", cells.len());
+            for c in cells {
+                self.tb_dump_into(c, depth + 1, out);
+            }
+            return;
+        }
+        let kids = self.node(w, |n| match &n.kind {
+            WidgetKind::Textblock { tb } => Some((tb.lines.len(), tb.words.len())),
+            _ => None,
+        });
+        let Some((nlines, nwords)) = kids else {
+            let _ = writeln!(out, "{pad}w={w:?} non-textblock");
+            return;
+        };
+        for li in 0..nlines {
+            let (first, last, yo, txt_off) = self
+                .node_tb(w, |tb| {
+                    let l = &tb.lines[li];
+                    (l.first_word, l.last_word, l.top, l.text_offset)
+                })
+                .unwrap_or((0, -1, 0, 0));
+            let _ = writeln!(
+                out,
+                "{pad}w={w:?} line {li} yo={yo} xoff={txt_off} words {first}..{last}"
+            );
+            let mut wi = first;
+            while wi <= last && wi < nwords as i32 {
+                let d = self.node_tb(w, |tb| {
+                    let wd = &tb.words[wi as usize];
+                    let t = match &wd.content.data {
+                        crate::types::ContentData::Text(t) => {
+                            format!("{:?}", String::from_utf8_lossy(t))
+                        }
+                        other => format!("{other:?}"),
+                    };
+                    (
+                        wd.content.r#type,
+                        i32::from(wd.eff_space),
+                        i32::from(wd.orig_space),
+                        wd.content.space,
+                        wd.size.width,
+                        wd.flags,
+                        wd.style.attrs.font.as_ref().map_or(0, |f| f.attrs.weight),
+                        t,
+                        match &wd.content.data {
+                            crate::types::ContentData::Widget(c) => Some(*c),
+                            _ => None,
+                        },
+                    )
+                });
+                if let Some((ct, es, os, sp, ww, fl, wt, t, child)) = d {
+                    let _ = writeln!(
+                        out,
+                        "{pad}  word {wi} ct={ct} w={ww} wt={wt} sp={sp} os={os} es={es} fl={fl:#x} {t}"
+                    );
+                    if let Some(c) = child {
+                        self.tb_dump_into(c, depth + 2, out);
+                    }
+                }
+                wi += 1;
+            }
+        }
     }
 }
 
