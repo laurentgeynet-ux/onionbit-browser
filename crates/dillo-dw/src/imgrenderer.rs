@@ -18,7 +18,7 @@ use std::rc::Rc;
 use crate::imgbuf::Imgbuf;
 
 /// `dw::core::ImgRenderer`.
-pub trait ImgRenderer {
+pub trait ImgRenderer: 'static {
     /// `setBuffer (buffer, resize)` — buffer attaché (métadonnées
     /// lues).
     fn set_buffer(&mut self, buffer: &Rc<dyn Imgbuf>, resize: bool);
@@ -28,6 +28,11 @@ pub trait ImgRenderer {
     fn finish(&mut self);
     /// `fatal` — erreur de récupération.
     fn fatal(&mut self);
+    /// Downcast pour les données spécifiques (`setData` des
+    /// renderers textblock — adaptation modèle D : amont tient un
+    /// pointeur `WordImgRenderer*` typé). Méthode requise
+    /// (object-safety : pas de défaut possible).
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// `dw::core::ImgRendererDist` — distribue les appels à un
@@ -92,6 +97,10 @@ impl ImgRenderer for ImgRendererDist {
             child.borrow_mut().fatal();
         }
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 #[cfg(test)]
@@ -113,6 +122,9 @@ mod tests {
             self.finished.set(true);
         }
         fn fatal(&mut self) {}
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
     }
 
     #[test]

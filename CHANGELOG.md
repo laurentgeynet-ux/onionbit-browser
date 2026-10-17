@@ -7,6 +7,41 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `dillo-dw::textblock` (phase 4, lot dw-3) : port complet du
+  sous-système texte dw — modèle `Word`/`Line`/`Paragraph`/
+  `BadnessAndPenalty` verbatim, construction incrémentale
+  (`addText*`/`addSpace`/`addParbreak` avec propagation
+  ancêtre/`addLinebreak`/`addWidget`/`addAnchor`), wrapping
+  + breaking `textblock_linebreaking.cc` (penalties TeX,
+  `DIV_CHARS`, justification cumulative anti-arrondi,
+  hyphenation via `hyphenator` Trie+`.pat`/`.exc`/`.trie`),
+  sizing/extremes/allocation + OOF, draw complet
+  (`drawText`/`drawWord*`/`drawSpace`/`drawLine`/`drawLevel`),
+  itérateur `TbInFlow` verbatim (highlight/unhighlight,
+  `getAllocation` lignes non allouées), `sendSelectionEvent`
+  avec hit-test mot/caractère réel. `WidgetKind::Textblock`
+  boxed, `with_tb` extraction `mem::replace` (modèle D).
+
+- `dillo-dw::selection` + `findtext` : `SelectionState`
+  verbatim `selection.cc` (press/motion/release, lien→drag,
+  `END_OF_WORD`, highlight incrémental, copie clipboard) et
+  `FindtextState` verbatim `findtext.cc` (KMP, case-sens/
+  insens + équivalence whitespace, forward/backward,
+  wrap-around RESTART). `DeepIterator::new` clone l'itérateur
+  entrant (verbatim ctor amont).
+
+- `dillo-dw::textblock::listitem` + `bullet` + `ruler` :
+  `AlignedTextblock`/`ListItem` (liste partagée Rc,
+  `updateValue`→`setMaxValue`, `leftInnerPadding`/
+  `line1Offset`), `Bullet` (sizeRequest xHeight·4/5, draw
+  Disc/Circle/Square), `Ruler` (usesAvailWidth, draw→
+  `drawWidgetBox`, `getWidgetAtPoint`=inAllocation) ; arms
+  dispatch `WidgetKind` pour les trois kinds.
+
+- `dillo-dw::hyphenator` : `hyphenator.cc` verbatim — Trie,
+  loaders `.pat`/`.exc`/`.trie`, priorités chiffres odd/even,
+  `hyphenateWord` consommé par le wrapping.
+
 - `dillo-dw::iterator` (phase 4, lot dw-2b) : `DwIterator`
   trait object ≙ `Iterator` (widget `WidgetId`, mask,
   `next`/`prev`/`highlight`/`unhighlight`/`get_allocation`),

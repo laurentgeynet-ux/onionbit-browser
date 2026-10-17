@@ -140,6 +140,24 @@ impl SizeParams {
     pub fn get_y(&self, i: usize) -> Option<i32> {
         self.y.get(i).copied()
     }
+
+    /// Tranche `references` (≙ `getReferences()` amont).
+    #[must_use]
+    pub fn references(&self) -> &[WidgetId] {
+        &self.references
+    }
+
+    /// Tranche `x` (≙ `getX()` tableau amont).
+    #[must_use]
+    pub fn xs(&self) -> &[i32] {
+        &self.x
+    }
+
+    /// Tranche `y` (≙ `getY()` tableau amont).
+    #[must_use]
+    pub fn ys(&self) -> &[i32] {
+        &self.y
+    }
 }
 
 #[cfg(test)]

@@ -11,14 +11,20 @@
 //! pendant un appel récursif.
 #![forbid(unsafe_code)]
 
+pub mod bullet;
 pub mod events;
+pub mod findtext;
+pub mod hyphenator;
 pub mod imgbuf;
 pub mod imgrenderer;
 pub mod iterator;
 pub mod layout;
 pub mod oof;
 pub mod platform;
+pub mod ruler;
+pub mod selection;
 pub mod style;
+pub mod textblock;
 pub mod tools;
 pub mod types;
 pub mod view;

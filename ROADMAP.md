@@ -100,14 +100,21 @@ prototype phase 0).
       aligné `Rc<dyn Imgbuf>`
 - [x] `widget.cc` + `layout.cc` (size negotiate, allocation, draw,
       damage/queue-draw, anchors)
-- [~] `iterator.cc` **[`dw::iterator`]** porté (trait
+- [x] `iterator.cc` **[`dw::iterator`]** porté (trait
       `DwIterator`, Deep/Char verbatim, ChildIterator seam)
       ; `textblock.cc` + `textblock_linebreaking.cc` +
-      `textblock_iterator.cc` (word wrap, breaking spaces doc
-      parity) — à faire
-- [ ] `hyphenator.cc` (+ `.pat` files), `ruler.cc`, `bullet.cc`,
-      `listitem.cc`, `alignedtextblock.cc`
-- [ ] `findtext.cc`, `selection.cc`
+      `textblock_iterator.cc` (word wrap, penalties/badness,
+      collapsing spaces, justification cumulative, sizing,
+      draw, itérateur `TbInFlow`) — **[`dw::textblock`]**
+      porté (rapport A06 partiel)
+- [x] `hyphenator.cc` (Trie + `.pat`/`.exc`/`.trie` loaders —
+      fichiers `hyph-*.pat` data à copier en test-data),
+      `ruler.cc`, `bullet.cc`, `listitem.cc`,
+      `alignedtextblock.cc` **[`dw::textblock::listitem`,
+      `dw::ruler`, `dw::bullet`, `dw::hyphenator`]**
+- [x] `findtext.cc`, `selection.cc` **[`dw::findtext`,
+      `dw::selection`]** (KMP verbatim, DeepIterator ancrage,
+      clipboard)
 - [ ] `image.cc` (widget side), `imgrenderer.cc`
 - [~] `tools.cc`, `ui.cc` (dw::core::ui widgets) — `tools` porté
 

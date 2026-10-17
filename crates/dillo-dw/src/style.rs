@@ -1321,6 +1321,9 @@ impl ImgRenderer for StyleImgRenderer {
 
     /// `fatal` — rien (verbatim).
     fn fatal(&mut self) {}
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 impl StyleImage {

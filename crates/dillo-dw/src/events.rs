@@ -61,6 +61,19 @@ pub struct EventButton {
     pub button: i32,
 }
 
+/// `EventButton` hérite `MousePositionEvent` amont (≙ upcast).
+impl From<&EventButton> for MousePositionEvent {
+    fn from(e: &EventButton) -> Self {
+        MousePositionEvent {
+            state: e.state,
+            x_canvas: e.x_canvas,
+            y_canvas: e.y_canvas,
+            x_widget: e.x_widget,
+            y_widget: e.y_widget,
+        }
+    }
+}
+
 /// `dw::core::EventMotion` — mouvement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventMotion {
@@ -74,6 +87,19 @@ pub struct EventMotion {
     pub x_widget: i32,
     /// `yWidget`.
     pub y_widget: i32,
+}
+
+/// `EventMotion` hérite `MousePositionEvent` amont (≙ upcast).
+impl From<&EventMotion> for MousePositionEvent {
+    fn from(e: &EventMotion) -> Self {
+        MousePositionEvent {
+            state: e.state,
+            x_canvas: e.x_canvas,
+            y_canvas: e.y_canvas,
+            x_widget: e.x_widget,
+            y_widget: e.y_widget,
+        }
+    }
 }
 
 /// `dw::core::EventCrossing` — enter/leave notify.

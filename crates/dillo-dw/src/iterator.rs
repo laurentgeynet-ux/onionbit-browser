@@ -493,6 +493,19 @@ pub struct DeepIterator {
     has_contents: bool,
 }
 
+impl std::fmt::Debug for DeepIterator {
+    /// `Box<dyn DwIterator>` n'est pas `Debug` — affiche les
+    /// scalaires (≙ `print()` amont, réduit).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeepIterator")
+            .field("stack_len", &self.stack.len())
+            .field("mask", &self.mask)
+            .field("content", &self.content.r#type)
+            .field("has_contents", &self.has_contents)
+            .finish()
+    }
+}
+
 /// `clone` ≙ `DeepIterator::clone` amont (iterator.cc:598 :
 /// chaque itérateur de pile est `cloneIterator()`-é).
 impl Clone for DeepIterator {
@@ -860,6 +873,18 @@ pub struct CharIterator {
     pos: usize,
     /// `ch` — caractère courant (`START`/`END` sentinels).
     ch: i32,
+}
+
+impl std::fmt::Debug for CharIterator {
+    /// Scalaires uniquement (`DeepIterator` résumé — ≙ `print`
+    /// amont réduit).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CharIterator")
+            .field("pos", &self.pos)
+            .field("ch", &self.ch)
+            .field("it", &self.it)
+            .finish()
+    }
 }
 
 impl CharIterator {

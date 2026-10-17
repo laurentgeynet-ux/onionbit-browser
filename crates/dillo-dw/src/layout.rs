@@ -16,10 +16,9 @@
 //! appelle avec `&mut self` (modèle D : pas de `&mut`
 //! flottant).
 //!
-//! `selectionState`/`findtextState` : stubs fidèles —
-//! `setLayout`/`reset`/`setWidget`/`resetSearch` existent ;
-//! la recherche (`NOT_FOUND`) et la sélection arrivent avec
-//! les phases « findtext »/« selection ». `textZone`
+//! `selectionState` : portée (`crate::selection`). `findtextState` :
+//! stub fidèle — `setWidget`/`resetSearch` existent, la recherche
+//! (`NOT_FOUND`) arrive avec la phase « findtext ». `textZone`
 //! (`ZoneAllocator`) : allocation interne amont — non portée,
 //! sans effet observable.
 
@@ -30,8 +29,10 @@ use std::rc::Rc;
 use dillo_common::lout::signal::Emitter;
 
 use crate::events::{EventButton, EventCrossing, EventMotion};
+use crate::findtext::FindtextState;
 use crate::imgrenderer::ImgRenderer;
 use crate::platform::Platform;
+use crate::selection::SelectionState;
 use crate::style::{self, Color, Cursor, Length, StyleImage};
 use crate::types::{
     Allocation, DrawingContext, GettingWidgetAtPointContext, HPosition, Rectangle, ScrollCommand,
@@ -162,17 +163,6 @@ pub trait LinkReceiver {
     }
 }
 
-/// `FindtextState` (dw/findtext.hh) — stub : `search` renvoie
-/// `NOT_FOUND` tant que `findtext.cc` n'est pas porté ;
-/// `setWidget`/`resetSearch`/`searchHighlighting` fidèles.
-#[derive(Debug)]
-struct FindtextState {
-    /// `widget`.
-    widget: Option<WidgetId>,
-    /// `searchHighlighting`.
-    search_highlighting: bool,
-}
-
 /// `FindtextState::Result`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FindtextResult {
@@ -184,45 +174,7 @@ pub enum FindtextResult {
     NotFound,
 }
 
-#[allow(clippy::unused_self)]
-impl FindtextState {
-    /// `FindtextState ()`.
-    const fn new() -> Self {
-        FindtextState {
-            widget: None,
-            search_highlighting: false,
-        }
-    }
-    /// `setWidget`.
-    fn set_widget(&mut self, widget: Option<WidgetId>) {
-        self.widget = widget;
-    }
-    /// `resetSearch`.
-    fn reset_search(&mut self) {}
-    /// `search` — phase findtext : `NOT_FOUND` (stub documenté).
-    fn search(&mut self, _key: &[u8], _case_sens: bool, _backwards: bool) -> FindtextResult {
-        FindtextResult::NotFound
-    }
-    /// `setSearchHighlighting`.
-    fn set_search_highlighting(&mut self, v: bool) {
-        self.search_highlighting = v;
-    }
-    /// `getSearchHighlighting`.
-    fn get_search_highlighting(&self) -> bool {
-        self.search_highlighting
-    }
-}
-
-/// `SelectionState` (dw/selection.hh) — stub : `setLayout`/
-/// `reset`/`copy` fidèles, `handleEvent` → `false` tant que
-/// `selection.cc`/`iterator.cc` ne sont pas portés.
-#[derive(Debug)]
-struct SelectionState {
-    /// `layout != NULL`.
-    has_layout: bool,
-}
-
-/// `SelectionState::EventType`.
+/// `SelectionState::EventType` (selection.hh:238).
 #[derive(Debug, Clone, Copy)]
 pub enum SelectionEvent {
     /// `BUTTON_PRESS`.
@@ -231,24 +183,6 @@ pub enum SelectionEvent {
     ButtonRelease,
     /// `BUTTON_MOTION`.
     ButtonMotion,
-}
-
-#[allow(clippy::unused_self)]
-impl SelectionState {
-    /// `SelectionState ()`.
-    const fn new() -> Self {
-        SelectionState { has_layout: false }
-    }
-    /// `setLayout`.
-    fn set_layout(&mut self) {
-        self.has_layout = true;
-    }
-    /// `reset`.
-    fn reset(&mut self) {}
-    /// `copy` — phase sélection : stub (copie le texte
-    /// sélectionné via `platform->copySelection` quand
-    /// `selection.cc` sera porté).
-    fn copy(&mut self, _selection: i32) {}
 }
 
 // ------------------------------------------------------------------
@@ -346,7 +280,7 @@ impl Layout {
     /// `Layout (platform, limit)` — verbatim layout.cc:270.
     #[must_use]
     pub fn new(platform: Rc<RefCell<dyn Platform>>, limit: bool) -> Self {
-        let mut layout = Layout {
+        let layout = Layout {
             platform,
             view: None,
             arena: Rc::new(RefCell::new(Arena::new())),
@@ -398,7 +332,8 @@ impl Layout {
             widget_img_renderers: HashMap::new(),
         };
         layout.platform.borrow_mut().set_layout(1);
-        layout.selection_state.set_layout();
+        // `selectionState.setLayout` amont ≙ `layout` passé en
+        // paramètre des méthodes (`crate::selection`).
         layout
     }
 
@@ -1614,27 +1549,45 @@ impl Layout {
 
     // ---- sélection / findtext (glues verbatim) ----
 
-    /// `copyCurrentSelection` (≙ `selectionState.copy`).
+    /// `copyCurrentSelection` (≙ `selectionState.copy`) —
+    /// `mem::take` : les méthodes de l'état reçoivent `&mut Layout`
+    /// (≙ champ `layout` amont).
     pub fn copy_current_selection(&mut self, selection: i32) {
-        self.selection_state.copy(selection);
+        let mut st = std::mem::replace(&mut self.selection_state, SelectionState::new());
+        st.copy(self, selection);
+        self.selection_state = st;
     }
-    /// `search` ≙ `findtextState.search` — phase findtext :
-    /// `NOT_FOUND`.
+
+    /// `selectionState.handleEvent` — seam appelée par
+    /// `Textblock::sendSelectionEvent` avec l'itérateur positionné
+    /// (≙ `Iterator*` amont, consommé ici).
+    pub(crate) fn selection_state_handle_event(
+        &mut self,
+        event_type: SelectionEvent,
+        it: Box<dyn crate::iterator::DwIterator>,
+        char_pos: i32,
+        link: i32,
+        event: crate::selection::SelectionMouseEvent<'_>,
+    ) -> bool {
+        let mut st = std::mem::replace(&mut self.selection_state, SelectionState::new());
+        let r = st.handle_event(self, event_type, it, char_pos, link, event);
+        self.selection_state = st;
+        r
+    }
+    /// `search` ≙ `findtextState.search` — `mem::take` (l'état
+    /// reçoit `&mut Layout` ≙ champ `layout` amont).
     pub fn search(&mut self, key: &[u8], case_sens: bool, backwards: bool) -> FindtextResult {
-        self.findtext_state.search(key, case_sens, backwards)
+        let mut st = std::mem::replace(&mut self.findtext_state, FindtextState::new());
+        let r = st.search(self, key, case_sens, backwards);
+        self.findtext_state = st;
+        r
     }
-    /// `resetSearch`.
+    /// `resetSearch` — `unhighlight` interne a besoin de
+    /// `&mut Layout` → `mem::take`.
     pub fn reset_search(&mut self) {
-        self.findtext_state.reset_search();
-    }
-    /// `setSearchHighlighting` / `getSearchHighlighting`.
-    pub fn set_search_highlighting(&mut self, v: bool) {
-        self.findtext_state.set_search_highlighting(v);
-    }
-    /// `getSearchHighlighting`.
-    #[must_use]
-    pub fn get_search_highlighting(&self) -> bool {
-        self.findtext_state.get_search_highlighting()
+        let mut st = std::mem::replace(&mut self.findtext_state, FindtextState::new());
+        st.reset_search(self);
+        self.findtext_state = st;
     }
 
     /// Destruction d'un sous-arbre (≙ `delete widget` amont —
@@ -1694,6 +1647,9 @@ impl ImgRenderer for LayoutImgRenderer {
     }
     /// `fatal` — rien.
     fn fatal(&mut self) {}
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 impl style::ExternalImgRenderer for LayoutImgRenderer {

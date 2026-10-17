@@ -72,6 +72,9 @@ impl ImgRenderer for NullRenderer {
     fn fatal(&mut self) {
         self.fataled = true;
     }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 /// `DilloImage` — l'image vue par une requête web.

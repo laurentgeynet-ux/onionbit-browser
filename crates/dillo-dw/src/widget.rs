@@ -30,10 +30,11 @@ use crate::style::{
     self, abs_length_val, is_abs_length, is_per_length, multiply_with_per_length, Color, Style,
     LENGTH_AUTO,
 };
+use crate::textblock::is_textblock_kind;
 use crate::tools::SizeParams;
 use crate::types::{
-    Allocation, DrawingContext, Extremes, GettingWidgetAtPointContext, HPosition, Requisition,
-    VPosition, WidgetReference,
+    content_type, Allocation, ContentData, DrawingContext, Extremes, GettingWidgetAtPointContext,
+    HPosition, Requisition, VPosition, WidgetReference,
 };
 use crate::view::View;
 use crate::WidgetId;
@@ -123,6 +124,25 @@ pub enum WidgetKind {
     OofAware {
         /// Champs `OOFAwareWidget` (`oofContainer`,
         /// `outOfFlowMgr`, `requisitionWithoutOOF`).
+        oof: crate::oof::OofAwareData,
+    },
+    /// `dw::Textblock` — bloc de texte/lignes/widgets
+    /// (textblock.cc) ; hérite `RegardingBorder` amont ≙
+    /// `OofAwareData` embarqué dans `TextblockData`.
+    Textblock {
+        /// État verbatim `textblock.hh` (`words`/`lines`/
+        /// `paragraphs`/`anchors` + partie `OOFAwareWidget`) —
+        /// boxed (variant le plus volumineux, ≙ sous-classe
+        /// amont allouée à part).
+        tb: Box<crate::textblock::TextblockData>,
+    },
+    /// `dw::Bullet` — puce de liste (bullet.cc), `Widget`
+    /// direct amont, leaf sans état.
+    Bullet,
+    /// `dw::Ruler` — `<hr>` (ruler.cc) ; `Ruler : RegardingBorder`
+    /// amont ≙ `OofAwareData` embarqué.
+    Ruler {
+        /// Champs `OOFAwareWidget`.
         oof: crate::oof::OofAwareData,
     },
 }
@@ -1585,11 +1605,30 @@ impl Layout {
     pub(crate) fn widget_children_for_container_change(&self, w: WidgetId) -> Vec<WidgetId> {
         self.node(w, |n| match &n.kind {
             WidgetKind::Container { children } => children.clone(),
+            // `Textblock` : les enfants in-flow sont les widgets
+            // des mots `WIDGET_IN_FLOW` (≙ itérateur textblock,
+            // masque `WIDGET_IN_FLOW`).
+            WidgetKind::Textblock { tb } => tb
+                .words
+                .iter()
+                .filter_map(|word| {
+                    if word.content.r#type == content_type::WIDGET_IN_FLOW {
+                        if let ContentData::Widget(c) = word.content.data {
+                            return Some(c);
+                        }
+                    }
+                    None
+                })
+                .collect(),
             // `OofAware` : les kinds OOF-aware notifient les
             // enfants OOF via `containerSizeChangedForChildrenOOF`
             // (contrat oofawarewidget.hh:33) — ici in-flow
             // seulement (vide pour le kind nu).
-            WidgetKind::Base | WidgetKind::Text { .. } | WidgetKind::OofAware { .. } => Vec::new(),
+            WidgetKind::Base
+            | WidgetKind::Text { .. }
+            | WidgetKind::OofAware { .. }
+            | WidgetKind::Bullet
+            | WidgetKind::Ruler { .. } => Vec::new(),
         })
     }
 
@@ -1629,13 +1668,22 @@ impl Layout {
             Child(Vec<WidgetId>),
             Text(Rc<[u8]>),
             OofAware,
+            Textblock,
             Empty,
         }
         match self.node(w, |n| match &n.kind {
             WidgetKind::Container { children } => Dispatch::Child(children.clone()),
             WidgetKind::Text { text } => Dispatch::Text(text.clone()),
             WidgetKind::OofAware { .. } => Dispatch::OofAware,
-            WidgetKind::Base => Dispatch::Empty,
+            // `Textblock` : `TextblockIterator` verbatim —
+            // `OofAwareIterator` + `TbInFlow` (section en-flux =
+            // mots — textblock_iterator.cc).
+            WidgetKind::Textblock { .. } => Dispatch::Textblock,
+            // `Bullet::iterator` — `EmptyIterator` verbatim
+            // (`\bug Not implemented` amont) ;
+            // `Ruler::iterator` — `EmptyIterator` (`\todo
+            // TextIterator?` amont).
+            WidgetKind::Base | WidgetKind::Bullet | WidgetKind::Ruler { .. } => Dispatch::Empty,
         }) {
             Dispatch::Child(children) => Box::new(crate::iterator::ChildIterator::new(
                 w,
@@ -1654,6 +1702,9 @@ impl Layout {
                 self,
                 0,
             )),
+            Dispatch::Textblock => Box::new(crate::textblock::iter::textblock_iterator(
+                self, w, mask, at_end,
+            )),
             Dispatch::Empty => Box::new(crate::iterator::EmptyIterator::new(w, mask, at_end)),
         }
     }
@@ -1671,6 +1722,12 @@ impl Layout {
         x: &[i32],
         y: &[i32],
     ) {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            let _ = self.with_tb(w, |l, tb| {
+                l.tb_size_request_impl(w, tb, requisition, references, x, y);
+            });
+            return;
+        }
         let _ = (num_pos, references, x, y);
         self.w_size_request_simpl(w, requisition);
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
@@ -1683,9 +1740,13 @@ impl Layout {
 
     /// `Widget::sizeRequestSimpl` — `notImplemented` amont
     /// (`MSG_ERR` + retour) → no-op documenté : `Base` ne doit pas
-    /// être mesuré (les kinds concrets implémenteront).
+    /// être mesuré. `Bullet`/`Ruler` : `*Simpl` verbatim.
     pub(crate) fn w_size_request_simpl(&mut self, w: WidgetId, requisition: &mut Requisition) {
-        let _ = (w, requisition);
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Bullet)) {
+            self.bullet_size_request_simpl(w, requisition);
+        } else if self.node(w, |n| matches!(&n.kind, WidgetKind::Ruler { .. })) {
+            self.ruler_size_request_simpl(w, requisition);
+        }
     }
 
     /// `Widget::getExtremesImpl` — délègue simple (widget.cc:1706).
@@ -1698,6 +1759,13 @@ impl Layout {
         x: &[i32],
         y: &[i32],
     ) {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            // `Textblock::getExtremesSimpl` fait lui-meme
+            // `correctExtremes` + `correctExtremesByOOF`
+            // (textblock.cc:510-517, verbatim).
+            self.tb_get_extremes_simpl(w, extremes);
+            return;
+        }
         let _ = (num_pos, references, x, y);
         self.w_get_extremes_simpl(w, extremes);
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
@@ -1706,9 +1774,14 @@ impl Layout {
     }
 
     /// `Widget::getExtremesSimpl` — `notImplemented` amont →
-    /// no-op (même note que `sizeRequestSimpl`).
+    /// no-op (même note que `sizeRequestSimpl`). `Bullet`/`Ruler` :
+    /// `*Simpl` verbatim.
     pub(crate) fn w_get_extremes_simpl(&mut self, w: WidgetId, extremes: &mut Extremes) {
-        let _ = (w, extremes);
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Bullet)) {
+            self.bullet_get_extremes_simpl(w, extremes);
+        } else if self.node(w, |n| matches!(&n.kind, WidgetKind::Ruler { .. })) {
+            self.ruler_get_extremes_simpl(w, extremes);
+        }
     }
 
     /// `Widget::calcExtraSpaceImpl` — vide amont (widget.cc:1735).
@@ -1720,6 +1793,13 @@ impl Layout {
         x: &[i32],
         y: &[i32],
     ) {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            let _ = num_pos;
+            let _ = self.with_tb(w, |l, tb| {
+                l.tb_calc_extra_space_impl(w, tb, references, x, y);
+            });
+            return;
+        }
         let _ = (w, num_pos, references, x, y);
     }
 
@@ -1728,6 +1808,10 @@ impl Layout {
     /// oofawarewidget.hh:30 — le kind nu n'a pas de contenu
     /// propre entre les deux).
     pub(crate) fn w_size_allocate_impl(&mut self, w: WidgetId, allocation: &Allocation) {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            self.tb_size_allocate_impl(w, allocation);
+            return;
+        }
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
             self.oof_size_allocate_start(w, allocation);
             self.oof_size_allocate_end(w);
@@ -1738,16 +1822,28 @@ impl Layout {
 
     /// `Widget::resizeDrawImpl` — `queueDraw()` amont.
     pub(crate) fn w_resize_draw_impl(&mut self, w: WidgetId) {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            self.tb_resize_draw_impl(w);
+            return;
+        }
         self.widget_queue_draw(w);
     }
 
     /// `Widget::markSizeChange` / `markExtremesChange` — vides
     /// amont (widget.cc:1746/1750).
     pub(crate) fn w_mark_size_change(&mut self, w: WidgetId, ref_: i32) {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            self.tb_mark_size_change(w, ref_);
+            return;
+        }
         let _ = (w, ref_);
     }
     /// `markExtremesChange`.
     pub(crate) fn w_mark_extremes_change(&mut self, w: WidgetId, ref_: i32) {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            self.tb_mark_extremes_change(w, ref_);
+            return;
+        }
         let _ = (w, ref_);
     }
 
@@ -1758,12 +1854,18 @@ impl Layout {
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
             self.oof_notify_set_as_top_level(w);
         }
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            self.tb_notify_set_as_top_level(w);
+        }
     }
     /// `notifySetParent` — vide amont ; `OOFAwareWidget` :
     /// recherche des containing blocks (oofawarewidget.cc:185).
     pub(crate) fn w_notify_set_parent(&mut self, w: WidgetId) {
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
             self.oof_notify_set_parent(w);
+        }
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            self.tb_notify_set_parent(w);
         }
     }
 
@@ -1772,6 +1874,9 @@ impl Layout {
     /// surchargeront).
     #[allow(dead_code)]
     pub(crate) fn w_num_size_request_references(&self, w: WidgetId) -> usize {
+        if let Some(n) = self.node_tb(w, |tb| self.tb_num_size_request_references(tb)) {
+            return n;
+        }
         let _ = w;
         0
     }
@@ -1779,12 +1884,18 @@ impl Layout {
     /// `None` (même seam).
     #[allow(dead_code)]
     pub(crate) fn w_size_request_reference(&self, w: WidgetId, index: usize) -> Option<WidgetId> {
+        if let Some(r) = self.node_tb(w, |tb| self.tb_size_request_reference(tb, index)) {
+            return r;
+        }
         let _ = (w, index);
         None
     }
     /// `numGetExtremesReferences` — 0 (même seam).
     #[allow(dead_code)]
     pub(crate) fn w_num_get_extremes_references(&self, w: WidgetId) -> usize {
+        if let Some(n) = self.node_tb(w, |tb| self.tb_num_get_extremes_references(tb)) {
+            return n;
+        }
         let _ = w;
         0
     }
@@ -1792,6 +1903,9 @@ impl Layout {
     /// (même seam).
     #[allow(dead_code)]
     pub(crate) fn w_get_extremes_reference(&self, w: WidgetId, index: usize) -> Option<WidgetId> {
+        if let Some(r) = self.node_tb(w, |tb| self.tb_get_extremes_reference(tb, index)) {
+            return r;
+        }
         let _ = (w, index);
         None
     }
@@ -1803,7 +1917,13 @@ impl Layout {
     }
 
     /// `Widget::usesAvailWidth` / `usesAvailHeight` — `false`.
+    /// `Ruler::usesAvailWidth` → `true` (ruler.cc:77-79).
     pub(crate) fn w_uses_avail_width(&self, w: WidgetId) -> bool {
+        if self.node(w, |n| {
+            is_textblock_kind(&n.kind) || matches!(&n.kind, WidgetKind::Ruler { .. })
+        }) {
+            return true;
+        }
         let _ = w;
         false
     }
@@ -1837,7 +1957,13 @@ impl Layout {
     }
 
     /// `Widget::isBlockLevel` — `false` amont.
+    /// `Ruler::isBlockLevel` → `true` (ruler.cc:62-65).
     pub(crate) fn w_is_block_level(&self, w: WidgetId) -> bool {
+        if self.node(w, |n| {
+            is_textblock_kind(&n.kind) || matches!(&n.kind, WidgetKind::Ruler { .. })
+        }) {
+            return true;
+        }
         let _ = w;
         false
     }
@@ -1854,6 +1980,19 @@ impl Layout {
     /// in-flow (vide pour le kind nu) +
     /// `containerSizeChangedForChildrenOOF`.
     pub(crate) fn w_container_size_changed_for_children(&mut self, w: WidgetId) {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            self.tb_container_size_changed_for_children(w);
+            return;
+        }
+        // `Bullet::containerSizeChangedForChildren` /
+        // `Ruler::containerSizeChangedForChildren` — « Nothing to
+        // do » verbatim (bullet.cc:54-58, ruler.cc:67-71) ; le
+        // `Ruler` court-circuite la variante `OOFAwareWidget`.
+        if self.node(w, |n| {
+            matches!(&n.kind, WidgetKind::Bullet | WidgetKind::Ruler { .. })
+        }) {
+            return;
+        }
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
             self.oof_container_size_changed_for_children(w);
             return;
@@ -1892,6 +2031,9 @@ impl Layout {
         parent: WidgetId,
         child: WidgetId,
     ) -> bool {
+        if self.node(parent, |n| is_textblock_kind(&n.kind)) {
+            return self.tb_affects_size_change_container_child(parent, child);
+        }
         let _ = parent;
         let Some(s) = self.node(child, |n| n.style.clone()) else {
             return false;
@@ -1914,6 +2056,9 @@ impl Layout {
         child: WidgetId,
         force_value: bool,
     ) -> i32 {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            return self.tb_get_avail_width_of_child(w, child, force_value);
+        }
         let style = self.node(child, |n| n.style.clone());
         let Some(s) = style else { return -1 };
         if s.width == LENGTH_AUTO {
@@ -1954,6 +2099,9 @@ impl Layout {
         child: WidgetId,
         force_value: bool,
     ) -> i32 {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            return self.tb_get_avail_height_of_child(w, child, force_value);
+        }
         let style = self.node(child, |n| n.style.clone());
         let Some(s) = style else { return -1 };
         if s.height == LENGTH_AUTO {
@@ -2077,24 +2225,41 @@ impl Layout {
         }
     }
 
-    /// `Widget::buttonPressImpl`/`Release`/`Motion` — `false`.
+    /// `Widget::buttonPressImpl` — `Textblock` ≙
+    /// `sendSelectionEvent (BUTTON_PRESS)` (textblock.cc:944) ;
+    /// défaut `false`.
     pub(crate) fn w_button_press_impl(&mut self, w: WidgetId, event: &EventButton) -> bool {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            return self.tb_button_press_impl(w, event);
+        }
         let _ = (w, event);
         false
     }
-    /// `buttonReleaseImpl`.
+    /// `buttonReleaseImpl` — `Textblock` ≙
+    /// `sendSelectionEvent (BUTTON_RELEASE)` (textblock.cc:949).
     pub(crate) fn w_button_release_impl(&mut self, w: WidgetId, event: &EventButton) -> bool {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            return self.tb_button_release_impl(w, event);
+        }
         let _ = (w, event);
         false
     }
-    /// `motionNotifyImpl`.
+    /// `motionNotifyImpl` — `Textblock` ≙ motion sélection/hover
+    /// (textblock.cc:959) ; défaut `false`.
     pub(crate) fn w_motion_notify_impl(&mut self, w: WidgetId, event: &EventMotion) -> bool {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            return self.tb_motion_notify_impl(w, event);
+        }
         let _ = (w, event);
         false
     }
 
-    /// `Widget::enterNotifyImpl` — `tooltip->onEnter()` amont.
+    /// `Widget::enterNotifyImpl` — `Textblock` ≙ `hoverLink = -2`
+    /// (textblock.cc:1001) ; défaut `tooltip->onEnter()` amont.
     pub(crate) fn w_enter_notify_impl(&mut self, w: WidgetId, event: &EventCrossing) {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            return self.tb_enter_notify_impl(w, event);
+        }
         let _ = event;
         let tooltip = self.node(w, |n| {
             n.style.as_ref().and_then(|s| s.attrs.x_tooltip.clone())
@@ -2104,8 +2269,13 @@ impl Layout {
         }
     }
 
-    /// `Widget::leaveNotifyImpl` — `tooltip->onLeave()`.
+    /// `Widget::leaveNotifyImpl` — `Textblock` ≙ LinkEnter(-1) +
+    /// onLeave tooltip (textblock.cc:1008) ; défaut
+    /// `tooltip->onLeave()`.
     pub(crate) fn w_leave_notify_impl(&mut self, w: WidgetId, event: &EventCrossing) {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            return self.tb_leave_notify_impl(w, event);
+        }
         let _ = event;
         let tooltip = self.node(w, |n| {
             n.style.as_ref().and_then(|s| s.attrs.x_tooltip.clone())
@@ -2124,6 +2294,16 @@ impl Layout {
         area: &crate::types::Rectangle,
         context: &mut DrawingContext,
     ) {
+        // `Bullet::draw` / `Ruler::draw` — verbatim ; `Ruler`
+        // court-circuite `OOFAwareWidget::draw` (ruler.cc:87).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Bullet)) {
+            self.bullet_draw(w, view, area, context);
+            return;
+        }
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Ruler { .. })) {
+            self.ruler_draw(w, view, area, context);
+            return;
+        }
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
             self.oof_draw(w, view, area, context);
         }
@@ -2142,6 +2322,17 @@ impl Layout {
         y: i32,
         context: &mut GettingWidgetAtPointContext,
     ) -> Option<WidgetId> {
+        // `Ruler::getWidgetAtPoint` remplace la version complexe
+        // de `OOFAwareWidget` — `inAllocation ? this : NULL`
+        // verbatim (ruler.cc:93-102).
+        if self.node(w, |n| matches!(&n.kind, WidgetKind::Ruler { .. })) {
+            let _ = context;
+            return if self.node(w, |n| n.in_allocation(x, y)) {
+                Some(w)
+            } else {
+                None
+            };
+        }
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
             return self.oof_get_widget_at_point(w, x, y, context);
         }
@@ -2164,6 +2355,12 @@ impl Layout {
     /// `OofAware` : assert `isWidgetOOF` verbatim
     /// (oofawarewidget.cc:540 — corps vide).
     pub(crate) fn w_remove_child(&mut self, w: WidgetId, child: WidgetId) {
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            // `Textblock::removeChild` — `\bug Not implemented`
+            // amont (textblock.cc:1172-1175, verbatim no-op).
+            self.tb_remove_child(w, child);
+            return;
+        }
         if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
             self.oof_remove_child(w, child);
             return;
@@ -2552,6 +2749,9 @@ impl crate::imgrenderer::ImgRenderer for WidgetImgRenderer {
 
     /// `fatal` — rien.
     fn fatal(&mut self) {}
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 impl style::ExternalImgRenderer for WidgetImgRenderer {
@@ -2668,6 +2868,12 @@ impl Layout {
     /// reste dans l'arène sous forme de tombe `Base` (modèle D —
     /// les `WidgetId` restants ne sont pas réutilisés).
     pub fn widget_delete(&mut self, w: WidgetId) {
+        // `~Textblock` (textblock.cc:277-303) : tooltip +
+        // ancres + cleanupWord, *avant* `~OOFAwareWidget`
+        // (verbatim ordre de destruction).
+        if self.node(w, |n| is_textblock_kind(&n.kind)) {
+            self.tb_drop(w);
+        }
         // `~OOFAwareWidget` (oofawarewidget.cc:55) : les widgets
         // OOF sont détruits avec le container (avant le callback
         // `~Widget` — verbatim ordre d'exécution amont : corps

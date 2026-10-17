@@ -246,20 +246,24 @@ impl std::fmt::Debug for OofAwareData {
 #[must_use]
 pub fn is_oof_aware_kind(kind: &WidgetKind) -> bool {
     match kind {
-        WidgetKind::OofAware { .. } => true,
-        WidgetKind::Base | WidgetKind::Container { .. } | WidgetKind::Text { .. } => false,
+        WidgetKind::OofAware { .. } | WidgetKind::Textblock { .. } | WidgetKind::Ruler { .. } => {
+            true
+        }
+        WidgetKind::Base
+        | WidgetKind::Container { .. }
+        | WidgetKind::Text { .. }
+        | WidgetKind::Bullet => false,
     }
 }
 
-/// `instanceOf (RegardingBorder)` — tag ≙ kinds héritiers
-/// (Textblock/Ruler futurs ; `OofAware` nu n'est pas
-/// `RegardingBorder` amont).
+/// `instanceOf (RegardingBorder)` — `Textblock` et `Ruler`
+/// héritent `RegardingBorder` amont ; `OofAware` nu n'en est pas.
 #[must_use]
 pub fn is_regarding_border_kind(kind: &WidgetKind) -> bool {
-    let _ = kind;
-    // Aucun kind `RegardingBorder` concret pour l'instant
-    // (Textblock = phase suivante) — `false` verbatim.
-    false
+    matches!(
+        kind,
+        WidgetKind::Textblock { .. } | WidgetKind::Ruler { .. }
+    )
 }
 
 // ------------------------------------------------------------------
@@ -465,7 +469,8 @@ impl Layout {
     /// kind n'est pas OOF-aware ≙ `instanceOf` faux amont).
     pub(crate) fn node_oof<T>(&self, w: WidgetId, f: impl FnOnce(&OofAwareData) -> T) -> Option<T> {
         self.node(w, |n| match &n.kind {
-            WidgetKind::OofAware { oof } => Some(f(oof)),
+            WidgetKind::OofAware { oof } | WidgetKind::Ruler { oof } => Some(f(oof)),
+            WidgetKind::Textblock { tb } => Some(f(&tb.oof)),
             _ => None,
         })
     }
@@ -477,7 +482,8 @@ impl Layout {
         f: impl FnOnce(&mut OofAwareData) -> T,
     ) -> Option<T> {
         self.node_mut(w, |n| match &mut n.kind {
-            WidgetKind::OofAware { oof } => Some(f(oof)),
+            WidgetKind::OofAware { oof } | WidgetKind::Ruler { oof } => Some(f(oof)),
+            WidgetKind::Textblock { tb } => Some(f(&mut tb.oof)),
             _ => None,
         })
     }
@@ -830,8 +836,26 @@ impl Layout {
         context: &mut crate::types::DrawingContext,
     ) {
         for level in (sl::START + 1)..sl::END {
-            self.oof_draw_level(w, view, area, level, context);
+            self.w_draw_level(w, view, area, level, context);
         }
+    }
+
+    /// Dispatch `drawLevel` — `Textblock` surcharge
+    /// (textblock.cc:1731 : `SL_IN_FLOW`/`SL_OOF_REF`), sinon base
+    /// `OOFAwareWidget`.
+    pub(crate) fn w_draw_level(
+        &mut self,
+        w: WidgetId,
+        view: &mut dyn View,
+        area: &crate::types::Rectangle,
+        level: i32,
+        context: &mut crate::types::DrawingContext,
+    ) {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            self.tb_draw_level(w, view, area, level, context);
+            return;
+        }
+        self.oof_draw_level(w, view, area, level, context);
     }
 
     /// `OOFAwareWidget::drawLevel` — verbatim
@@ -888,11 +912,28 @@ impl Layout {
             return None;
         }
         for level in ((sl::START + 1)..sl::END).rev() {
-            if let Some(found) = self.oof_get_widget_at_point_level(w, x, y, level, context) {
+            if let Some(found) = self.w_get_widget_at_point_level(w, x, y, level, context) {
                 return Some(found);
             }
         }
         None
+    }
+
+    /// Dispatch `getWidgetAtPointLevel` — `Textblock` surcharge
+    /// (textblock.cc:2891 : `SL_IN_FLOW`/`SL_OOF_REF`), sinon base
+    /// `OOFAwareWidget`.
+    pub(crate) fn w_get_widget_at_point_level(
+        &mut self,
+        w: WidgetId,
+        x: i32,
+        y: i32,
+        level: i32,
+        context: &mut GettingWidgetAtPointContext,
+    ) -> Option<WidgetId> {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            return self.tb_get_widget_at_point_level(w, x, y, level, context);
+        }
+        self.oof_get_widget_at_point_level(w, x, y, level, context)
     }
 
     /// `OOFAwareWidget::getWidgetAtPointLevel` — verbatim
@@ -962,6 +1003,10 @@ impl Layout {
     /// `OOFAwareWidget::updateReference` — `notImplemented`
     /// amont → no-op (le textblock surchargera).
     pub(crate) fn w_update_reference(&mut self, w: WidgetId, ref_: i32) {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            self.tb_update_reference(w, ref_);
+            return;
+        }
         let _ = (w, ref_);
     }
 
@@ -969,6 +1014,10 @@ impl Layout {
     /// amont → no-op (seam — textblock surchargera).
     #[allow(dead_code)]
     pub(crate) fn w_widget_ref_size_changed(&mut self, w: WidgetId, external_index: i32) {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            self.tb_widget_ref_size_changed(w, external_index);
+            return;
+        }
         let _ = (w, external_index);
     }
 
@@ -978,58 +1027,101 @@ impl Layout {
     /// les mgrs depuis `sizeAllocateEnd` des kinds concrets).
     #[allow(dead_code)]
     pub(crate) fn w_oof_size_changed(&mut self, w: WidgetId, extremes_changed: bool) {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            self.tb_oof_size_changed(w, extremes_changed);
+            return;
+        }
         self.widget_queue_resize(w, -1, extremes_changed);
         if extremes_changed {
             self.widget_container_size_changed(w);
         }
     }
 
-    /// `OOFAwareWidget::getGeneratorX` — `notImplemented` → 0.
+    /// `getGeneratorX` — override `Textblock`
+    /// (textblock.cc:3113) ; défaut `OOFAwareWidget` =
+    /// `notImplemented` → 0.
     pub(crate) fn w_get_generator_x(&mut self, w: WidgetId, oofm_index: usize) -> i32 {
+        if let Some(x) = self.node_tb(w, |tb| self.tb_get_generator_x(w, tb, oofm_index)) {
+            return x;
+        }
         let _ = (w, oofm_index);
         0
     }
 
-    /// `OOFAwareWidget::getGeneratorY` — `notImplemented` → 0.
+    /// `getGeneratorY` — override `Textblock`
+    /// (textblock.cc:3131) ; défaut `notImplemented` → 0.
     pub(crate) fn w_get_generator_y(&mut self, w: WidgetId, oofm_index: usize) -> i32 {
+        if let Some(y) = self.node_tb(w, |tb| self.tb_get_generator_y(w, tb, oofm_index)) {
+            return y;
+        }
         let _ = (w, oofm_index);
         0
     }
 
-    /// `OOFAwareWidget::getGeneratorWidth` — `notImplemented` → 0.
+    /// `getGeneratorRest` — override `Textblock`
+    /// (textblock.cc:3147) ; défaut `OOFAwareWidget` = absent
+    /// amont (seul Textblock l'implémente) → 0.
+    pub(crate) fn w_get_generator_rest(&mut self, w: WidgetId, oofm_index: usize) -> i32 {
+        if let Some(r) = self.with_tb(w, |l, tb| l.tb_get_generator_rest(w, tb, oofm_index)) {
+            return r;
+        }
+        let _ = (w, oofm_index);
+        0
+    }
+
+    /// `getGeneratorWidth` — override `Textblock`
+    /// (textblock.cc:3170) ; défaut `notImplemented` → 0.
     pub(crate) fn w_get_generator_width(&mut self, w: WidgetId) -> i32 {
+        if let Some(v) = self.with_tb(w, |l, tb| l.tb_get_generator_width(w, tb)) {
+            return v;
+        }
         let _ = w;
         0
     }
 
-    /// `OOFAwareWidget::getMaxGeneratorWidth` — `notImplemented` → 0.
+    /// `getMaxGeneratorWidth` — override `Textblock`
+    /// (textblock.cc:3215) ; défaut `notImplemented` → 0.
     pub(crate) fn w_get_max_generator_width(&mut self, w: WidgetId) -> i32 {
+        if let Some(v) = self.node_tb(w, |tb| self.tb_get_max_generator_width(tb)) {
+            return v;
+        }
         let _ = w;
         0
     }
 
-    /// `OOFAwareWidget::usesMaxGeneratorWidth` —
-    /// `notImplemented` → `false`.
+    /// `usesMaxGeneratorWidth` — override `Textblock`
+    /// (textblock.cc:3223) ; défaut `notImplemented` → `false`.
     pub(crate) fn w_uses_max_generator_width(&mut self, w: WidgetId) -> bool {
+        if let Some(v) = self.node_tb(w, |tb| self.tb_uses_max_generator_width(w, tb)) {
+            return v;
+        }
         let _ = w;
         false
     }
 
-    /// `OOFAwareWidget::isPossibleOOFContainer` — verbatim :
+    /// `isPossibleOOFContainer` — `Textblock` retourne `true`
+    /// verbatim (textblock.cc:3253) ; défaut :
     /// `oofmIndex != OOFM_FLOATS` (oofawarewidget.cc:601).
     #[allow(clippy::unused_self)]
-    pub(crate) fn w_is_possible_oof_container(&self, _w: WidgetId, oofm_index: usize) -> bool {
+    pub(crate) fn w_is_possible_oof_container(&self, w: WidgetId, oofm_index: usize) -> bool {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            return true;
+        }
         oofm_index != OOFM_FLOATS
     }
 
-    /// `OOFAwareWidget::isPossibleOOFContainerParent` — verbatim
+    /// `isPossibleOOFContainerParent` — `Textblock` retourne
+    /// `true` verbatim (textblock.cc:3257) ; défaut
     /// (oofawarewidget.cc:606).
     #[allow(clippy::unused_self)]
     pub(crate) fn w_is_possible_oof_container_parent(
         &self,
-        _w: WidgetId,
+        w: WidgetId,
         oofm_index: usize,
     ) -> bool {
+        if self.node(w, |n| crate::textblock::is_textblock_kind(&n.kind)) {
+            return true;
+        }
         oofm_index != OOFM_FLOATS
     }
 
@@ -1763,7 +1855,7 @@ impl OofFloatsMgr {
 /// `StackingContextMgr::handledByStackingContextMgr` — verbatim
 /// (stackingcontextmgr.hh:42) : parent non nul + contexte
 /// établi (`IMPL_POS` → `false`).
-fn handled_by_stacking_context_mgr(layout: &Layout, w: WidgetId) -> bool {
+pub(crate) fn handled_by_stacking_context_mgr(layout: &Layout, w: WidgetId) -> bool {
     layout.widget_parent(w).is_some()
         && layout
             .node(w, |n| n.style.as_ref().map(|s| s.attrs.clone()))
@@ -2382,8 +2474,7 @@ impl OofAwareIterator {
     /// `setValues` — verbatim (`oofawarewidget_iterator.cc:55`).
     /// Appelé par `cloneValues` amont — seam pour
     /// `TextblockIterator` (phase suivante).
-    #[allow(dead_code)]
-    fn set_values(&mut self, layout: &Layout, section_index: i32, index: i32) {
+    pub(crate) fn set_values(&mut self, layout: &Layout, section_index: i32, index: i32) {
         self.section_index = section_index;
         self.index = index;
         if section_index < 0 || index < 0 {
