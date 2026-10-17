@@ -1701,56 +1701,76 @@ pub fn http_ccc(
                 warn!("Unused CCC HTTP 1F");
             }
         }
-        (2, FWD) => match op {
-            OP_SEND => {
-                let has_reply = chain
-                    .module_mut::<HttpEngine>()
-                    .and_then(|e| e.sd(skey))
-                    .is_some_and(|sd| sd.https_proxy_reply.is_some());
-                if has_reply {
-                    proxy_reply_recv(chain, info, skey, &d1);
-                } else {
-                    // Data1 = dbuf → upstream (cache)
-                    chain.fcb(
-                        OP_SEND,
-                        info,
-                        d1,
-                        ChainData::Str("send_page_2eof".to_string()),
-                    );
+        (2, FWD) => {
+            // `assert(sd)` amont — état impossible = crash debug ;
+            // release dégrade en drop silencieux (`dReturn_if_fail`).
+            debug_assert!(chain
+                .module_mut::<HttpEngine>()
+                .is_some_and(|e| e.sd(skey).is_some()));
+            match op {
+                OP_SEND => {
+                    let has_reply = chain
+                        .module_mut::<HttpEngine>()
+                        .and_then(|e| e.sd(skey))
+                        .is_some_and(|sd| sd.https_proxy_reply.is_some());
+                    if has_reply {
+                        proxy_reply_recv(chain, info, skey, &d1);
+                    } else {
+                        // Data1 = dbuf → upstream (cache)
+                        chain.fcb(
+                            OP_SEND,
+                            info,
+                            d1,
+                            ChainData::Str("send_page_2eof".to_string()),
+                        );
+                    }
                 }
-            }
-            OP_END => {
-                let has_reply = chain
-                    .module_mut::<HttpEngine>()
-                    .and_then(|e| e.sd(skey))
-                    .is_some_and(|sd| sd.https_proxy_reply.is_some());
-                if has_reply {
-                    debug!("CONNECT through proxy failed. Full reply not received");
+                OP_END => {
+                    let has_reply = chain
+                        .module_mut::<HttpEngine>()
+                        .and_then(|e| e.sd(skey))
+                        .is_some_and(|sd| sd.https_proxy_reply.is_some());
+                    if has_reply {
+                        debug!("CONNECT through proxy failed. Full reply not received");
+                        socket_free(chain, skey);
+                        chain.bfcb(
+                            OP_ABORT,
+                            info,
+                            ChainData::None,
+                            ChainData::Str("Both".to_string()),
+                        );
+                    } else {
+                        socket_free(chain, skey);
+                        chain.fcb(OP_END, info, ChainData::None, ChainData::None);
+                    }
+                    chain.free_link(info);
+                }
+                OP_ABORT => {
+                    // MSG amont : la réponse CONNECT partielle est loguée.
+                    if let Some(reply) = chain
+                        .module_mut::<HttpEngine>()
+                        .and_then(|e| e.sd(skey))
+                        .and_then(|sd| sd.https_proxy_reply.clone())
+                    {
+                        let shown = if reply.is_empty() {
+                            "(nothing)".to_string()
+                        } else {
+                            String::from_utf8_lossy(reply.as_bytes()).into_owned()
+                        };
+                        debug!("CONNECT through proxy failed. Full reply not received:\n{shown}");
+                    }
                     socket_free(chain, skey);
-                    chain.bfcb(
+                    chain.fcb(
                         OP_ABORT,
                         info,
                         ChainData::None,
                         ChainData::Str("Both".to_string()),
                     );
-                } else {
-                    socket_free(chain, skey);
-                    chain.fcb(OP_END, info, ChainData::None, ChainData::None);
+                    chain.free_link(info);
                 }
-                chain.free_link(info);
+                _ => warn!("Unused CCC HTTP 2F"),
             }
-            OP_ABORT => {
-                socket_free(chain, skey);
-                chain.fcb(
-                    OP_ABORT,
-                    info,
-                    ChainData::None,
-                    ChainData::Str("Both".to_string()),
-                );
-                chain.free_link(info);
-            }
-            _ => warn!("Unused CCC HTTP 2F"),
-        },
+        }
         (2, BCK) => match op {
             OP_START => {
                 chain.link_new(info, http_ccb(), BCK, io_ccb(), 2, 2);
@@ -1813,8 +1833,9 @@ fn proxy_reply_recv(chain: &mut Chain, info: LinkId, skey: i32, d1: &ChainData) 
             return;
         };
         if let ChainData::Buf(dbuf) = d1 {
-            // `dStr_append_l(reply, dbuf->Buf, dbuf->Size)` amont —
-            // `Size` borne (peut différer de `buf.len`).
+            // `dStr_append(reply, dbuf->Buf)` amont — strlen du
+            // buffer (`Size` inutilisé). Notre `size == buf.len`
+            // toujours → la borne la plus sûre est conservée.
             let n = usize::try_from(dbuf.size).unwrap_or(0).min(dbuf.buf.len());
             reply.append(&dbuf.buf[..n]);
         }

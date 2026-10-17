@@ -195,3 +195,27 @@ reporter le `debug!` déjà présent sur le chemin `OpEnd`.
 - Présent mais à étendre : `wire_end_to_end_get` — couvrir POST +
   réponse `reply_complete` → réutilisation réelle du fd sur un second
   GET (keep-alive wire complet, pas seulement `reuse_compatible`).
+
+## Apply — résolution
+
+Appliqué directement sur `main` (passe groupée A01+A02+A11) :
+
+- **D1** — **non-bug** : le bloc `http_proxyuser → base64` est
+  *commenté* amont (`http.c:131-136`, « security problem ») — le
+  rapport avait lu du code mort. Aucun changement ; l'envoi par
+  défi 407 est déjà verbatim.
+- **D2** corrigé — `io.rs` : canal `IoEvent` borné
+  (`channel(8)` ≙ drain synchrone amont) ; `send().await` dans
+  `read_task`/`write_task` restaure la contre-pression TCP.
+- **D3** corrigé — `http.rs` : le commentaire de
+  `proxy_reply_recv` cite `dStr_append(reply, dbuf->Buf)`
+  (strlen — `Size` inutilisé amont) ; la borne `min(size, len)`
+  plus sûre est conservée.
+- **D4** corrigé — `http.rs` : `debug_assert!(sd.is_some())` en
+  tête de la branche `(2,FWD)` ≙ `assert(sd)` amont ; release
+  dégrade en drop silencieux.
+- **D5** corrigé — `http.rs` : `OpAbort` 2F logue la réponse
+  CONNECT partielle (« CONNECT through proxy failed. Full reply
+  not received:\n… », `(nothing)` si vide).
+
+Test : `event_channel_is_bounded` (try_send saturé → `Err`).

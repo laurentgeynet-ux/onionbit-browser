@@ -43,6 +43,12 @@ pub const IO_ABORT: i32 = 3;
 /// `IOBufLen`.
 pub const IO_BUFLEN: usize = 8192;
 
+/// Capacité du canal `IoEvent` — amont traite chaque drain
+/// **synchrone** (contre-pression TCP naturelle) ; un canal non borné
+/// accumulerait en mémoire quand le consommateur traîne. `send().await`
+/// suspend la tâche → la fenêtre TCP se referme.
+const IO_EVENT_CAP: usize = 8;
+
 /// `IO_StopRd`/`IO_StopWr`/`IO_StopRdWr` (shutdown).
 pub const IO_STOP_RD: i32 = 1;
 pub const IO_STOP_WR: i32 = 2;
@@ -173,8 +179,8 @@ pub struct IoEngine {
     next_sock: i32,
     next_key: IoKey,
     rt: tokio::runtime::Handle,
-    event_tx: mpsc::UnboundedSender<IoEvent>,
-    event_rx: mpsc::UnboundedReceiver<IoEvent>,
+    event_tx: mpsc::Sender<IoEvent>,
+    event_rx: mpsc::Receiver<IoEvent>,
 }
 
 impl std::fmt::Debug for IoEngine {
@@ -189,7 +195,7 @@ impl IoEngine {
     /// `a_IOwatch_add_fd` global : construit le moteur sur le runtime.
     #[must_use]
     pub fn new(rt: tokio::runtime::Handle) -> Self {
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::channel(IO_EVENT_CAP);
         Self {
             ios: HashMap::new(),
             socks: HashMap::new(),
@@ -203,7 +209,7 @@ impl IoEngine {
 
     /// Canal d'événements (les producteurs externes le clonent si besoin).
     #[must_use]
-    pub fn event_sender(&self) -> mpsc::UnboundedSender<IoEvent> {
+    pub fn event_sender(&self) -> mpsc::Sender<IoEvent> {
         self.event_tx.clone()
     }
 
@@ -521,7 +527,7 @@ pub fn poll_io(chain: &mut Chain) {
 async fn read_task(
     key: IoKey,
     mut stream: Option<IoStream>,
-    tx: mpsc::UnboundedSender<IoEvent>,
+    tx: mpsc::Sender<IoEvent>,
     mut ctl_rx: mpsc::UnboundedReceiver<IoMsg>,
 ) {
     let Some(s) = stream.as_mut() else {
@@ -553,18 +559,20 @@ async fn read_task(
             }
         }
         if !out.is_empty() {
-            let _ = tx.send(IoEvent::ReadData {
-                key,
-                bytes: std::mem::take(&mut out),
-            });
+            let _ = tx
+                .send(IoEvent::ReadData {
+                    key,
+                    bytes: std::mem::take(&mut out),
+                })
+                .await;
         }
         match stop {
             Some(Stop::Eof) => {
-                let _ = tx.send(IoEvent::Eof { key });
+                let _ = tx.send(IoEvent::Eof { key }).await;
                 return;
             }
             Some(Stop::Err(status)) => {
-                let _ = tx.send(IoEvent::ReadErr { key, status });
+                let _ = tx.send(IoEvent::ReadErr { key, status }).await;
                 return;
             }
             None => {}
@@ -575,7 +583,7 @@ async fn read_task(
             tokio::select! {
                 r = s.ready(Interest::READABLE) => {
                     if r.is_err() {
-                        let _ = tx.send(IoEvent::ReadErr { key, status: -1 });
+                        let _ = tx.send(IoEvent::ReadErr { key, status: -1 }).await;
                         return;
                     }
                 }
@@ -588,7 +596,7 @@ async fn read_task(
                 }
             }
         } else if s.ready(Interest::READABLE).await.is_err() {
-            let _ = tx.send(IoEvent::ReadErr { key, status: -1 });
+            let _ = tx.send(IoEvent::ReadErr { key, status: -1 }).await;
             return;
         }
     }
@@ -599,7 +607,7 @@ async fn read_task(
 async fn write_task(
     key: IoKey,
     mut stream: Option<IoStream>,
-    tx: mpsc::UnboundedSender<IoEvent>,
+    tx: mpsc::Sender<IoEvent>,
     mut wr_rx: mpsc::UnboundedReceiver<IoMsg>,
     staged: Vec<u8>,
 ) {
@@ -645,7 +653,7 @@ async fn write_task(
                 tokio::select! {
                     r = s.ready(Interest::WRITABLE) => {
                         if r.is_err() {
-                            let _ = tx.send(IoEvent::WriteErr { key, status: -1 });
+                            let _ = tx.send(IoEvent::WriteErr { key, status: -1 }).await;
                             break 'outer;
                         }
                     }
@@ -659,7 +667,7 @@ async fn write_task(
                     }
                 }
             } else if s.ready(Interest::WRITABLE).await.is_err() {
-                let _ = tx.send(IoEvent::WriteErr { key, status: -1 });
+                let _ = tx.send(IoEvent::WriteErr { key, status: -1 }).await;
                 break 'outer;
             }
             match s.try_write(&buf) {
@@ -671,16 +679,18 @@ async fn write_task(
                 }
                 Ok(_) => {
                     buf.clear();
-                    let _ = tx.send(IoEvent::Written { key });
+                    let _ = tx.send(IoEvent::Written { key }).await;
                     continue 'outer;
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => {
-                    let _ = tx.send(IoEvent::WriteErr {
-                        key,
-                        status: e.raw_os_error().unwrap_or(-1),
-                    });
+                    let _ = tx
+                        .send(IoEvent::WriteErr {
+                            key,
+                            status: e.raw_os_error().unwrap_or(-1),
+                        })
+                        .await;
                     break 'outer;
                 }
             }
@@ -920,6 +930,21 @@ mod tests {
         ch.set_module(IoEngine::new(rt.handle().clone()));
         ch.set_module(rt);
         (ch, 0)
+    }
+
+    #[test]
+    fn event_channel_is_bounded() {
+        // A01-D2 : le canal `IoEvent` doit être borné — un producteur
+        // plus rapide que le consommateur se suspend au lieu de
+        // bufferiser sans limite (contre-pression ≙ drain synchrone
+        // amont).
+        let (mut ch, _) = engine();
+        let eng = ch.module_mut::<IoEngine>().unwrap();
+        let tx = eng.event_sender();
+        for _ in 0..IO_EVENT_CAP {
+            tx.try_send(IoEvent::Written { key: 0 }).unwrap();
+        }
+        assert!(tx.try_send(IoEvent::Written { key: 0 }).is_err());
     }
 
     #[test]
