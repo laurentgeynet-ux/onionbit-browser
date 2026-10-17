@@ -38,37 +38,32 @@ pub enum ImageState {
     Abort,
 }
 
-/// Seam `dw::core::ImgRenderer` (`I2IR(Image)` amont — implémentée par
-/// le futur `dw::Image` ; le no-op sert les tests).
-pub trait ImgRenderer {
-    /// `I2IR->setBuffer(imgbuf, resize)`.
-    fn set_buffer(&mut self, buf: Rc<Imgbuf>, resize: bool);
-    /// `I2IR->drawRow(y)` — la ligne `y` a changé dans le buffer.
-    fn draw_row(&mut self, y: u32);
-    /// `I2IR->finish()` — image complète.
-    fn finish(&mut self);
-    /// `I2IR->fatal()` — transfert avorté.
-    fn fatal(&mut self);
-}
+/// `dw::core::ImgRenderer` — le trait réel porté dans
+/// `dillo-dw` (`I2IR(Image)` amont — implémentée par le futur
+/// `dw::Image` ; le no-op sert les tests).
+pub use dillo_dw::imgrenderer::ImgRenderer;
+
+/// Buffer côté trait (`dw::core::Imgbuf` ≙ `Rc<dyn Imgbuf>`).
+use dillo_dw::imgbuf::Imgbuf as DwImgbuf;
 
 /// Renderer muet (tests / pas de dw encore).
 #[derive(Default)]
 pub struct NullRenderer {
     /// Lignes dessinées (traçabilité tests).
-    pub drawn: Vec<u32>,
+    pub drawn: Vec<i32>,
     /// `finish` vu.
     pub finished: bool,
     /// `fatal` vu.
     pub fataled: bool,
     /// Buffer courant.
-    pub buf: Option<Rc<Imgbuf>>,
+    pub buf: Option<Rc<dyn DwImgbuf>>,
 }
 
 impl ImgRenderer for NullRenderer {
-    fn set_buffer(&mut self, buf: Rc<Imgbuf>, _resize: bool) {
-        self.buf = Some(buf);
+    fn set_buffer(&mut self, buf: &Rc<dyn DwImgbuf>, _resize: bool) {
+        self.buf = Some(buf.clone());
     }
-    fn draw_row(&mut self, y: u32) {
+    fn draw_row(&mut self, y: i32) {
         self.drawn.push(y);
     }
     fn finish(&mut self) {
@@ -192,7 +187,8 @@ pub fn image_set_parms(
     let _ = needs_bv;
     // `I2IR(Image)->setBuffer((Imgbuf*)v_imgbuf, resize = true)` —
     // hors borrow (le renderer peut réentrer).
-    rndr.borrow_mut().set_buffer(imgbuf, true);
+    let buf: Rc<dyn DwImgbuf> = imgbuf;
+    rndr.borrow_mut().set_buffer(&buf, true);
 }
 
 /// `a_Image_write` — `drawRow(y)` + bit (`dReturn_if_fail(y<height)`).
@@ -208,7 +204,8 @@ pub fn image_write(image: &Rc<RefCell<DilloImage>>, y: u32) {
         i.state = ImageState::Write;
         i.img_rndr.clone()
     };
-    rndr.borrow_mut().draw_row(y);
+    #[allow(clippy::cast_possible_wrap)]
+    rndr.borrow_mut().draw_row(y as i32);
 }
 
 /// `a_Image_close` — `I2IR->finish()`.

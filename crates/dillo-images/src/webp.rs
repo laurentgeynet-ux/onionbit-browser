@@ -291,9 +291,11 @@ mod tests {
             let e = dicache_get_entry(&url, DIC_LAST).unwrap();
             let eb = e.borrow();
             let ib = eb.imgbuf.as_ref();
+            // rawdata init = 222 amont — une ligne écrite diffère
+            // du remplissage gris.
             let written = ib.map_or(0, |b| {
                 (0..b.height)
-                    .filter(|&y| b.row_copy(y).iter().any(|&v| v != 0))
+                    .filter(|&y| b.row_copy(y).iter().any(|&v| v != 222))
                     .count()
             });
             assert_eq!(written, 0);

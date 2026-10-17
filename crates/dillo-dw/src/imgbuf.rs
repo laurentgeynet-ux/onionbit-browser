@@ -7,7 +7,8 @@
 //! fils scalés gardant la racine vivante).
 //!
 //! L'implémentation concrète vit dans `dillo-images::imgbuf`
-//! (≙ `dw::fltk::FltkImgbuf` côté amont).
+//! (≙ `dw::fltk::FltkImgbuf` côté amont — la création via
+//! `Platform::createImgbuf` arrive avec `dw/platform.hh`).
 
 use std::rc::Rc;
 
@@ -30,6 +31,11 @@ pub enum ImgbufType {
 }
 
 /// `dw::core::Imgbuf` — interface buffer d'image.
+///
+/// `rgb_row`/`write_rgb_span` sont les deux accesseurs bas niveau
+/// permettant à [`Imgbuf::copy_to`] d'être une méthode par défaut
+/// (≙ l'accès direct `rawdata` amont, qui supposait les deux
+/// buffers de la même classe — `assert(bpp == fDest->bpp)`).
 pub trait Imgbuf {
     /*
      * Appelés depuis le décodage d'image
@@ -37,7 +43,7 @@ pub trait Imgbuf {
 
     /// `setCMap (colors, num_colors)`.
     fn set_cmap(&mut self, colors: &[i32]);
-    /// `copyRow (row, data)`.
+    /// `copyRow (row, data)` — `row` en coordonnées ROOT.
     fn copy_row(&mut self, row: i32, data: &[u8]);
     /// `newScan` — nouveau passage (progressif/interlacé).
     fn new_scan(&mut self);
@@ -47,23 +53,44 @@ pub trait Imgbuf {
      */
 
     /// `getScaledBuf (width, height)` — buffer scalé (ou le
-    /// root si même taille).
-    fn get_scaled_buf(&self, width: i32, height: i32) -> Rc<dyn Imgbuf>;
-    /// `getRowArea (row, area)` — aire canvas couverte par `row`.
+    /// root si même taille). Receveur `Rc` ≙ `ref()` + retour
+    /// `this` amont.
+    fn get_scaled_buf(self: Rc<Self>, width: i32, height: i32) -> Rc<dyn Imgbuf>;
+    /// `getRowArea (row, area)` — aire canvas couverte par `row`
+    /// (root : `(0,row,w,1)` ; scalé : bande `scaledY`).
     fn get_row_area(&self, row: i32, area: &mut Rectangle);
     /// `getRootWidth`.
     fn get_root_width(&self) -> i32;
     /// `getRootHeight`.
     fn get_root_height(&self) -> i32;
 
+    /// Largeur propre du buffer (≠ root pour un buffer scalé —
+    /// ≙ `FltkImgbuf::width`, utilisé par `copyTo` amont qui
+    /// accède aux champs de la même classe).
+    fn width(&self) -> i32;
+    /// Hauteur propre du buffer.
+    fn height(&self) -> i32;
+
     /// `createSimilarBuf (width, height)` — mêmes paramètres
-    /// (type, gamma), autre taille.
+    /// (type, gamma), autre taille, nouvelle racine.
     fn create_similar_buf(&self, width: i32, height: i32) -> Rc<dyn Imgbuf>;
 
-    /// `copyTo (dest, xDestRoot, yDestRoot, xSrc, ySrc, w, h)`.
-    #[allow(clippy::too_many_arguments)]
+    /// Ligne RGB `y` du buffer (`3*width` octets, coordonnées
+    /// du buffer — ≙ `rawdata + y*width*bpp` amont).
+    fn rgb_row(&self, y: i32) -> Vec<u8>;
+
+    /// Écrit `data` à la position `(x, y)` du buffer (≙ écriture
+    /// directe `rawdata` — hors limites : muet comme amont via
+    /// clipping de `copyTo`).
+    fn write_rgb_span(&mut self, x: i32, y: i32, data: &[u8]);
+
+    /// `copyTo (dest, xDestRoot, yDestRoot, xSrc, ySrc, w, h)` —
+    /// verbatim : clip `xSrc2/ySrc2` contre `dest` puis blit
+    /// pixel-à-pixel (`bpp` identique = 3). Casts bornés par le
+    /// clip ci-dessus (`x_src2 > x_src ≥ 0` garanti).
+    #[allow(clippy::too_many_arguments, clippy::cast_sign_loss)]
     fn copy_to(
-        &mut self,
+        &self,
         dest: &mut dyn Imgbuf,
         x_dest_root: i32,
         y_dest_root: i32,
@@ -71,7 +98,23 @@ pub trait Imgbuf {
         y_src: i32,
         width_src: i32,
         height_src: i32,
-    );
+    ) {
+        // `xSrc2 = min(xSrc + widthSrc, fDest->width - xDestRoot)`
+        let x_src2 = (x_src + width_src).min(dest.width() - x_dest_root);
+        let y_src2 = (y_src + height_src).min(dest.height() - y_dest_root);
+
+        if x_src2 <= x_src {
+            return;
+        }
+        for y in y_src..y_src2 {
+            let row = self.rgb_row(y);
+            let lo = (3 * x_src) as usize;
+            let hi = (3 * x_src2) as usize;
+            if hi <= row.len() {
+                dest.write_rgb_span(x_dest_root + x_src, y_dest_root + y, &row[lo..hi]);
+            }
+        }
+    }
 
     /*
      * Comptage de références (sémantiques amont, voir doc du

@@ -322,3 +322,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `about:dicache` verbatim, impl `cache::DicacheOps`. Glue :
   `HttpWeb::image` (`Any`≙`web->Image`), `cache_close_client`,
   `NavBw::bg_color`≙`a_Web_new(bw->bgColor)`. 16 nouveaux tests.
+### dw-1b — imgbuf dw/imgbridge aligné
+- `[dw]::imgbuf` trait complet (`set_cmap`/`copy_row`/`new_scan`/
+  `get_scaled_buf`/`get_row_area`/`root_w·h`/`similar_buf`/`copy_to`/
+  `ref·unref`/`last_reference`/`set_delete_on_unref`/`width·height`).
+- `[img]::imgbuf` impl le trait dw : init **222** amont, arbre de
+  scaled-buffers ≙`fltkimgbuf` (`copiedRows`, formules map root↔scaled
+  verbatim, `newScan`/`copyRow` propagés aux fils), `getRowArea`,
+  `copyTo` clip+blit, `setCMap` vide ≙`FltkImgbuf` RGB-only.
+- `[img]::image` : seam renderer passée à `Rc<dyn Imgbuf>` (≙
+  `I2IR::setBuffer`), `Bitvec` dérive `Debug`/`Clone`.
+- **Déviation** : `scaleMode` amont `BEAUTIFUL_GAMMA` → `SIMPLE`
+  (pixels non gamma-corrigés) — `BEAUTIFUL` en phase platform.
+

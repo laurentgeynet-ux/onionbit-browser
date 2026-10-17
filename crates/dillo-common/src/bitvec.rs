@@ -9,6 +9,7 @@
 
 /// `bitvec_t` — `len` = nombre de bits demandé (commentaire amont dit
 /// « [1 based] » mais la valeur stockée est `num_bits` tel quel).
+#[derive(Debug, Clone)]
 pub struct Bitvec {
     /// `bvec->vec` — `num_bits + 1` octets (quirk `BVEC_SIZE == 1`).
     vec: Vec<u8>,

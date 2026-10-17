@@ -90,8 +90,11 @@ vraies phases. Sert aussi de banc d'essai au choix ADR-0005.
 prototype phase 0).
 
 - [~] `types`, `style`, `events`, `core.hh` traits → `dillo-dw` core
-      — types/events/tools portés, `style`/`view` partiels (Color +
-      3 primitives draw), traits complets avec widget/layout
+      — types/events/tools portés, `style` complet (pool/table tl,
+      `Font`, `numtostr`…), traits `imgbuf`/`imgrenderer` + seam
+      `view` ; `[img]::imgbuf` impl le trait dw (arbre scaled-buffers
+      ≙`fltkimgbuf`, `scaleMode=SIMPLE` vs `BEAUTIFUL_GAMMA` amont —
+      déviation documentée) ; `image.cc` aligné `Rc<dyn Imgbuf>`
 - [ ] `widget.cc` + `layout.cc` (size negotiate, allocation, draw,
       damage/queue-draw, anchors)
 - [ ] `iterator.cc`, `textblock.cc` + `textblock_linebreaking.cc` +
