@@ -15,6 +15,7 @@ pub mod decode;
 pub mod digest;
 pub mod dns;
 pub mod domain;
+pub mod dpi;
 pub mod dpip;
 pub mod fetch;
 pub mod history;

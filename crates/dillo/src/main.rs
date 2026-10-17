@@ -32,6 +32,7 @@ use dillo_net::control::unix;
 use dillo_net::cookies;
 use dillo_net::dns::Dns;
 use dillo_net::domain;
+use dillo_net::dpi;
 use dillo_net::history;
 use dillo_net::hsts;
 use dillo_net::http::{HttpConfig, HttpEngine};
@@ -291,7 +292,11 @@ fn main() -> std::process::ExitCode {
     }
 
     // --- initialisation des modules (ordre verbatim de `dillo.cc`) ------
-    // a_Dpi_init (vide amont) — le démon dpid arrive en phase dpi.
+    // a_Dpi_init (vide amont) + client dpi ≙ `a_Dpi_ccc`.
+    dpi::init();
+    capi::capi_set_dpi_ccc(dpi::dpi_ccb());
+    // Canal cookies → serveur dpi "cookies" (`a_Dpi_send_blocking_cmd`).
+    cache::cache_set_dpi_send(Box::new(|cmd| dpi::send_blocking_cmd("cookies", cmd)));
     // a_Dns_init + a_IO_init + a_Http_init + a_Tls_init → factory.
     capi::capi_init();
     // a_Mime_init + a_Dicache_init des viewers/factory : Glue::new.
@@ -395,6 +400,11 @@ fn main() -> std::process::ExitCode {
             if let Some(pw) = passwd.borrow().as_ref() {
                 http.set_proxy_passwd(pw);
             }
+            // `a_Cookies_get_query` — Cookie header via le dpi "cookies".
+            http.set_cookies_fn(Rc::new(|url, requester, is_root| {
+                let mut send = |cmd: &str| dpi::send_blocking_cmd("cookies", cmd);
+                cookies::cookies_get_query(url, requester, is_root, &mut send)
+            }));
             chain.set_module(http);
             // `Tls_fd_dialog` ≙ `a_Dialog_choice(title,msg,"Continue",
             // "Cancel")` — via le runner partagé (≙ `a_Dialog_*` amont).

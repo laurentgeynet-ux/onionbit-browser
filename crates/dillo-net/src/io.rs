@@ -207,6 +207,18 @@ impl IoEngine {
         self.event_tx.clone()
     }
 
+    /// `insert_socket` depuis un [`std::net::TcpStream`] bloquant
+    /// (≙ `connect()` synchrone dpi.c → fd non-bloquant dans le watch) :
+    /// `set_nonblocking` + `from_std` dans le contexte runtime.
+    pub fn insert_std_socket(&mut self, s: std::net::TcpStream) -> i32 {
+        let _ = s.set_nonblocking(true);
+        let _guard = self.rt.clone().enter();
+        match tokio::net::TcpStream::from_std(s) {
+            Ok(t) => self.insert_socket(IoStream::Plain(t)),
+            Err(_) => -1,
+        }
+    }
+
     /// `socket()` côté producteur : enregistre un stream, retourne son
     /// « fd » (transmis via `ChainData::Int` + tag `"FD"`).
     pub fn insert_socket(&mut self, s: IoStream) -> i32 {

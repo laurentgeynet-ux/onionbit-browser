@@ -12,11 +12,13 @@ workspace = true
 dillo-browser.workspace = true
 dillo-common.workspace = true
 dillo-css.workspace = true
+dillo-dpi.workspace = true
 dillo-dw.workspace = true
 dillo-html.workspace = true
 dillo-images.workspace = true
 dillo-net.workspace = true
 dillo-platform.workspace = true
+socket2 = "0.6.5"
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -28,3 +30,7 @@ path = "src/main.rs"
 [[bin]]
 name = "dilloc"
 path = "src/dilloc.rs"
+
+[[bin]]
+name = "dpi-downloads"
+path = "src/bin/dpi-downloads.rs"

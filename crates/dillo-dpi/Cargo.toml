@@ -13,7 +13,49 @@ dillo-common.workspace = true
 dillo-net.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# `SockRef` pour wrapper les sockets héritées sur stdio (plugins dpi)
+# sans unsafe — ≙ `fd` cru amont.
+socket2 = "0.6.5"
+# Boucle d'events du démon ≙ select() + signaux (ADR-0003).
+tokio = { workspace = true, features = ["net", "process", "signal", "time", "macros", "io-util"] }
+# Signaux POSIX du démon (SIGHUP/INT/QUIT/TERM ≙ `est_dpi_terminator`).
+signal-hook = "0.3"
+# Dates/mktime localtime verbatim des cookies (`Expires`, epoch
+# cookies.txt) et ctime du plugin file — pur Rust.
+time = { version = "0.3", features = ["local-offset"] }
 
 [[bin]]
 name = "dillo-dpid"
 path = "src/bin/dpid.rs"
+
+[[bin]]
+name = "dillo-dpidc"
+path = "src/bin/dpidc.rs"
+
+[[bin]]
+name = "dpi-hello"
+path = "src/bin/hello.rs"
+
+[[bin]]
+name = "dpi-datauri"
+path = "src/bin/datauri.rs"
+
+[[bin]]
+name = "dpi-vsource"
+path = "src/bin/vsource.rs"
+
+[[bin]]
+name = "dpi-file"
+path = "src/bin/file.rs"
+
+[[bin]]
+name = "dpi-ftp"
+path = "src/bin/ftp.rs"
+
+[[bin]]
+name = "dpi-cookies"
+path = "src/bin/cookies.rs"
+
+[[bin]]
+name = "dpi-bookmarks"
+path = "src/bin/bookmarks.rs"

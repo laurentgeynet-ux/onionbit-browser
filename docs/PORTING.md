@@ -38,7 +38,7 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | `src/IO/about.c` | `[net]::about` | ported | `ABOUT_SPLASH` verbatim (VERSION=3.3.0-rc1 interpolée) |
 | `src/IO/control.c` + `.h` | `[net]::control` | ported | machine d'état verbatim (`CtlIo` seam transport, `CtlOps` seam navigateur) : protocole texte `cmd=...`/`bw=N`, réponses `0`/`ERR<msg>`, `wait` différé (`bw_waiting`/`bw_waiting_req` + `handle_wait_timeout` ≙ `a_Timeout_add`), `notify_finish` → `0
 ` au writable suivant ; transport `unix::CtlListener`/`UnixCtlIo` (`~/.dillo/ctl/<pid>`, mkdir 0700, non-bloquant, `Drop`≙unlink) — `#[cfg(unix)]` ≙ `ENABLE_CONTROL_SOCKET` amont |
-| `src/IO/dpi.c` | `[net]::dpi` | not started | client dpi:// |
+| `src/IO/dpi.c` | `[net]::dpi` | ported | client dpi:// verbatim : `read_comm_keys`/`check_dpid`/`start_dpid` (backoff 250 ms, `Dpi_blocking_start_dpid`), connect loopback `TCP_NODELAY`, envoi `Dpi` + auth, `dpi_ccc` 4 branches (cmd : `OpStart`→fd+`DpidOK`, `OpSend`/`OpEnd`/`OpAbort`→relais IO ; recv : tokeniseur `OpSend`, `OpEnd`/`OpAbort`), `DpidERROR`/`send_page_2eof` verbatim |
 | `src/IO/http.c` | `[net]::http` | ported | transport pur (le parsing réponse vit dans `cache.c` — pas porté) : `SocketData`/`Server`/`fd_map` verbatim, file par (host-ci,port,https) avec priorité non-images, `max_conns`+zombies `TO_BE_FREED` balayés, proxy env>prefs + `no_proxy` suffix-match (tokens vides matchent — quirk `dStrsep`), tunnel `CONNECT` + `:443`, query builder verbatim (Accept par type, referer host/path, E2E→no-cache, multipart boundary `data[2..'\r')`), keep-alive `reply_complete`→reuse avec transfert de fd, CCC 4 branches + `"FD"`, upgrade TLS par swap de stream ; `connect` non-bloquant + retry IP → `connect_task` tokio ; `DilloWeb`/`cookies`/`auth`/`prefs` injectés (deps descendantes) |
 | `src/IO/iowatch.cc` + `.hh` | `[net]::io` | ported | `Fl::add_fd` → tâches tokio (`ready`+`try_read`/`try_write` = `read(2)`/`write(2)` non-bloquants) ; callbacks `IO_fd_*_cb` → `IoEvent` mpsc + `poll_io` (thread principal, single-writer) |
 | `src/IO/mime.c` + `.h` | `[net]::mime` | ported | `MimeMinItems`/`MimeMajItems` registres ordonnés, `a_Mime_get_viewer` verbatim (MinSize=`;`/` `, MajSize=1er `/`, mineur→majeur, `dStrnAsciiCasecmp` quirk : clé **plus courte** matche le nom — `image/p`≡`image/png`) ; `Viewer_t`→`MimeViewer`(`Rc<dyn Fn>`)+`ViewerOutcome`(`call`,`view:Box<Any>`) — viewers injectés : `dillo-images::register_image_viewers` ≙ les `Mime_add_minor_type("image/*")` de `a_Mime_init` |
@@ -134,7 +134,7 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
-| `dw/core.hh` | `[dw]::core` | not started | namespaces/traits centraux |
+| `dw/core.hh` | namespaces `dillo-dw` | ported | déclarations uniquement (fwd `Layout`/`View`/`Widget`/`Iterator`/`StackingContextMgr`, `byte`≙`u8`, `IMPL_POS=false` ≙ `None` partout — A08) |
 | `dw/types.cc` + `.hh` | `[dw]::types` | ported | Rect/Circle/Polygon/Region, Alloc/Req/Extremes, Content, stacking ctx ; `Shape::draw` via seam `View` ; quirks verbatim (borne poly `y>=maxy`, merge ≤16) |
 | `dw/style.cc` + `.hh` | `[dw]::style` | ported | enums, `Length` verbatim, `Box`, `StyleAttrs`, `Style`+table tl, `Font`/`Tooltip`, `numtostr`, `Color`/`Shading`, `StyleImage`+`ImgRendererDist`+`StyleImgRenderer` (buffer tuilé `MIN/OPT_BG_IMG_*` verbatim), `External(Widget)ImgRenderer` traits + helpers, `drawBorder{Top,Bottom,Left,Right}` trapezes verbatim (solid/dotted/dashed/inset/outset/ridge/groove/double), `drawBackground`/`drawBackgroundImage`/`calcBackgroundRelatedValues` (repeat X/Y, positions %/abs, `drawBackgroundLineByLine=false` porté verbatim) — A05-D1 : `BORDER_DOUBLE` left/right 2ᵉ trapèze verbatim |
 | `dw/events.hh` | `[dw]::events` | ported | ButtonState + Mouse/Button/Motion/Crossing (`Widget*`→`Option<WidgetId>`) + `ButtonEventType` |
@@ -173,8 +173,7 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | `dw/oofposfixedmgr.cc` + `.hh` | `[dw]::oof` | ported | idem — `None` |
 | `dw/stackingcontextmgr.cc` + `.hh` | `[dw]::stacking` | ported | `IMPL_POS=false` amont → `stackingContextMgr` **jamais instancié** verbatim (`Layout::addWidget`/`Widget::setStyle` gardés par `IMPL_POS`, `isEstablishingStackingContext`≡false) → `None` + prédicats verbatim (`is_establishing_stacking_context`, `handled_by_stacking_context_mgr`, `sl::SC_BOTTOM/SC_TOP` dispatchs, `has_stacking_context_mgr`/`stacking_context_widget` champs+héritage `setParent`) ; corps `draw`/`getWidgetAtPoint`/`findZIndex` à porter si `IMPL_POS` un jour |
 | `dw/regardingborder.cc` + `.hh` | `[dw]::oof` | ported | tag interface vide amont (ctor/dtor debug only) → `is_regarding_border_kind` |
-| `dw/tools.cc` + `.hh` | `[dw]::tools` | not started | misc draw helpers |
-| `dw/tools.cc` + `.hh` | `[dw]::tools` | not started | misc draw helpers |
+| `dw/tools.cc` + `.hh` | `[dw]::tools` | ported | `SizeParams` verbatim (fill/for_child/find_reference/is_equivalent ordre-insensible) — pointeurs `Widget*`≙`WidgetId` (ADR-0005) |
 
 ## dw/ — couche FLTK (remplacée, ADR-0002)
 
@@ -195,34 +194,34 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
-| `dpi/dpiutil.c` + `.h` | `[dpi]::util` | not started | escaping/filtering |
-| `dpi/bookmarks.c` | `bin dpi-bookmarks` | not started | |
-| `dpi/cookies.c` | `bin dpi-cookies` | not started | |
-| `dpi/datauri.c` | `bin dpi-datauri` | not started | |
-| `dpi/downloads.cc` | `bin dpi-downloads` | not started | |
-| `dpi/file.c` | `bin dpi-file` | not started | |
-| `dpi/ftp.c` | `bin dpi-ftp` | not started | |
-| `dpi/hello.c` | `bin dpi-hello` | not started | plugin test |
-| `dpi/vsource.c` | `bin dpi-vsource` | not started | view-source |
+| `dpi/dpiutil.c` + `.h` | `[dpi]::dpiutil` | ported | `escape_uri_str`/`unescape_uri_str` verbatim (hex rfc-1738, safe-set), `filter_smtp_hack`, `escape_html_str` ; tests d'octets |
+| `dpi/bookmarks.c` | `[dpi]::bookmarks` + `bin dpi-bookmarks` | ported | `BmStore` : sections/bookmarks, format `:sN: name` / `sN url title` verbatim (load/save byte-identique + backup `.bak`), normalisation ≥1 section + renum corrélative, génération HTML/CSS verbatim, `modify_move`/`delete`/`update`/`add_sec`/`add_bm` avec parse laxiste amont (`sN` sans `=` exigé), commandes `add_bookmark`/`open_url`/reload ; serveur `Bmsrv_parse_token` + boucle accept verbatim |
+| `dpi/cookies.c` | `[dpi]::cookies` + `bin dpi-cookies` | ported | store complet : `cookiesrc` (`DEFAULT DENY`/`ACCEPT`/`ACCEPT_SESSION`), matching domaine host-only vs `.domain`, path (quirk verbatim `len?len:1`), secure, `Max-Age` > `Expires`, dates (2 digits + 3e/4e optionnels, 5e rejeté ; 70–99→1900s), expiration + LRU + limites par-domaine/total, `cookies.txt` byte-compatible, `set_cookie`/`get_cookie`/`DpiBye` |
+| `dpi/datauri.c` | `bin dpi-datauri` | ported | base64 custom verbatim (strip hors `[A-Za-z0-9+/=]`), percent-decode sinon, MIME depuis préfixe (`text/plain;charset=US-ASCII` défaut, `;base64` retiré, `charset=`), borne absolue `p+5<256` verbatim, page d'erreur verbatim |
+| `dpi/downloads.cc` | `[dpi]::dlitem` + `bin dpi-downloads` | ported | `DLItem` : argv wget verbatim (`-U ua -c --load-cookies` `~/.dillo/cookies.txt` `-O dest url-escapée`), stderr→channel (≙ `LogPipe`+`add_fd`), FSM dot-progress verbatim, rates 2 s/moyenne/ETA (`secs2timestr`), abort→kill ; **déviation ADR-0002** : fenêtre FLTK → winit+softbuffer+tiny-skia, géométrie verbatim (420×85, items 400×70, colonnes Got/Size/Rate/~Rate/ETA), tooltip log ≙ `prTitle->tooltip`, confirmation verbatim `dlwin_esc_cb` |
+| `dpi/file.c` | `bin dpi-file` | ported | serveur stdin-socket verbatim : listings dir (tri dirs-d'abord, dotfiles cachés, styles old/new, `dpi:/file/toggle`), MIME ext+sniff (HTML/GIF/PNG/JPEG/texte-vs-binaire), métadonnées (taille, `ctime`, exécutable), escaping URL/HTML ; 1 thread/client ≙ `select` amont |
+| `dpi/ftp.c` | `bin dpi-ftp` | ported | `wget -S -O - <url>` pipé verbatim, `escape_uri_str`+`filter_smtp_hack`, sniffing contenu, retry `/` final si 0 octet, download si `application/octet-stream`, 404 verbatim |
+| `dpi/hello.c` | `bin dpi-hello` | ported | plugin de test verbatim |
+| `dpi/vsource.c` | `bin dpi-vsource` | ported | `dpi:/vsource/` : auth+cmd verbatim, `send_plain_text`/`send_numbered_text` (lignes numérotées, `<`/`&` échappés, CSS verbatim), `DpiError` plain-text |
 
 ## dpid/ — démon
 
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
-| `dpid/main.c` | `bin dillo-dpid` | not started | |
-| `dpid/dpid.c` + `dpid.h` | `[dpi]::daemon` | not started | registry/services |
-| `dpid/dpid_common.c` + `.h` | `[dpi]::common` | not started | |
-| `dpid/dpi.c` + `dpi.h` | `[dpi]::daemon::service` | not started | |
-| `dpid/dpi_socket_dir.c` + `.h` | `[dpi]::sockdir` | not started | socket dir / AF_UNIX |
-| `dpid/dpidc.c` | `bin dpidc` | not started | client cmdline |
-| `dpid/misc_new.c` + `.h` | `[dpi]::misc` | not started | |
-| `dpid/dpidrc.in` | config template | not started | |
+| `dpid/main.c` | `bin dillo-dpid` | ported | boucle `select` amont → tâches tokio (accept par socket + signaux + timeout idle) |
+| `dpid/dpid.c` + `dpid.h` | `[dpi]::dpid` | ported | registry services `*:` wildcards, spawn-on-demand plugin absent, secrets `dpi.*`, cleanup socket dir |
+| `dpid/dpid_common.c` + `.h` | `[dpi]::dpid_common` | ported | `mkfname` verbatim (remplace `X` par hex), `mksecret`, filtrage smtp, sockdir |
+| `dpid/dpi.c` + `dpi.h` | `[dpi]::dpid` (inclus) | ported | enregistrement/résolution de services |
+| `dpid/dpi_socket_dir.c` + `.h` | `[dpi]::sockdir` | ported | socket dir discovery/création AF_UNIX |
+| `dpid/dpidc.c` | `bin dillo-dpidc` | ported | client cmdline `register`/`unregister` verbatim |
+| `dpid/misc_new.c` + `.h` | `[dpi]::dpiutil`/`misc` | ported | helpers misc |
+| `dpid/dpidrc.in` | config template | won't port | template autotools — config chargée par `prefs` côté Rust |
 
 ## dpip/ — protocole
 
 | Fichier amont | Cible Rust | Statut | Notes |
 |---|---|---|---|
-| `dpip/dpip.c` + `dpip.h` | `[net]::dpip` + `[dpi]::transport` | in progress | helpers proto portés : `a_Dpip_build_cmd` (`%s`, stuffing `'`→`''`, EOT ` '>'`) + `a_Dpip_get_attr_l` (machine `SEEK_NAME/MATCH_NAME/SKIP_VALUE/SKIP_QUOTE`, destuff, quote de fin non-stuffée suivie d'un espace) ; reste : socket `a_Dpi_send_blocking_cmd` (phase DPI) |
+| `dpip/dpip.c` + `dpip.h` | `[net]::dpip` + `[dpi]::dpip` | ported | framing **byte-exact** : `a_Dpip_build_cmd` (`%s`, stuffing `'`→`''`, EOT ` '>'`), `a_Dpip_get_attr_l` (machine `SEEK_NAME/MATCH_NAME/SKIP_VALUE/SKIP_QUOTE`, destuff, quote finale non-stuffée suivie d'un espace) ; côté serveur `[dpi]::dpip` : `DpIo`/`DpIoTcp`/`DpIoSock` (stdio hérité unix), `Dsh` (tokens, `write`/`flush`, modes raw/tag, `check_auth`) — interop C↔Rust |
 
 ## Non-porté (build/meta)
 

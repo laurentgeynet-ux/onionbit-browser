@@ -7,6 +7,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **phases 7+8 — DPI complet** : `dillo-net::dpi` (verbatim
+  `src/IO/dpi.c` — `Dpi_blocking_start_dpid`, auth, `dpi_ccc`
+  4 branches), `dillo-dpi::dpip` serveur (`DpIo`/`DpIoTcp`/
+  `DpIoSock`, `Dsh` tokens/modes/`check_auth`, framing
+  byte-exact interop C↔Rust), `dillo-dpi::dpiutil`
+  (`dpi/dpiutil.c`), `dillo-dpi::dpid*` + bins `dillo-dpid`/
+  `dillo-dpidc` (démon verbatim : registry `*:` wildcards,
+  spawn-on-demand, socket dir, boucle `select`→tokio),
+  plugins : `dpi-hello`, `dpi-datauri` (base64 custom verbatim,
+  borne `p+5<256`), `dpi-vsource` (view-source numéroté),
+  `dpi-file` (listings+MIME+sniffing, 1 thread/client ≙
+  `select`), `dpi-ftp` (wget pipé, retry `/`), `dpi-cookies`
+  (store complet : `cookiesrc`, `Max-Age`, dates 2-4 digits,
+  `cookies.txt` byte-compatible), `dpi-bookmarks` (`BmStore`
+  format `:sN:` verbatim + HTML généré), `dpi-downloads`
+  (`dlitem` verbatim + fenêtre native winit/tiny-skia
+  remplaçant FLTK — géométrie verbatim 420×85/70 px par item).
+
 - chrome-4 (phase 6, fin du shell) — **le binaire `dillo` est réel** :
   `dillo.rs` main verbatim `dillo.cc` (table `Options`/`getCmdOption`,
   `makeStartUrl` F_OK→`file:/`, ordre verbatim des `a_*_init` :
