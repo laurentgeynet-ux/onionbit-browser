@@ -419,3 +419,62 @@ pour la parité observable e2e.
 21. **Popup natif** : le modèle `Popup` est dessiné par le shell
     natif (rendu chrome) — la sémantique d'activation est testée
     unitairement.
+
+---
+
+## Ajout 4 — chrome-4 : `paths.cc`, `control.c`, glue runtime, `dillo.cc`, `dilloc.c`
+
+### Nouveaux modules couverts
+
+- `src/paths.cc` → `paths.rs` : chemins `~/.dillo/*`
+  (dillorc/cookies/hsts/bm/cert/keysrc/dpid_comm_keys), verbatim
+  `a_Paths_init`+`freeall` ; verbatim `dGethomedir()`≙env
+  `HOME`/`USERPROFILE` (Windows : pas de `getpwuid` amont non
+  plus sous Win32 — cohérent).
+- `src/IO/control.c` → `dillo-net::control` : machine d'état
+  verbatim (ligne de commande texte `cmd ...` → ops), seams
+  `CtlIo`/`CtlOps` ; `CtlListener` AF_UNIX `~/.dillo/ctl/<pid>`
+  `cfg(unix)` ≙ `ENABLE_CONTROL_SOCKET` (le `#else` no-op est
+  verbatim amont), `poll` pour les requêtes en attente,
+  `wait` différé via `timeout`.
+- `dilloc.c` → `dillo/src/dilloc.rs` : client verbatim —
+  forward stdin, code retour = 1er octet de la réponse.
+- `src/dillo.cc` `main` → `dillo/src/main.rs` : ordre verbatim
+  des `a_*_init` (paths→prefs(dillorc)→keysrc→domainrc→capi→
+  dicache→cookies→hsts→auth→control→StyleEngine UA→
+  `gen_about_keys`→réglages dw→overrides CLI→factory moteurs
+  tokio→fenêtre initiale→boucle→`*_freeall`) ; `Options`/
+  `getCmdOption`/`makeStartUrl` (`F_OK`→`file:/`) verbatim ;
+  `-x` xembed rejeté (X11-only amont de fait) ; `-geometry`
+  verbatim.
+- glue runtime : `dillo-browser::doc` (dispatch MIME→viewers ≙
+  `a_Web_dispatch_by_type` + `Html_callback`/`Plain_callback`,
+  `DocImageFactory` ≙ `a_Image_new_with_dw`, file `GlueOp` ≙
+  appels synchrones amont reportés au tick),
+  `dillo-browser::glue` (`ShellGlue` : événements→chrome
+  verbatim `UI::handle`/`CustTabs::handle`/`win_cb`, pompe
+  réseau `capi_poll`+`poll_timeouts`+`Control::poll` par tick,
+  `wake_after` ≙ `Fl::wait(0.01)`, `CtlOps`, `WinOp` fenêtres
+  natives), `DwApp` multi-fenêtres (`DwWin` ≙ `Fl_Double_Window`,
+  tombstones ≙ ids stables, `ControlFlow::WaitUntil` ≙
+  `Fl::wait(timeout)`).
+
+### Vérifications verbatim effectuées
+
+- `control.c` : 10 tests de machine d'état (ping/pong, dump/
+  hdump/load, quit, wait immédiat/différé/timeout, unknown).
+- `dillo.cc` : smoke test — démarrage réel `about:splash`,
+  boucle 6 s sans crash, avertissements verbatim « Using
+  internal defaults » en l'absence de fichiers de conf.
+- `RefCell` seam capi : les seams lisibles pendant callbacks
+  réseau réentrants (`stack_size`/`top_url`) prennent un
+  snapshot `top` — verbatim amont lit `bw->nav` par pointeur.
+
+### Test gap analysis (ajout 4)
+
+22. **Interop dpid réelle** : le chemin complet
+    `dpi.cc`→`dpi_ccc`→dpid→plugin n'est testé de bout en bout
+    que via mocks in-process (pas de socket AF_UNIX sous
+    Windows pour `dilloc`/plugins — voir A12 L5).
+23. **`DialogRunner` natif** : idem ajout 3, point 19.
+24. **`DocOps` réel** : idem ajout 3, point 20.
