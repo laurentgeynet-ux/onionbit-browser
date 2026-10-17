@@ -1048,6 +1048,13 @@ pub fn cache_ui_msg(bw: u32, msg: &str) {
     CACHE.with(|c| c.borrow_mut().ui.set_msg(bw, msg));
 }
 
+/// `a_Bw_close_client` — accès cross-module à la seam navigateur
+/// (`a_Dicache_close`/`a_Dicache_callback` amont appellent
+/// `a_Bw_close_client` directement).
+pub fn cache_close_client(bw: u32, key: i32) {
+    CACHE.with(|c| c.borrow_mut().bw.close_client(bw, key));
+}
+
 /// `prefs` lu par cache.c.
 pub fn cache_set_prefs(trace_http: bool, hsts: bool) {
     CACHE.with(|c| {

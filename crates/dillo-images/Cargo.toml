@@ -11,5 +11,6 @@ workspace = true
 [dependencies]
 dillo-common.workspace = true
 dillo-dw.workspace = true
+dillo-net.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

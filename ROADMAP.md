@@ -132,7 +132,9 @@ prototype phase 0).
       du transport/dicache ; seams `BrowserOps`/`UiOps`/`NavOps`/
       `DicacheOps`/`WebDispatch`/`DpiOps` injectées depuis le futur
       `dillo-browser`) — reste `bw.c` (browser windows)
-- [ ] `dicache.c`, `imgbuf.cc`, `image.cc` (src) + decoders
+- [x] `dicache.c`, `imgbuf.cc`, `image.cc` (src) — noyau dicache
+      porté (states `DIC_*`, scans, `about:dicache`, seam
+      `cache::DicacheOps` implémentée) ; reste les decoders
       `gif.c`,`png.c`,`jpeg.c`,`webp.c`,`svg.c` → pure-Rust crates
 - [x] `nav.c`, `history.c`, `bookmark.c`, `auth.c`, `digest.c` (md-5),
       `cookies.c`, `domain.c`, `hsts.c` (+preload data), `bitvec.c`,

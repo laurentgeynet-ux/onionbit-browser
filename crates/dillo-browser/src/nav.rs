@@ -66,6 +66,8 @@ pub trait NavBw {
     fn add_client(&mut self, bw: u32, key: i32, root: bool);
     /// `a_Bw_add_url`.
     fn add_url(&mut self, bw: u32, url: &DilloUrl);
+    /// `bw->bgColor` — lu par `a_Web_new` amont (`web->bgColor`).
+    fn bg_color(&mut self, bw: u32) -> i32;
 }
 
 /// Seam `a_UIcmd_*` + `a_Dialog_choice` appelés par `nav.c`.
@@ -244,6 +246,7 @@ impl Nav {
             let mut w = web::web_new(url.clone(), requester);
             w.flags |= web::WEB_ROOT_URL;
             w.bw = bw_id;
+            w.bg_color = bwops.bg_color(bw_id);
             let client_key = capi::capi_open_url(Rc::new(w), None);
             if client_key != 0 {
                 bwops.add_client(bw_id, client_key, true);
@@ -637,6 +640,9 @@ mod tests {
         }
         fn add_url(&mut self, _bw: u32, _url: &DilloUrl) {
             self.calls.borrow_mut().push("add_url".into());
+        }
+        fn bg_color(&mut self, _bw: u32) -> i32 {
+            0
         }
     }
 

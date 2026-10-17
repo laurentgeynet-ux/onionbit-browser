@@ -266,3 +266,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DILLO_PID`. `bookmark.c` : machine chat `bookmarks` (H/I/O).
   `dpiapi.c` : dialog dpip → `DialogChoice` → `cmd=answer`. 18
   nouveaux tests.
+- `dillo-images::{imgbuf,image,dicache}` : lot E (noyau images).
+  `imgbuf.cc` : buffer RGB `Rc`-partagé, cascade de clamps
+  `excessiveImageDimensions`/`MAX_WIDTH`/`MAX_HEIGHT`/`gamma`
+  verbatim, `rgb_line` (INDEXED/GRAY/CMYK_INV `*white/0x100`/RGB).
+  `image.cc` : `DilloImage` + seam `ImgRenderer`≙`I2IR`, machine
+  `IMG_*`, multi-scan `BitVec`/`ScanNumber`. `dicache.c` : registre
+  thread-local trié, versions `DIF_Last`/`DIF_Valid`, `surv_cleanup`,
+  `decoded_size` incrémental, trait `ImageDecoder`≙`Decoder`/
+  `DecoderData` fusionnés (take/appel/restore anti-réentrance
+  `RefCell`), `dicache_image` + `ImageFactory`≙`a_Image_new_with_dw`,
+  `about:dicache` verbatim, impl `cache::DicacheOps`. Glue :
+  `HttpWeb::image` (`Any`≙`web->Image`), `cache_close_client`,
+  `NavBw::bg_color`≙`a_Web_new(bw->bgColor)`. 16 nouveaux tests.

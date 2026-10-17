@@ -97,6 +97,13 @@ pub struct HttpWeb {
     /// `web->SavedBytes` — octets déjà écrits sur disque (muté à
     /// travers le `Rc` partagé, comme `Web->SavedBytes` amont).
     pub saved_bytes: std::cell::Cell<usize>,
+    /// `web->Image` — `DilloImage` porté par `dillo-images` (crate
+    /// descendante — `Any` ≙ `void*` amont ; la vraie image y est
+    /// stockée en `Rc<RefCell<DilloImage>>`).
+    pub image: std::cell::RefCell<Option<std::rc::Rc<dyn std::any::Any>>>,
+    /// `web->bgColor` — couleur de fond de la page (≙ `bw->bgColor`
+    /// amont, propagé à `a_Image_new_with_dw`).
+    pub bg_color: i32,
     valid: std::cell::Cell<bool>,
     msg_sink: MsgSink,
 }
@@ -123,6 +130,8 @@ impl HttpWeb {
             filename: None,
             stream: std::cell::RefCell::new(None),
             saved_bytes: std::cell::Cell::new(0),
+            image: std::cell::RefCell::new(None),
+            bg_color: 0,
             valid: std::cell::Cell::new(true),
             msg_sink: std::cell::RefCell::new(Box::new(|_| {})),
         }
