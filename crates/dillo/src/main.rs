@@ -303,8 +303,24 @@ fn main() -> std::process::ExitCode {
     dillo_images::dicache::dicache_init(prefs_rc.borrow().ignore_image_formats.as_deref());
     // a_Bw_init → registre dans Glue::new.
     // a_Cookies_init — contrôle `~/.dillo/cookiesrc` (verbatim : pas
-    // de fallback sysconfdir pour ce fichier).
-    let cookiesrc = std::fs::read_to_string(paths::dillo_dir().join("cookiesrc")).ok();
+    // de fallback sysconfdir). `Cookies_fopen` : si absent, création
+    // `O_WRONLY|O_CREAT|O_TRUNC` 0600 + contenu "DEFAULT DENY\n".
+    let cookiesrc_path = paths::dillo_dir().join("cookiesrc");
+    let cookiesrc = std::fs::read_to_string(&cookiesrc_path).ok().or_else(|| {
+        use std::io::Write;
+        let mut opt = std::fs::OpenOptions::new();
+        // `O_WRONLY | O_CREAT | O_TRUNC` verbatim.
+        opt.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opt.mode(0o600);
+        }
+        opt.open(&cookiesrc_path)
+            .and_then(|mut f| f.write_all(b"DEFAULT DENY\n"))
+            .ok()?;
+        Some("DEFAULT DENY\n".to_string())
+    });
     let _ = cookies::cookies_init(cookiesrc.as_deref());
     // a_Actions_init → Chrome::new (`actions_init`).
     let hsts_preload = prefs_content(paths::HSTS_PRELOAD);

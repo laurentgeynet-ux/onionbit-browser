@@ -28,14 +28,11 @@ thread_local! {
     static HISTORY: RefCell<History> = RefCell::new(History::default());
 }
 
-/// `strcmp` sur fragments (absents = égaux — `strcmp(NULL…)` évité par
-/// `strcmp(frag1 ?: "", frag2 ?: "")` amont via les getters qui
-/// retournent "" ; verbatim : amont appelle `URL_FRAGMENT` qui peut
-/// rendre NULL… en fait `URL_FRAGMENT` = champ ; `strcmp(NULL,NULL)`
-/// amont = UB théorique mais jamais atteint car `a_Url_cmp` == 0
-/// implique fragments identiques — port : Option==Option).
+/// `strcmp(URL_FRAGMENT(a), URL_FRAGMENT(b))` — `NPTR2STR` rend ""
+/// pour NULL : `x` et `x#` (fragment absent vs vide) dédupliquent
+/// amont (`a_History_add_url`).
 fn frag_eq(a: &DilloUrl, b: &DilloUrl) -> bool {
-    a.fragment == b.fragment
+    a.fragment.as_deref().unwrap_or(b"") == b.fragment.as_deref().unwrap_or(b"")
 }
 
 impl History {
@@ -161,6 +158,9 @@ mod tests {
         assert_eq!(i1, i2);
         assert_ne!(i1, i3);
         assert_eq!(history_get_url(i3).expect("u").str_(), b"http://a.b/#x");
+        // A02-D2 : `URL_FRAGMENT` = NPTR2STR → fragment absent ≡ ""
+        // — `x#` (fragment vide) déduplique avec `x` amont.
+        assert_eq!(history_add_url(&mut u("http://a.b/#")), i1);
         history_freeall();
     }
 

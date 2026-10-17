@@ -146,3 +146,22 @@ Attendre le lot C (`cache.c`/`capi`/`web`) — D4 ne devient testable
 qu'avec la glue fichier navigateur ; D1/D2/D3/D5 sont locaux et
 bornés (≤ ~20 lignes + goldens). Coût de dérive : faible (preuves
 `fichier:ligne`).
+
+## Apply — résolution
+
+Appliqué directement sur `main` (passe groupée A01+A02+A11) :
+
+- **D1** corrigé — `url.rs` : `decode_hex_octet` reproduit la
+  tolérance `strtol` (`tail-hex==2`) — `%+f`/`% f` acceptés,
+  `%-f`/`%f `/`%0x` littéraux.
+- **D2** corrigé — `history.rs` : `frag_eq` = `NPTR2STR` →
+  fragment absent ≡ `""` (`x` ≡ `x#`).
+- **D3** corrigé — `lib.rs::fgets_lines` partagé : borne 4095
+  octets par ligne + reparse du reste (`cookies.rs`, `hsts.rs`).
+- **D4** corrigé — `dillo/src/main.rs` : `cookiesrc` absent →
+  créé `O_WRONLY|O_CREAT|O_TRUNC` (0600 unix) + `DEFAULT DENY\n`.
+- **D5** corrigé — strip `isspace()` C (ASCII + `\v`) dans
+  `cookies.rs`/`hsts.rs` au lieu de `trim()` Unicode.
+
+Tests : cas `strtol` lenient (`decode_*`), `frag_eq` NULL≡"",
+`cookiesrc_line_maxlen_and_c_strip` (>4095 + U+00A0 non strippé).

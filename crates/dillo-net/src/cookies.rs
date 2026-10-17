@@ -70,8 +70,9 @@ impl Cookies {
             return 2;
         };
         let mut enabled = false;
-        for raw in content.lines() {
-            let line = raw.trim();
+        for raw in crate::fgets_lines(content) {
+            // `dStrstrip` = `isspace()` C (ASCII + \v), pas Unicode.
+            let line = raw.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\u{b}');
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -329,6 +330,34 @@ mod tests {
             cookies_check(&mut u("http://other.example.org/")),
             CookieControlAction::Accept
         ));
+        cookies_freeall();
+    }
+
+    #[test]
+    fn cookiesrc_line_maxlen_and_c_strip() {
+        // A02-D3 : `fgets` borne la ligne à 4095 octets — le reste
+        // est relu comme une ligne : une ligne >4095 ne doit pas
+        // faire sauter le parse des lignes suivantes.
+        cookies_freeall();
+        let pad = " ".repeat(5000);
+        let content = format!("DEFAULT DENY\n{pad}\n.example.org ACCEPT\n");
+        assert_eq!(cookies_init(Some(&content)), 0);
+        assert!(matches!(
+            cookies_check(&mut u("http://sub.example.org/")),
+            CookieControlAction::Accept
+        ));
+        // A02-D5 : `dStrstrip` = isspace() C — U+00A0 n'est PAS
+        // strippé amont → la ligne « \u{a0}DEFAULT ACCEPT » ne pose
+        // pas le default (domaine « \u{a0}DEFAULT »).
+        cookies_freeall();
+        let rc = cookies_init(Some("\u{a0}DEFAULT ACCEPT\n"));
+        assert!(
+            matches!(
+                cookies_check(&mut u("http://a.b/")),
+                CookieControlAction::Deny
+            ),
+            "U+00A0 n'est pas un espace C — default reste DENY (rc={rc})"
+        );
         cookies_freeall();
     }
 

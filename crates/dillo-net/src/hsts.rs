@@ -201,8 +201,9 @@ impl Hsts {
     /// `Hsts_preload` — lignes `domain true|false` (`ONE_YEAR`).
     pub fn preload(&mut self, content: &str) {
         const ONE_YEAR: i64 = 60 * 60 * 24 * 365;
-        for raw in content.lines() {
-            let line = raw.trim();
+        for raw in crate::fgets_lines(content) {
+            // `dStrstrip` = `isspace()` C (ASCII + \v), pas Unicode.
+            let line = raw.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\u{b}');
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }

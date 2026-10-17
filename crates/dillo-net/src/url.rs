@@ -633,19 +633,35 @@ pub fn decode_hex_str(s: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < s.len() {
-        if s[i] == b'%'
-            && i + 2 < s.len()
-            && s[i + 1].is_ascii_hexdigit()
-            && s[i + 2].is_ascii_hexdigit()
-        {
-            out.push((hex_val(s[i + 1]) << 4) | hex_val(s[i + 2]));
-            i += 2;
-        } else {
-            out.push(s[i]);
+        if s[i] == b'%' && i + 2 < s.len() {
+            if let Some(v) = decode_hex_octet(s[i + 1], s[i + 2]) {
+                out.push(v);
+                i += 3; // % + 2 chars (amont : `i+=2` puis `i++`)
+                continue;
+            }
         }
+        out.push(s[i]);
         i += 1;
     }
     out
+}
+
+/// `Url_decode_hex_octet` — `strtol(hex,…,16)` sur 2 chars :
+/// `tail-hex==2` accepte aussi espace C ou `+` avant un chiffre
+/// (`%+f`→15, `% f`→15) ; `-` donne `val<0` → rejet amont (littéral).
+fn decode_hex_octet(a: u8, b: u8) -> Option<u8> {
+    if a.is_ascii_hexdigit() && b.is_ascii_hexdigit() {
+        Some((hex_val(a) << 4) | hex_val(b))
+    } else if b.is_ascii_hexdigit() && (a == b'+' || is_c_space(a)) {
+        Some(hex_val(b))
+    } else {
+        None
+    }
+}
+
+/// `isspace()` C locale — `str::is_ascii_whitespace` n'a pas `\v`.
+const fn is_c_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
 }
 
 fn hex_val(c: u8) -> u8 {
@@ -920,6 +936,12 @@ mod tests {
         assert_eq!(decode_hex_str(b"a%20b%2Fc"), b"a b/c");
         assert_eq!(decode_hex_str(b"100%"), b"100%"); // % invalide conservé
         assert_eq!(decode_hex_str(b"%zz"), b"%zz");
+        // `strtol` lenient (A02-D1) : espace/signe + chiffre valent 2
+        assert_eq!(decode_hex_str(b"%+f"), b"\x0f");
+        assert_eq!(decode_hex_str(b"% f"), b"\x0f");
+        assert_eq!(decode_hex_str(b"%-f"), b"%-f"); // val<0 → littéral
+        assert_eq!(decode_hex_str(b"%f "), b"%f "); // tail=1 → littéral
+        assert_eq!(decode_hex_str(b"%0x"), b"%0x"); // tail=1 → littéral
         assert_eq!(encode_hex_str(b"a b"), b"a+b");
         assert_eq!(encode_hex_str(b"a\nb"), b"a%0D%0Ab");
         assert_eq!(encode_hex_str(b"caf\xc3\xa9"), b"caf%C3%A9");
