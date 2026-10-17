@@ -98,7 +98,7 @@ prototype phase 0).
       scaled-buffers ≙`fltkimgbuf`, `scaleMode=SIMPLE` vs
       `BEAUTIFUL_GAMMA` amont — déviation documentée) ; `image.cc`
       aligné `Rc<dyn Imgbuf>`
-- [ ] `widget.cc` + `layout.cc` (size negotiate, allocation, draw,
+- [x] `widget.cc` + `layout.cc` (size negotiate, allocation, draw,
       damage/queue-draw, anchors)
 - [ ] `iterator.cc`, `textblock.cc` + `textblock_linebreaking.cc` +
       `textblock_iterator.cc` (word wrap, breaking spaces doc parity)

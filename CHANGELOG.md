@@ -322,6 +322,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `about:dicache` verbatim, impl `cache::DicacheOps`. Glue :
   `HttpWeb::image` (`Any`≙`web->Image`), `cache_close_client`,
   `NavBw::bg_color`≙`a_Web_new(bw->bgColor)`. 16 nouveaux tests.
+### dw-2a — widget.cc + layout.cc (socle arbre/negotiation/events)
+- `[dw]::widget` port de `dw/widget.cc`+`.hh` sous modèle
+  ADR-0005 : `WidgetNode` arène + `WidgetKind` dispatch,
+  flags verbatim (`RESIZE_QUEUED`…`WAS_ALLOCATED`), hiérarchie
+  parent/quasi/container/generator, `intersects`, machine
+  `queueResize`/`mark*`/`containerSizeChanged`, `sizeRequest`/
+  `getExtremes` avec cache `SizeParams` (fallback intrinsic=-1
+  verbatim), `sizeAllocate`, géométrie box (margin/border/
+  padding areas), famille `getAvail*`/`calc*`/`correct*`
+  (ratio aspect 3 passes verbatim), `setStyle`/`getBgColor`/
+  `getFgColor` remontée ancêtres, `drawBox`/`drawWidgetBox`/
+  `drawInterruption`, events + `WidgetImgRenderer` (draws
+  différés via `pending_draws` — modèle D).
+- `[dw]::layout` port de `dw/layout.cc`+`.hh` verbatim :
+  attach/detachView (projection état), resizeIdle (limites
+  100/1000, QUEUED→NEEDS, canvasHeightGreater), scroll
+  (scrollTo0/scrollIdle/adjustScrollPos/calcScrollInto), draw
+  (bg image + toplevel, defer après scroll), anchors,
+  `LayoutImgRenderer` (`layout*` → état sync + `Weak` arène),
+  events complets (moveToWidget piste verbatim, clamp zone
+  visible, fallback `emitLink*`), `drain_idles` seam ≙ toolkit.
+- `[dw]::platform` module déclaré + `take_pending_idles` seam ;
+  `[dw]::events` `EventCrossing`→`Option<WidgetId>` + `ButtonEventType`.
+- Seam documentées : `numSizeRequestReferences`/refs tables,
+  `stackingContextMgr`/OOF (`IMPL_POS` verbatim `false`),
+  `container_add_child` (≙ `addWidget` des kinds amont),
+  findtext/selection stubs fidèles (`NOT_FOUND`, reset/copy).
+- 10 nouveaux tests (hiérarchie, propagation resize, scroll
+  clamp, anchors, link fallback, intersects, fond hérité,
+  cache sizeRequest, hit-test conteneur).
 ### dw-1c — platform/view/style draw complet
 - `[dw]::platform` trait `dw::core::Platform` verbatim (attachement
   layout/view, mesures texte, navigation glyphes, DPI, idle,

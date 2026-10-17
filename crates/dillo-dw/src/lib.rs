@@ -14,10 +14,13 @@
 pub mod events;
 pub mod imgbuf;
 pub mod imgrenderer;
+pub mod layout;
+pub mod platform;
 pub mod style;
 pub mod tools;
 pub mod types;
 pub mod view;
+pub mod widget;
 
 /// Index dans l'arène de widgets (≙ `dw::core::Widget*`
 /// amont). Le proto ADR-0005 utilise `usize` ; le vrai `dw/`

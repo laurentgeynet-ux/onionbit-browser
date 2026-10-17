@@ -58,6 +58,17 @@ pub trait Platform {
     /// `removeIdle` — retire un idle pas encore exécuté.
     fn remove_idle(&mut self, idle_id: i32);
 
+    /// Collecte les callbacks idle dus — seam du port : amont
+    /// la plateforme appelle elle-même les callbacks (elle tient
+    /// `Layout*`) ; le modèle D n'a pas de `&mut Layout`
+    /// flottant, la plateforme expose les callbacks « dus » et
+    /// [`crate::layout::Layout::drain_idles`] les appelle sur
+    /// `&mut self`. L'ordre/la priorité restent choix de
+    /// l'implémentation plateforme.
+    fn take_pending_idles(&mut self) -> Vec<crate::layout::IdleCallback> {
+        Vec::new()
+    }
+
     /// `createFont` — crée une fonte et remplit ses métriques.
     /// `try_everything` ≙ `tryEverything` (fallback agressif).
     fn create_font(&mut self, attrs: &FontAttrs, try_everything: bool) -> Rc<Font>;
@@ -78,7 +89,7 @@ pub trait Platform {
     /// (`gamma` = encodage des données entrantes).
     fn create_imgbuf(
         &mut self,
-        buf_type: crate::imgbuf::Type,
+        buf_type: crate::imgbuf::ImgbufType,
         width: i32,
         height: i32,
         gamma: f64,

@@ -77,12 +77,27 @@ pub struct EventMotion {
 }
 
 /// `dw::core::EventCrossing` — enter/leave notify.
+///
+/// `lastWidget`/`currentWidget` peuvent être `NULL` amont →
+/// `Option<WidgetId>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventCrossing {
     /// `state`.
     pub state: i32,
     /// `lastWidget`.
-    pub last_widget: WidgetId,
+    pub last_widget: Option<WidgetId>,
     /// `currentWidget`.
-    pub current_widget: WidgetId,
+    pub current_widget: Option<WidgetId>,
+}
+
+/// `dw::core::Layout::ButtonEventType` — type d'événement
+/// bouton traité par `processMouseEvent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonEventType {
+    /// `BUTTON_PRESS`.
+    ButtonPress,
+    /// `BUTTON_RELEASE`.
+    ButtonRelease,
+    /// `MOTION_NOTIFY`.
+    MotionNotify,
 }
