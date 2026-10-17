@@ -35,7 +35,6 @@ const BW_IMG: i32 = 2;
 
 /// État de navigation d'une fenêtre (champs `bw->nav_*`/`meta_refresh_*`
 /// amont).
-#[derive(Default)]
 pub struct Nav {
     /// `bw->nav_stack` (`Dlist` de `nav_stack_item` amont).
     stack: Vec<NavStackItem>,
@@ -45,6 +44,19 @@ pub struct Nav {
     pub meta_refresh_url: Option<DilloUrl>,
     /// `bw->meta_refresh_status`.
     pub meta_refresh_status: i32,
+}
+
+impl Default for Nav {
+    /// `a_Bw_new` verbatim — `nav_stack_ptr = -1` (vide),
+    /// `meta_refresh_status = 0`.
+    fn default() -> Self {
+        Self {
+            stack: Vec::new(),
+            stack_ptr: -1,
+            meta_refresh_url: None,
+            meta_refresh_status: 0,
+        }
+    }
 }
 
 /// Seam `a_Bw_*` appelés par `nav.c` (implémentée par la `BrowserWindow`
@@ -93,6 +105,13 @@ pub trait NavUi {
     /// `a_Dialog_choice` — retourne l'index du bouton choisi.
     fn dialog_choice(&mut self, title: &str, msg: &str, alt1: &str, alt2: &str, alt3: &str) -> i32;
 }
+
+/// Union des seams `nav.c` — amont `a_Bw_*`/`a_UIcmd_*` sont des
+/// globales librement mixées ; ici un seul objet joue les deux rôles
+/// (deux `&mut` vers le même registre de fenêtres seraient
+/// impossibles — `NavUi` rappelle `bw` pendant `push`).
+pub trait NavIo: NavBw + NavUi {}
+impl<T: NavBw + NavUi + ?Sized> NavIo for T {}
 
 /// Opération de navigation différée par `a_Timeout_add(0.0, …)` amont.
 #[derive(Clone, Copy)]
@@ -214,8 +233,7 @@ impl Nav {
         url: &DilloUrl,
         requester: Option<DilloUrl>,
         offset: i32,
-        bwops: &mut dyn NavBw,
-        ui: &mut dyn NavUi,
+        seams: &mut dyn NavIo,
     ) {
         let force_reload = url.flags & (url_flags::E2E_QUERY | url_flags::RELOAD_FROM_CACHE) != 0;
         let ignore_scroll = url.flags & url_flags::IGNORE_SCROLL != 0;
@@ -225,7 +243,7 @@ impl Nav {
         let old_url = history::history_get_url(self.get_uidx(idx));
         if let Some(old) = &old_url {
             if !ignore_scroll {
-                let (x, y) = ui.get_scroll_xy(bw_id);
+                let (x, y) = seams.get_scroll_xy(bw_id);
                 self.save_scroll_pos(idx, x, y);
                 let _ = old;
             }
@@ -240,27 +258,27 @@ impl Nav {
         }
 
         if must_load {
-            bwops.stop_clients(bw_id, BW_ROOT | BW_IMG);
-            bwops.cleanup(bw_id);
+            seams.stop_clients(bw_id, BW_ROOT | BW_IMG);
+            seams.cleanup(bw_id);
 
             let mut w = web::web_new(url.clone(), requester);
             w.flags |= web::WEB_ROOT_URL;
             w.bw = bw_id;
-            w.bg_color = bwops.bg_color(bw_id);
+            w.bg_color = seams.bg_color(bw_id);
             let client_key = capi::capi_open_url(Rc::new(w), None);
             if client_key != 0 {
-                bwops.add_client(bw_id, client_key, true);
-                bwops.add_url(bw_id, url);
+                seams.add_client(bw_id, client_key, true);
+                seams.add_url(bw_id, url);
             }
         }
     }
 
     /// `a_Nav_cancel_expect` — annule l'attente (l'abort du flux reste
     /// à l'appelant) ; décrémente `meta_refresh_status` > 0.
-    pub fn cancel_expect(&mut self, bw_id: u32, bwops: &mut dyn NavBw, ui: &mut dyn NavUi) {
-        if bwops.expecting(bw_id) {
-            bwops.cancel_expect(bw_id);
-            ui.set_buttons_sens(bw_id);
+    pub fn cancel_expect(&mut self, bw_id: u32, seams: &mut dyn NavIo) {
+        if seams.expecting(bw_id) {
+            seams.cancel_expect(bw_id);
+            seams.set_buttons_sens(bw_id);
         }
         if self.meta_refresh_status > 0 {
             self.meta_refresh_status -= 1;
@@ -268,28 +286,22 @@ impl Nav {
     }
 
     /// `a_Nav_cancel_expect_if_eq` — annule si `url` == expected.
-    pub fn cancel_expect_if_eq(
-        &mut self,
-        bw_id: u32,
-        url: &DilloUrl,
-        bwops: &mut dyn NavBw,
-        ui: &mut dyn NavUi,
-    ) {
-        if let Some(e) = bwops.expected_url(bw_id) {
+    pub fn cancel_expect_if_eq(&mut self, bw_id: u32, url: &DilloUrl, seams: &mut dyn NavIo) {
+        if let Some(e) = seams.expected_url(bw_id) {
             if e.url_cmp(url) == 0 {
-                self.cancel_expect(bw_id, bwops, ui);
+                self.cancel_expect(bw_id, seams);
             }
         }
     }
 
     /// `a_Nav_expect_done` — l'URL attendue a répondu (root seulement ;
     /// les repush passent deux fois ici, comme amont).
-    pub fn expect_done(&mut self, bw_id: u32, bwops: &mut dyn NavBw, ui: &mut dyn NavUi) {
+    pub fn expect_done(&mut self, bw_id: u32, seams: &mut dyn NavIo) {
         let mut goto_old_scroll = true;
         let mut fragment: Option<Vec<u8>> = None;
 
-        if bwops.expecting(bw_id) {
-            if let Some(mut url) = bwops.expected_url(bw_id) {
+        if seams.expecting(bw_id) {
+            if let Some(mut url) = seams.expected_url(bw_id) {
                 let reload = url.flags & url_flags::RELOAD_PAGE != 0;
                 let repush = url.flags & url_flags::RELOAD_FROM_CACHE != 0;
                 let e2equery = url.flags & url_flags::E2E_QUERY != 0;
@@ -328,21 +340,21 @@ impl Nav {
                     }
                 }
             }
-            self.cancel_expect(bw_id, bwops, ui);
+            self.cancel_expect(bw_id, seams);
         }
 
         if goto_old_scroll {
             let (px, py) = self.get_scroll_pos();
-            ui.set_scroll_xy(bw_id, px, py);
+            seams.set_scroll_xy(bw_id, px, py);
         } else if let Some(f) = &fragment {
-            ui.set_scroll_by_fragment(bw_id, f);
+            seams.set_scroll_by_fragment(bw_id, f);
         } else {
-            ui.set_scroll_xy(bw_id, 0, 0);
+            seams.set_scroll_xy(bw_id, 0, 0);
         }
 
         self.stack_clean();
-        ui.set_buttons_sens(bw_id);
-        ui.finish_loading(bw_id);
+        seams.set_buttons_sens(bw_id);
+        seams.finish_loading(bw_id);
     }
 
     /// `a_Nav_push` — `url` devient la page attendue + demande au cache.
@@ -351,32 +363,31 @@ impl Nav {
         bw_id: u32,
         url: &DilloUrl,
         requester: Option<DilloUrl>,
-        bwops: &mut dyn NavBw,
-        ui: &mut dyn NavUi,
+        seams: &mut dyn NavIo,
     ) {
-        if let Some(e) = bwops.expected_url(bw_id) {
+        if let Some(e) = seams.expected_url(bw_id) {
             // Déjà attendue (double-clic probable) — fragment compris.
             if e.url_cmp(url) == 0 && fragment_of(&e) == fragment_of(url) {
                 return;
             }
         }
-        self.cancel_expect(bw_id, bwops, ui);
-        bwops.expect(bw_id, url);
-        self.open_url(bw_id, url, requester, 0, bwops, ui);
+        self.cancel_expect(bw_id, seams);
+        seams.expect(bw_id, url);
+        self.open_url(bw_id, url, requester, 0, seams);
         let mut u = url.clone();
         let text = u.url_str().to_vec();
-        ui.set_location_text(bw_id, &text);
+        seams.set_location_text(bw_id, &text);
     }
 
     /// `Nav_repush` — corps du callback différé (reload depuis le
     /// cache ; utilisé par le changement de charset META).
-    pub fn repush_now(&mut self, bw_id: u32, bwops: &mut dyn NavBw, ui: &mut dyn NavUi) {
-        self.cancel_expect(bw_id, bwops, ui);
+    pub fn repush_now(&mut self, bw_id: u32, seams: &mut dyn NavIo) {
+        self.cancel_expect(bw_id, seams);
         if self.stack_size() > 0 {
             if let Some(mut url) = history::history_get_url(self.get_top_uidx()) {
                 url.flags |= url_flags::RELOAD_FROM_CACHE;
-                bwops.expect(bw_id, &url);
-                self.open_url(bw_id, &url, None, 0, bwops, ui);
+                seams.expect(bw_id, &url);
+                self.open_url(bw_id, &url, None, 0, seams);
             }
         }
     }
@@ -387,12 +398,12 @@ impl Nav {
     }
 
     /// `Nav_redirection0_callback` — corps du callback différé.
-    pub fn redirection0_now(&mut self, bw_id: u32, bwops: &mut dyn NavBw, ui: &mut dyn NavUi) {
+    pub fn redirection0_now(&mut self, bw_id: u32, seams: &mut dyn NavIo) {
         let referer = history::history_get_url(self.get_top_uidx());
         if self.meta_refresh_status == 2 {
             self.stack_move_ptr(-1);
             if let Some(url) = self.meta_refresh_url.clone() {
-                self.push(bw_id, &url, referer, bwops, ui);
+                self.push(bw_id, &url, referer, seams);
             }
         }
         self.meta_refresh_url = None;
@@ -411,55 +422,55 @@ impl Nav {
     }
 
     /// `a_Nav_back` — page précédente.
-    pub fn back(&mut self, bw_id: u32, bwops: &mut dyn NavBw, ui: &mut dyn NavUi) {
+    pub fn back(&mut self, bw_id: u32, seams: &mut dyn NavIo) {
         let idx = self.stack_ptr - 1;
-        self.cancel_expect(bw_id, bwops, ui);
+        self.cancel_expect(bw_id, seams);
         if idx >= 0 {
-            ui.set_msg(bw_id, "");
+            seams.set_msg(bw_id, "");
             if let Some(url) = history::history_get_url(self.get_uidx(idx)) {
-                self.open_url(bw_id, &url, None, -1, bwops, ui);
+                self.open_url(bw_id, &url, None, -1, seams);
             }
         }
     }
 
     /// `a_Nav_back_nt` — page précédente dans un nouvel onglet.
-    pub fn back_nt(&self, bw_id: u32, ui: &mut dyn NavUi) {
+    pub fn back_nt(&self, bw_id: u32, seams: &mut dyn NavUi) {
         let idx = self.stack_ptr - 1;
         if idx >= 0 {
-            ui.set_msg(bw_id, "");
+            seams.set_msg(bw_id, "");
             if let Some(url) = history::history_get_url(self.get_uidx(idx)) {
-                ui.open_url_nt(bw_id, &url, -1);
+                seams.open_url_nt(bw_id, &url, -1);
             }
         }
     }
 
     /// `a_Nav_forw` — page suivante.
-    pub fn forw(&mut self, bw_id: u32, bwops: &mut dyn NavBw, ui: &mut dyn NavUi) {
+    pub fn forw(&mut self, bw_id: u32, seams: &mut dyn NavIo) {
         let idx = self.stack_ptr + 1;
-        self.cancel_expect(bw_id, bwops, ui);
+        self.cancel_expect(bw_id, seams);
         if idx < self.stack_size() {
-            ui.set_msg(bw_id, "");
+            seams.set_msg(bw_id, "");
             if let Some(url) = history::history_get_url(self.get_uidx(idx)) {
-                self.open_url(bw_id, &url, None, 1, bwops, ui);
+                self.open_url(bw_id, &url, None, 1, seams);
             }
         }
     }
 
     /// `a_Nav_forw_nt` — page suivante dans un nouvel onglet.
-    pub fn forw_nt(&self, bw_id: u32, ui: &mut dyn NavUi) {
+    pub fn forw_nt(&self, bw_id: u32, seams: &mut dyn NavUi) {
         let idx = self.stack_ptr + 1;
         if idx < self.stack_size() {
-            ui.set_msg(bw_id, "");
+            seams.set_msg(bw_id, "");
             if let Some(url) = history::history_get_url(self.get_uidx(idx)) {
-                ui.open_url_nt(bw_id, &url, 1);
+                seams.open_url_nt(bw_id, &url, 1);
             }
         }
     }
 
     /// `a_Nav_home` — `prefs.home` passée par l'appelant (le `Prefs`
     /// est owned, pas global).
-    pub fn home(&mut self, bw_id: u32, home: &DilloUrl, bwops: &mut dyn NavBw, ui: &mut dyn NavUi) {
-        self.push(bw_id, home, None, bwops, ui);
+    pub fn home(&mut self, bw_id: u32, home: &DilloUrl, seams: &mut dyn NavIo) {
+        self.push(bw_id, home, None, seams);
     }
 
     /// `Nav_reload_callback` — corps du callback différé.
@@ -467,8 +478,8 @@ impl Nav {
     /// Re-post confirmé via `a_Dialog_choice` sauf `dpi:/vsource/`
     /// (reload autorisé) ; marque `ReloadPage|E2EQuery` et retire
     /// `SpamSafe` (reload explicite).
-    pub fn reload_now(&mut self, bw_id: u32, bwops: &mut dyn NavBw, ui: &mut dyn NavUi) {
-        self.cancel_expect(bw_id, bwops, ui);
+    pub fn reload_now(&mut self, bw_id: u32, seams: &mut dyn NavIo) {
+        self.cancel_expect(bw_id, seams);
         if self.stack_size() == 0 {
             return;
         }
@@ -484,7 +495,7 @@ impl Nav {
                     .is_some_and(|p| p.starts_with(b"/vsource/"));
             if !is_vsource && h_url.flags & url::URL_POST != 0 {
                 // Tentative de re-POST : confirmation utilisateur.
-                let choice = ui.dialog_choice(
+                let choice = seams.dialog_choice(
                     "Dillo: Repost form?",
                     "Repost form data?",
                     "No",
@@ -498,8 +509,8 @@ impl Nav {
                 let mut r_url = h_url;
                 r_url.flags |= url_flags::RELOAD_PAGE | url_flags::E2E_QUERY;
                 r_url.flags &= !url_flags::SPAM_SAFE;
-                bwops.expect(bw_id, &r_url);
-                self.open_url(bw_id, &r_url, None, 0, bwops, ui);
+                seams.expect(bw_id, &r_url);
+                self.open_url(bw_id, &r_url, None, 0, seams);
             }
         }
     }
@@ -511,26 +522,19 @@ impl Nav {
 
     /// `a_Nav_jump` — saute à `stack_ptr + offset` (`new_bw` ≙
     /// `a_UIcmd_open_url_nw`).
-    pub fn jump(
-        &mut self,
-        bw_id: u32,
-        offset: i32,
-        new_bw: bool,
-        bwops: &mut dyn NavBw,
-        ui: &mut dyn NavUi,
-    ) {
+    pub fn jump(&mut self, bw_id: u32, offset: i32, new_bw: bool, seams: &mut dyn NavIo) {
         let idx = self.stack_ptr + offset;
         let url = history::history_get_url(self.get_uidx(idx));
         if new_bw {
             if let Some(u) = &url {
-                ui.open_url_nw(bw_id, u);
+                seams.open_url_nw(bw_id, u);
             }
         } else {
-            self.cancel_expect(bw_id, bwops, ui);
+            self.cancel_expect(bw_id, seams);
             if let Some(u) = &url {
-                self.open_url(bw_id, u, None, offset, bwops, ui);
+                self.open_url(bw_id, u, None, offset, seams);
             }
-            ui.set_buttons_sens(bw_id);
+            seams.set_buttons_sens(bw_id);
         }
     }
 }
@@ -611,12 +615,16 @@ mod tests {
 
     use dillo_net::url::url_new;
 
-    /// `NavBw` de test : mémorise expect/expected + appels.
-    struct FakeBw {
+    /// `NavIo` de test : expect/expected + appels mémorisés
+    /// (≙ `FakeBw`/`FakeUi` fusionnés — la seam est unique).
+    struct FakeSeams {
         expected: Option<DilloUrl>,
         calls: Rc<RefCell<Vec<String>>>,
+        scroll: (i32, i32),
+        evs: Rc<RefCell<Vec<String>>>,
+        dialog_ret: i32,
     }
-    impl NavBw for FakeBw {
+    impl NavBw for FakeSeams {
         fn expecting(&mut self, _bw: u32) -> bool {
             self.expected.is_some()
         }
@@ -645,14 +653,7 @@ mod tests {
             0
         }
     }
-
-    /// `NavUi` de test.
-    struct FakeUi {
-        scroll: (i32, i32),
-        evs: Rc<RefCell<Vec<String>>>,
-        dialog_ret: i32,
-    }
-    impl NavUi for FakeUi {
+    impl NavUi for FakeSeams {
         fn set_msg(&mut self, _bw: u32, msg: &str) {
             self.evs.borrow_mut().push(format!("msg:{msg}"));
         }
@@ -699,14 +700,12 @@ mod tests {
         }
     }
 
-    fn mk() -> (Nav, FakeBw, FakeUi, FakeSched) {
+    fn mk() -> (Nav, FakeSeams, FakeSched) {
         (
             Nav::default(),
-            FakeBw {
+            FakeSeams {
                 expected: None,
                 calls: Rc::new(RefCell::new(Vec::new())),
-            },
-            FakeUi {
                 scroll: (0, 0),
                 evs: Rc::new(RefCell::new(Vec::new())),
                 dialog_ret: 2,
@@ -723,82 +722,82 @@ mod tests {
 
     #[test]
     fn stack_push_truncates_and_dedups() {
-        let (mut nav, mut bw, mut ui, _s) = mk();
+        let (mut nav, mut s, _sched) = mk();
         history::history_freeall();
         // Push A : pile vide → expect + open_url (pas de client sans capi
         // http — key 0 → pas d'add_client ; la pile bouge à expect_done).
-        nav.push(1, &u("http://a/"), None, &mut bw, &mut ui);
-        assert!(bw.expected.is_some());
+        nav.push(1, &u("http://a/"), None, &mut s);
+        assert!(s.expected.is_some());
         // expect_done empile l'url_idx dans history.
-        nav.expect_done(1, &mut bw, &mut ui);
+        nav.expect_done(1, &mut s);
         assert_eq!(nav.stack_size(), 1);
         assert_eq!(nav.stack_ptr(), 0);
         // Push B → empile.
-        nav.push(1, &u("http://b/"), None, &mut bw, &mut ui);
-        nav.expect_done(1, &mut bw, &mut ui);
+        nav.push(1, &u("http://b/"), None, &mut s);
+        nav.expect_done(1, &mut s);
         assert_eq!(nav.stack_size(), 2);
         assert_eq!(nav.stack_ptr(), 1);
         // Back → pointeur -1 (open_url offset -1, sans client réel).
-        nav.back(1, &mut bw, &mut ui);
+        nav.back(1, &mut s);
         // Re-push A : truncate à ptr+1 puis append → taille 2, doublon
         // adjacent (A déjà en position 0) → stack_clean le retire.
-        nav.push(1, &u("http://a/"), None, &mut bw, &mut ui);
-        nav.expect_done(1, &mut bw, &mut ui);
+        nav.push(1, &u("http://a/"), None, &mut s);
+        nav.expect_done(1, &mut s);
         assert_eq!(nav.stack_size(), 1);
         assert_eq!(nav.get_uidx(0), nav.get_top_uidx());
     }
 
     #[test]
     fn push_same_expected_url_is_ignored() {
-        let (mut nav, mut bw, mut ui, _s) = mk();
+        let (mut nav, mut s, _sched) = mk();
         let url = u("http://a/");
-        bw.expect(1, &url);
-        let before = ui.evs.borrow().len();
-        nav.push(1, &url, None, &mut bw, &mut ui);
+        s.expect(1, &url);
+        let before = s.evs.borrow().len();
+        nav.push(1, &url, None, &mut s);
         // Double-clic : retour immédiat, aucun événement UI.
-        assert_eq!(ui.evs.borrow().len(), before);
+        assert_eq!(s.evs.borrow().len(), before);
     }
 
     #[test]
     fn scroll_saved_and_restored() {
-        let (mut nav, mut bw, mut ui, _s) = mk();
+        let (mut nav, mut s, _sched) = mk();
         history::history_freeall();
-        nav.push(1, &u("http://a/"), None, &mut bw, &mut ui);
-        nav.expect_done(1, &mut bw, &mut ui);
+        nav.push(1, &u("http://a/"), None, &mut s);
+        nav.expect_done(1, &mut s);
         // L'utilisateur scrolle à (10,20) sur A (après le restore à 0,0
         // de expect_done).
-        ui.scroll = (10, 20);
+        s.scroll = (10, 20);
         // La navigation vers B sauve le scroll de A (10,20) et
         // restaure celui de B (0,0).
-        nav.push(1, &u("http://b/"), None, &mut bw, &mut ui);
-        nav.expect_done(1, &mut bw, &mut ui);
+        nav.push(1, &u("http://b/"), None, &mut s);
+        nav.expect_done(1, &mut s);
         assert_eq!(nav.get_scroll_pos(), (0, 0));
         // Back → le scroll sauvé d'A est restauré.
-        nav.back(1, &mut bw, &mut ui);
-        nav.expect_done(1, &mut bw, &mut ui);
+        nav.back(1, &mut s);
+        nav.expect_done(1, &mut s);
         // (10,20) sauvé en pile → goto_old_scroll.
-        assert!(ui.evs.borrow().iter().any(|e| e == "xy:10:20"));
+        assert!(s.evs.borrow().iter().any(|e| e == "xy:10:20"));
     }
 
     #[test]
     fn repush_marks_reload_from_cache() {
-        let (mut nav, mut bw, mut ui, mut sched) = mk();
+        let (mut nav, mut s, mut sched) = mk();
         history::history_freeall();
-        nav.push(1, &u("http://a/"), None, &mut bw, &mut ui);
-        nav.expect_done(1, &mut bw, &mut ui);
+        nav.push(1, &u("http://a/"), None, &mut s);
+        nav.expect_done(1, &mut s);
         nav.repush(1, &mut sched);
         assert!(matches!(
             sched.ops.borrow_mut().pop_front(),
             Some(NavOp::Repush)
         ));
-        nav.repush_now(1, &mut bw, &mut ui);
-        let e = bw.expected.expect("expect");
+        nav.repush_now(1, &mut s);
+        let e = s.expected.expect("expect");
         assert!(e.flags & url_flags::RELOAD_FROM_CACHE != 0);
     }
 
     #[test]
     fn reload_post_asks_confirmation() {
-        let (mut nav, mut bw, mut ui, mut sched) = mk();
+        let (mut nav, mut s, mut sched) = mk();
         history::history_freeall();
         let mut url = u("http://form/");
         url.flags |= url::URL_POST;
@@ -807,18 +806,18 @@ mod tests {
         nav.stack_append(idx);
         nav.stack_move_ptr(1);
         // "No" (dialog_ret=1) → pas d'expect.
-        ui.dialog_ret = 1;
+        s.dialog_ret = 1;
         nav.reload(1, &mut sched);
-        nav.reload_now(1, &mut bw, &mut ui);
-        assert!(bw.expected.is_none());
+        nav.reload_now(1, &mut s);
+        assert!(s.expected.is_none());
         // "Yes" → expect avec RELOAD_PAGE|E2E_QUERY, SPAM_SAFE retiré.
         url.flags |= url_flags::SPAM_SAFE;
         let idx2 = history::history_add_url(&mut url.clone());
         nav.stack_append(idx2);
         nav.stack_move_ptr(1);
-        ui.dialog_ret = 2;
-        nav.reload_now(1, &mut bw, &mut ui);
-        let e = bw.expected.expect("expect");
+        s.dialog_ret = 2;
+        nav.reload_now(1, &mut s);
+        let e = s.expected.expect("expect");
         assert!(e.flags & url_flags::RELOAD_PAGE != 0);
         assert!(e.flags & url_flags::E2E_QUERY != 0);
         assert_eq!(e.flags & url_flags::SPAM_SAFE, 0);
@@ -826,30 +825,30 @@ mod tests {
 
     #[test]
     fn redirection0_replaces_top() {
-        let (mut nav, mut bw, mut ui, mut sched) = mk();
+        let (mut nav, mut s, mut sched) = mk();
         history::history_freeall();
-        nav.push(1, &u("http://a/"), None, &mut bw, &mut ui);
-        nav.expect_done(1, &mut bw, &mut ui);
+        nav.push(1, &u("http://a/"), None, &mut s);
+        nav.expect_done(1, &mut s);
         nav.redirection0(1, &u("http://b/"), &mut sched);
         assert_eq!(nav.meta_refresh_status, 2);
         assert!(nav
             .meta_refresh_url
             .as_ref()
             .is_some_and(|u| u.flags & url_flags::E2E_QUERY != 0));
-        nav.redirection0_now(1, &mut bw, &mut ui);
+        nav.redirection0_now(1, &mut s);
         assert_eq!(nav.meta_refresh_status, 0);
         assert!(nav.meta_refresh_url.is_none());
         // Push b a été déclenché (expect en cours).
-        assert!(bw.expected.is_some());
+        assert!(s.expected.is_some());
     }
 
     #[test]
     fn cancel_expect_decrements_meta_refresh() {
-        let (mut nav, mut bw, mut ui, _s) = mk();
+        let (mut nav, mut s, _sched) = mk();
         nav.meta_refresh_status = 3;
-        bw.expect(1, &u("http://a/"));
-        nav.cancel_expect(1, &mut bw, &mut ui);
+        s.expect(1, &u("http://a/"));
+        nav.cancel_expect(1, &mut s);
         assert_eq!(nav.meta_refresh_status, 2);
-        assert!(bw.expected.is_none());
+        assert!(s.expected.is_none());
     }
 }

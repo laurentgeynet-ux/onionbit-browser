@@ -7,6 +7,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `dillo-browser` (phase 6, lot chrome-1) : glue navigateur —
+  `bw.rs` (`src/bw.c` verbatim : `BrowserWindow` à mutabilité
+  intérieure ≙ pointeur nu amont, `BwRegistry` ≙ `bws`/`num_bws`,
+  clients root/image, compteurs progress, `page_urls` dédup,
+  `stop_clients`/`cleanup`/`expect`/`doc` courant), `nav.rs`
+  (`src/nav.c` : pile verbatim `stack_ptr=-1`, `stack_move_ptr`
+  bornes muettes, `open_url`/`expect_done` (ops pile si
+  `expecting` uniquement — quirk amont), flags `MustLoad`,
+  reload POST→confirmation sauf `dpi:/vsource/`,
+  redirection0/meta-refresh différés via `NavSched` ≙
+  `a_Timeout_add(0)`, `Nav_save_cb`, seams `NavIo` =
+  `NavBw`+`NavUi` fusionnés en un seul objet ≙ globaux amont —
+  deux `&mut` sur le même registre seraient du UB), `keys.rs`
+  (`src/keys.cc`+`keysrc` : 33 raccourcis par défaut, parser
+  `<Ctrl|Shift|Alt|Meta>`+nom/char/`0x`hexa, `nop`→remove,
+  tri binaire verbatim, decode UTF-8 avec quirk amont
+  char-shifté→mods droppés, `gen_about_keys` → `about:keys`
+  injecté en cache), `uicmd.rs` (`src/uicmd.cc` : dispatch
+  `a_UIcmd_*` complet — cycle de vie fenêtre/onglets, `open_url*`
+  + préfixes de recherche case-insensitifs + quirk
+  `search_url_idx: bool`, `file:` suffixe vide→ancien cwd,
+  zoom borné [0.10,10.0], save flow + `save_filename`
+  ` `/`%20`→`_`, dialogues choice 1-based, popups
+  link/image/page/history, view-source `dpi:/vsource/`+POST
+  id cyclique, progress/status/title `Dillo: `+UTF-8
+  `end_of_char` 80, `set_buttons_sens`, `findtext`/`findbar`,
+  `by_name`, `CustTabs` wheel/shortcut/close). Seams
+  `UiShell`/`NavSeams` injectées ≙ globaux FLTK amont
+  (déviation ADR-0002 : pas de widgets natifs). `dillo-dw` :
+  `Layout::copy_selection` (≙ `a_UIcmd_copy_urlstr`) +
+  `ComplexButtonOps::size_allocate`. 37 tests `dillo-browser`.
 - `dillo-html` (phase 2, lot html-1) : crate complète —
   machine d'état tag-soup verbatim `src/html.cc` (`html.rs` :
   `DilloHtml` + `Html_write_raw` buffer cumulatif ≙ `Client->Buf`,

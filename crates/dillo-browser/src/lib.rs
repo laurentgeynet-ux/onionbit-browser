@@ -7,6 +7,9 @@
 
 pub mod actions;
 pub mod bookmark;
+pub mod bw;
 pub mod dpiapi;
+pub mod keys;
 pub mod nav;
 pub mod prefs;
+pub mod uicmd;

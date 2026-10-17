@@ -162,9 +162,12 @@ prototype phase 0).
       (`platform.rs`/`view.rs`/`ui.rs`/`app.rs`/`surface.rs` +
       `golden.rs`) — clipboard in-process (déviation documentée)
 - [ ] `src/ui.cc` chrome (toolbars, tabs via `UI`/`CustTabs`),
-      `uicmd.cc`, `keys.cc`+`keysrc`, `menu.cc`, `dialog.cc`,
-      `findbar.cc`, `tipwin.cc` (`timeout.cc` déjà porté dans
-      `dillo-net` — la boucle de drain `poll_timeouts` y est partagée)
+      `menu.cc`, `dialog.cc`, `findbar.cc`, `tipwin.cc`
+      (`timeout.cc` déjà porté dans `dillo-net` — la boucle de
+      drain `poll_timeouts` y est partagée)
+- [x] `bw.c`/`nav.c`/`keys.cc`+`keysrc`/`uicmd.cc` — glue
+      `BrowserWindow`, pile de navigation, raccourcis clavier,
+      dispatch `a_UIcmd_*` via seams `UiShell`/`NavIo`/`NavSched`
 - [ ] `paths.cc`, `dillo.cc` main, `dilloc.c`
 
 **Audit** : `audit-10-platform-ui`

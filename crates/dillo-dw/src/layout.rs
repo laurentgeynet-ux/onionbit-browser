@@ -1680,6 +1680,13 @@ impl Layout {
         self.selection_state = st;
     }
 
+    /// `copySelection` ≙ `platform->copySelection` (inline
+    /// `layout.hh:436`) — copie `text` vers `destination`
+    /// (0 primary, 1 clipboard, 2 both).
+    pub fn copy_selection(&mut self, text: &[u8], destination: i32) {
+        self.platform.borrow_mut().copy_selection(text, destination);
+    }
+
     /// `selectionState.handleEvent` — seam appelée par
     /// `Textblock::sendSelectionEvent` avec l'itérateur positionné
     /// (≙ `Iterator*` amont, consommé ici).

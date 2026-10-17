@@ -170,3 +170,98 @@ les deux.
 `a_Bw_*`/`a_Nav_*`/`a_UIcmd_*`/`a_Dicache_*` sont des seams (`u32` bw) —
 la parité observable complète (status bar, nav stack, dicache) dépend
 du glue `dillo-browser` non encore porté → reporté avec le reste d'A11.
+
+---
+
+## Addendum — `bw` / `nav` / `keys` / `uicmd` (phase 6, lot chrome-1)
+
+**Périmètre ajouté** : `src/bw.{c,h}` ↔ `bw.rs` (572 l.),
+`src/nav.{c,h}` ↔ `nav.rs` (854 l.), `src/keys.{cc,hh}`+`keysrc` ↔
+`keys.rs` (927 l.), `src/uicmd.{cc,hh}` ↔ `uicmd.rs` (2340 l.).
+
+### Verdicts
+
+| Module | Verdict |
+|---|---|
+| `bw.c` → `bw.rs` | **Conforme** — mutabilité intérieure ≙ pointeur nu amont ; registre id ≙ `bws`/`num_bws` |
+| `nav.c` → `nav.rs` | **Conforme** — pile verbatim, seams fusionnées (NB-10) |
+| `keys.cc` → `keys.rs` | **Conforme** — table + parser + decode UTF-8 + quirk mods droppés verbatim |
+| `uicmd.cc` → `uicmd.rs` | **Conforme avec seams** — logique verbatim, FLTK → `UiShell` |
+
+### Points vérifiés verbatim (relecture croisée)
+
+- `UIcmd_find_search_str` : `strcspn(str," ")`, garde
+  `len>0 && str[len]!='\0'`, préfixe `dStrnAsciiCasecmp(str,search,len)`,
+  skip si `search[len]!=' '` (match partiel d'une autre entrée),
+  `search_url_idx = p` — **quirk amont `bool_t` préservé**
+  (`prefs.rs` : `search_url_idx: bool`, assignation `p != 0`).
+- `a_UIcmd_open_urlstr` : strip délimiteurs, `file:` casse-insensible,
+  `ch=='\0'||'.'` → `Paths::getOldWorkingDir()` ≙
+  `UiShell::old_working_dir`, sinon `file:` comme base.
+- `UIcmd_open_url_nbw` : `new_tab_page != "about:blank"` → URL par
+  défaut ; push + `set_location_text` + `focus_main` / sinon
+  `focus_location` + `set_buttons_sens`.
+- `a_UIcmd_browser_window_new` : `ww/wh<=0` → `prefs.width/height` ;
+  `old_bw==NULL` → `zoom = prefs.zoom_factor` + `xpos/ypos` ; xid→Xembed
+  non porté (`won't port` — X11).
+- `UIcmd_tab_new` : layout prefs verbatim (`bg_color`, `set_bg_image`
+  REPEAT/SCROLL 0,0, `buffered_drawing`, `scroll_step`,
+  `scroll_page_overlap`, scrollbars via seam `tab_ui_new`),
+  `a_Bw_new`, titre si focus, `findbar_toggle(0)` workaround.
+- `a_UIcmd_close_bw` : `stop_clients(Root|Img|Force)` → drop layout →
+  `tab_ui_remove` (fenêtre détruite si 0 onglets, côté shell) → `free`.
+- `a_UIcmd_set_page_title` : buffer 128, `MIN(124, 1+end_of_char(t,120))`
+  + `...` — **vérifié byte-pour-byte** : `end_of_char` opère sur les
+  120 premiers octets, identiques amont/port (troncature amont à 127
+  n'affecte pas la plage lue). Label d'onglet = label brut (non tronqué)
+  ; titre fenêtre seulement si onglet actif (`is_active_tab` ≙
+  `wizard()->value()` cmp).
+- `a_UIcmd_set_buttons_sens` : Stop=clients non vides, Back=`ptr>0`,
+  Forw=`ptr<size-1 && !expecting` — verbatim.
+- `a_UIcmd_has_finished`/`finish_loading` : clients+expecting, puis
+  `control_is_waiting` → `drain_idles` ≙ `generalIdle` + `flush` +
+  `control_notify_finish` ≙ `a_Control_notify_finish` (dilloc).
+- `keys.rs` : `keystr` quirk `dStrndup(key, p-key-1)` porté ;
+  `event_text[0]` sur texte vide = `\0` → considéré contrôle ; table
+  `default_keys` 33 entrées et constantes `FL_*`/XF86 verbatim ;
+  `about:keys` injecté `GotHeader|GotLength|InternalUrl`.
+- `nav.rs` : `stack_ptr=-1` initial ≙ `a_Bw_new` ; `expect_done` n'agit
+  sur la pile que si `expecting` (quirk : back/forw n'empilent pas) ;
+  reload flags `ReloadPage|E2EQuery`−`SpamSafe`, POST→dialogue sauf
+  `dpi:/vsource/` ; redirection0 `E2E|IgnoreScroll`+status 2 différé.
+
+### Déviations structurelles (documentées, non bugs)
+
+- **NB-10** — `NavIo` = `NavBw`+`NavUi` en **un seul** objet seam :
+  amont les deux sont des fonctions globales accédant le registre bw ;
+  en Rust deux `&mut` distincts vers le même registre pendant
+  `nav.push`/`open_url` seraient un aliasing illégal (le callback UI
+  peut muter le registre — `open_url_nt` → `tab_new`). Un objet seam
+  unique reproduit le modèle global amont sans UB.
+- **NB-11** — Champs `BrowserWindow` en `Cell`/`RefCell` : amont mute
+  `bw->nav_*`/`bw->expect_*` pendant `a_Nav_push` via pointeur nu.
+  L'intérieur mutable préserve l'ordre d'appel sans double-`RefMut`.
+- **NB-12** — `UiShell` trait ≙ `UI`/`CustTabs`/`Fl_*` : chrome
+  auto-dessiné (phase chrome-2 implémentera `ui.rs`). Choix de
+  dialogues 1-based verbatim (`dialog_choice` → 1= premier bouton).
+- **NB-13** — `Rc::get_mut`-style URL flags (D10) non concerné ici :
+  `nav::reload` mute via la seam `NavIo::url_set_flags` — à auditer
+  avec D10 en mode apply.
+
+### Test gap analysis (ajout)
+
+13. **Onglets multiples + fermeture** : 2 onglets, close du 1er →
+    registre/labels/sens cohérents (couvert partiellement par
+    `uicmd::tests`, golden e2e quand `ui.rs` existera).
+14. **`keysrc` round-trip** : parser un `keysrc` custom (rebind +
+    `nop` + commentaires + ligne malformée → warning lineno) —
+    couvert (`keys::tests::parse_and_rebind`).
+15. **POST reload flow complet** : `nav.reload` sur URL POST →
+    `dialog_choice` ; couvert (`reload_post_asks_confirmation`).
+16. **Zoom nt/nw** : préservation du zoom entre bw — couvert
+    indirectement (`zoom_bounds`).
+
+Verdict addendum : les 4 modules sont **fidèles** ; les seams
+(`UiShell`, `NavIo`/`NavSched`, `DpiOps`) concentrent toute la
+déviation plateforme — à repasser en `apply` après `ui.rs` (chrome-2)
+pour la parité observable e2e.
