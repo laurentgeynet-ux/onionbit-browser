@@ -7,6 +7,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `dillo-css` (phase 3, lot css-1) : crate complète —
+  `doctree` (arène `Vec` ≙ pointeurs chaînés amont),
+  `css` (types/`CssLength` union, `CssPropertyList`,
+  sélecteurs/combinateurs/spécificité, `CssStyleSheet`
+  indexée elem/id/classe/universel, `CssContext` cascade
+  UA<user<nonCssHints<author<author!important<user!important,
+  rejet verbatim des règles auteur pseudo+unsafe),
+  `parser` (tokenizer tolérant : commentaires non fermés,
+  `<!--`/`-->`, strings échappées, `#hex` contextuel,
+  nombres négatifs, `tval` capé 255 ; déclarations +
+  14 shorthands + `!important` + `@import`/`@media` +
+  récupération verbatim) et `styleengine` (pile doctree,
+  héritage `resetValues`, `preprocess`/`postprocessAttrs`,
+  deux passes de résolution `em/ex/ch/rem/vw`, bordures
+  4-directions, feuille UA `thread_local`, `~/.dillo/style.css`).
+  Seams : `TagIndex` (≙ `a_Html_tag_index` fonction libre
+  amont), `CssHtmlHooks` (≙ `DilloHtml*` — `@import`/URL),
+  `StyleEngineSink` (≙ `BrowserWindow*` — bg images),
+  `StyleEnginePrefs` injecté. Quirks verbatim conservés :
+  `border-rigth-width` (typo), `elementTable[-1]` UB→guard,
+  `z-index:auto`→`zIndex=13`, table de props désordonnée
+  (`x-*`/`last`), `margin-*` sans `%`.
 - `dillo-dw::table` (phase 5, lot dw-5) : `WidgetKind::Table` +
   `TableData` verbatim `dw/table.cc` — grille `Cell`/`SpanSpace`
   (`colspan 0`→`eff=max(numCols-curCol,1)`+`rowClosed`, `MAXSPAN`

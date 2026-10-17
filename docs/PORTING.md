@@ -53,13 +53,13 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | `src/html.cc` + `html.hh` | `[html]::parser` | not started | machine d'état tag-soup tolérante |
 | `src/html_common.hh` | `[html]::common` | not started | |
 | `src/html_charrefs.h` | `[html]::entities` | not started | table entités → codegen/static |
-| `src/doctree.hh` | `[html]::doctree` | not started | |
+| `src/doctree.hh` | `[css]::doctree` | ported | descendu dans `dillo-css` (consommé par css *et* html ; html dépend de css) ; arène `Vec` ≙ pointeurs chaînés amont |
 | `src/plain.cc` | `[html]::plain` | not started | doc text/plain |
 | `src/table.cc` + `table.hh` | `[html]::table` | not started | glue HTML→dw table |
 | `src/form.cc` + `form.hh` | `[html]::form` | not started | modèle forms + submit |
-| `src/css.cc` + `css.hh` | `[css]::css` | not started | decl sets, matching, specificity |
-| `src/cssparser.cc` + `cssparser.hh` | `[css]::parser` | not started | tokenizer CSS tolérant |
-| `src/styleengine.cc` + `styleengine.hh` | `[css]::styleengine` | not started | cascade → dw::core::style |
+| `src/css.cc` + `css.hh` | `[css]::css` | ported | types/lengths/props/sélecteurs/rules/stylesheet/context verbatim ; quirks conservés (`border-rigth-width`, queue désordonnée de la table props, `elementTable` guard pour `element=-1`) |
+| `src/cssparser.cc` + `cssparser.hh` | `[css]::parser` | ported | tokenizer tolérant + declarations/shorthands/`!important`/`@import`/`@media`/sélecteurs verbatim ; seam `CssHtmlHooks` (≙ `DilloHtml*`) + `TagIndex` (≙ `a_Html_tag_index`, fonction libre amont) |
+| `src/styleengine.cc` + `styleengine.hh` | `[css]::styleengine` | ported | pile doctree + cascade + héritage + nonCssHints + fontes/lengths/borders + feuille UA (thread_local ≙ static amont) + style.css utilisateur ; quirk `z-index:auto` verbatim ; sentinel `(Color*)-1` ≙ `Option<Color>` |
 | `src/utf8.cc` + `utf8.hh` | `[common]::utf8` | ported | end_of_char/decode/encode(1-6 octets)/test/ideographic/combining/char_count ; constantes U+FFFD & U+200B |
 
 ## src/ — réseau & services document

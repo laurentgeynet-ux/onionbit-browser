@@ -500,6 +500,8 @@ name = "dillo-css"
 version = "0.0.0"
 dependencies = [
  "dillo-common",
+ "dillo-dw",
+ "dillo-net",
  "thiserror 2.0.21",
  "tracing",
 ]

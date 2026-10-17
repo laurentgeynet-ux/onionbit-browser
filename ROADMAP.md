@@ -77,12 +77,18 @@ vraies phases. Sert aussi de banc d'essai au choix ADR-0005.
 
 ## Phase 3 — CSS engine
 
-- [ ] `cssparser.cc` → tokenizer/parser (tolerant recovery)
-- [ ] `css.cc` → declaration sets, selector matching, specificity
-- [ ] `styleengine.cc` → cascade, inheritance, `dw::core::style` glue
-- [ ] UA/user/author sheets + `style.css`/`dillorc` hooks
+- [x] `cssparser.cc` → tokenizer/parser (tolerant recovery) —
+      **`dillo-css::parser`** (48 tests ; seams `CssHtmlHooks`/`TagIndex`)
+- [x] `css.cc` → declaration sets, selector matching, specificity —
+      **`dillo-css::css`** (quirks verbatim : `border-rigth-width`,
+      table props désordonnée, `elementTable` guard)
+- [x] `styleengine.cc` → cascade, inheritance, `dw::core::style` glue
+      — **`dillo-css::styleengine`** (sentinel `(Color*)-1` ≙
+      `Option`, quirk `z-index:auto`, UA sheet `thread_local`)
+- [x] UA/user/author sheets + `style.css`/`dillorc` hooks
+      (`StyleEnginePrefs` injecté ; `dillorc` parsing = phase 6 prefs)
 
-**Audit** : `audit-04-css-style`
+**Audit** : `audit-04-css-style` — rapport `docs/audits/reports/A04*`
 
 ## Phase 4 — dw layout engine (cœur)
 

@@ -610,6 +610,22 @@ pub fn getline(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
     Ok(if line.is_empty() { None } else { Some(line) })
 }
 
+/// `dGethomedir` — `$HOME` sinon `$HOMEDRIVE$HOMEPATH` sinon `/`
+/// (verbatim dlib.c:933 — pas de cache : l'appel est rare et les
+/// variables d'env sont relues à chaud).
+#[must_use]
+pub fn get_home_dir() -> Vec<u8> {
+    if let Ok(home) = std::env::var("HOME") {
+        home.into_bytes()
+    } else if let (Ok(drive), Ok(path)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+        let mut v = drive.into_bytes();
+        v.extend_from_slice(&path.into_bytes());
+        v
+    } else {
+        b"/".to_vec()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

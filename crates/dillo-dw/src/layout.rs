@@ -560,6 +560,40 @@ impl Layout {
         self.viewport_height
     }
 
+    // ---- proxies platform (layout.hh:395-422 inlines amont) ----
+
+    /// `dpiX` — `platform->dpiX()` verbatim.
+    pub fn dpi_x(&mut self) -> f64 {
+        self.platform.borrow_mut().dpi_x()
+    }
+
+    /// `createFont` — `platform->createFont` verbatim
+    /// (`try_everything` ≙ fallback agressif).
+    pub fn create_font(
+        &mut self,
+        attrs: &crate::style::FontAttrs,
+        try_everything: bool,
+    ) -> std::rc::Rc<crate::style::Font> {
+        self.platform
+            .borrow_mut()
+            .create_font(attrs, try_everything)
+    }
+
+    /// `fontExists` — `platform->fontExists` verbatim.
+    pub fn font_exists(&mut self, name: &[u8]) -> bool {
+        self.platform.borrow_mut().font_exists(name)
+    }
+
+    /// `createColor` — `platform->createColor` verbatim.
+    pub fn create_color(&mut self, color: i32) -> crate::style::Color {
+        self.platform.borrow_mut().create_color(color)
+    }
+
+    /// `createTooltip` — `platform->createTooltip` verbatim.
+    pub fn create_tooltip(&mut self, text: &[u8]) -> std::rc::Rc<crate::style::Tooltip> {
+        self.platform.borrow_mut().create_tooltip(text)
+    }
+
     // ---- widgets top-level (layout.cc:351-458) ----
 
     /// `Layout::detachWidget` — verbatim : marque `detached`
