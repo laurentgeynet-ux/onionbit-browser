@@ -66,7 +66,10 @@ pub fn web_free(web: &HttpWeb) {
 /// fond, titre, `a_Nav_expect_done`, choix du viewer) est derrière
 /// [`WebDispatch`].
 pub fn dispatch_by_type(mime: &str, web: &Rc<HttpWeb>, seam: &mut dyn WebDispatch) -> Option<CaCb> {
-    if web.flags & WEB_ROOT_URL == 0 && !mime.starts_with("image/") {
+    // `dStrnAsciiCasecmp(Type, "image/", 6)` amont — préfixe ASCII-CI.
+    if web.flags & WEB_ROOT_URL == 0
+        && !(mime.len() >= 6 && mime[..6].eq_ignore_ascii_case("image/"))
+    {
         // Requête non-racine : amont ne dispatch que les `image/*` —
         // le reste est rejeté (enfant non-image).
         return None;
@@ -125,6 +128,9 @@ mod tests {
         let w2 = web(WEB_STYLESHEET);
         assert!(dispatch_by_type("image/png", &w2, &mut d).is_some());
         assert_eq!(calls.get(), 2);
+        // A11-D9 : `dStrnAsciiCasecmp` amont — préfixe insensible.
+        assert!(dispatch_by_type("IMAGE/PNG", &w, &mut d).is_some());
+        assert_eq!(calls.get(), 3);
     }
 
     #[test]

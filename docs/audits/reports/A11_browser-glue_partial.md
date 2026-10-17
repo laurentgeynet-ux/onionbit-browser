@@ -478,3 +478,59 @@ pour la parité observable e2e.
     Windows pour `dilloc`/plugins — voir A12 L5).
 23. **`DialogRunner` natif** : idem ajout 3, point 19.
 24. **`DocOps` réel** : idem ajout 3, point 20.
+
+## Apply — résolution
+
+Appliqué directement sur `main` (passe groupée A01+A02+A11) — les
+14 déviations du tableau sont résolues :
+
+- **D1** corrigé — `cache.rs` : `e.location` posé avant le test
+  domainrc/dpi ; redirect bloquée garde `Location` sans
+  `CA_Redirect` → page « Dillo blocked a redirection » servie.
+- **D2** corrigé — `cache.rs` : `i = idx` quand le client n'est
+  pas réinséré (le suivant glisse à `idx`), `idx + 1` après
+  réinsertion ≙ `--i`/`++i` amont.
+- **D3** corrigé — `cache.rs` : `break` retiré hors de la branche
+  autorisée — le scan `Set-Cookie` continue jusqu'à un `cookies_set`
+  réel.
+- **D4** corrigé — `capi.rs` : `request_permitted` teste
+  `capi_get_flags` mappé (`IsCached` ⇔ entrée existante), plus les
+  bits bruts `CA_*`.
+- **D5** corrigé — `cache.rs` : `type_mismatch` hoisté dans le
+  bloc de détection (une fois) — `AbortEntry` vaut pour tout
+  client sans callback ; `set_msg` reste root-only.
+- **D6** corrigé — `cache.rs` : `hits += 1` uniquement dans la
+  branche hit (`entry_pos` réussi), pas sur miss interne.
+- **D7** corrigé — `cache.rs` : `auth` consommé seulement si
+  `!auth_busy` ; sinon le défi reste posé + warn « caught busy ».
+- **D8** corrigé — `capi.rs` : `conn_abort_by_url` aborte la
+  première conn matchée puis stop (`break` amont).
+- **D9** corrigé — `capi.rs` + `web.rs` : préfixes ASCII-CI
+  (`eq_ignore_ascii_case`) pour `url_uses_dpi` et le filtre
+  `image/` de `dispatch_by_type`.
+- **D10** corrigé — `capi.rs` : `E2EQuery` via `Rc::get_mut` si
+  exclusif ; sinon retrait direct de l'entrée cache (effet
+  observable équivalent avant réouverture).
+- **D11** corrigé — `capi.rs` : `datastr` en `Vec<u8>` tronqué au
+  premier NUL ≙ `dStrdup` (payload binaire dpi préservé).
+- **D12** corrigé — `timeout.rs` : rustdoc `repeat` cite
+  `Fl::add_timeout` (identique à `add` amont).
+- **D13** corrigé — `capi.rs` : `capi_ccc_fn` résout `conn` depuis
+  `d1` pendant `OP_START` (local_key pas encore posé) →
+  `pending_abort` drainé à la sortie.
+- **D14** corrigé — `cache.rs` : `about:cache` tronque via
+  `dlib::Dstr::shorten` (moitiés + `...`) au lieu de
+  `chars().take(60)`.
+
+Tests : +12 (`blocked_redirect…`, `…dequeued_sibling`,
+`set_cookie_scans_past_unauthorized_client`,
+`non_root_type_mismatch_aborts_entry`,
+`internal_url_open_does_not_count_as_hit`,
+`auth_challenge_survives_busy_auth_entry`,
+`about_cache_shortens_long_url_middle`,
+`request_permitted_uses_mapped_cached_flag`,
+`conn_abort_by_url_stops_at_first_match`,
+`url_uses_dpi_is_case_insensitive`,
+`datastr_truncates_at_nul_keeps_bytes`,
+`pending_abort_drains_after_op_start` + cas `IMAGE/PNG` web.rs).
+Changelog : `docs/audits/changelog/A11.md`.

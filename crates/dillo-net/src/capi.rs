@@ -50,7 +50,9 @@ struct CapiConn {
     /// `server` — `"http"`/`"https"` ou nom du serveur dpi.
     server: String,
     /// `datastr` — commande initiale en attente (dpi PENDING).
-    datastr: Option<String>,
+    /// Octets bruts ≙ `dStrdup` amont (tronqué au premier NUL, le
+    /// payload n'est pas nécessairement UTF-8).
+    datastr: Option<Vec<u8>>,
     /// `SockFD`.
     sock_fd: i32,
     /// `Flags` — `PENDING`/`ABORTED`.
@@ -73,12 +75,17 @@ struct CapiConn {
 impl CapiConn {
     /// `Capi_conn_new` — `datastr`/`server` dupliqués, `PENDING` pour les
     /// serveurs non-http (attente du démarrage de dpid amont).
-    fn new(url: Option<&DilloUrl>, bw: u32, server: &str, datastr: &str) -> Rc<RefCell<Self>> {
+    fn new(url: Option<&DilloUrl>, bw: u32, server: &str, datastr: &[u8]) -> Rc<RefCell<Self>> {
+        // `dStrdup` amont : tronque au premier NUL.
+        let end = datastr
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(datastr.len());
         Rc::new(RefCell::new(Self {
             url: url.cloned(),
             bw,
             server: server.to_string(),
-            datastr: Some(datastr.to_string()),
+            datastr: Some(datastr[..end].to_vec()),
             sock_fd: -1,
             flags: if server == "http" { 0 } else { PENDING },
             info_send: None,
@@ -287,7 +294,17 @@ fn capi_ccc_fn(
     d2: ChainData,
 ) {
     // Profondeur pour drainer `pending_abort` à la sortie top-level.
-    let conn_rc = chain.local_key::<Rc<RefCell<CapiConn>>>(info).cloned();
+    // Pendant OP_START le `local_key` n'est pas encore posé — amont
+    // résout `conn = Data1` ; on le récupère de même depuis `d1`.
+    let conn_rc = chain
+        .local_key::<Rc<RefCell<CapiConn>>>(info)
+        .cloned()
+        .or_else(|| match &d1 {
+            ChainData::Owned(any) if op == OP_START => {
+                any.clone().downcast::<RefCell<CapiConn>>().ok()
+            }
+            _ => None,
+        });
     if let Some(cr) = &conn_rc {
         let d = cr.borrow().depth.get() + 1;
         cr.borrow().depth.set(d);
@@ -323,20 +340,21 @@ fn conn_abort_inner(chain: &mut Chain, conn: &Rc<RefCell<CapiConn>>) {
 /// sortie du CCC — amont appelle en direct mais le pointer-modèle le
 /// permet ; ici le `RefCell` impose le report).
 pub fn conn_abort_by_url(url: &DilloUrl) {
-    let targets: Vec<Rc<RefCell<CapiConn>>> = CAPI.with(|c| {
+    // Amont `break` après la **première** conn dont l'URL matche
+    // (`capi.c:214`) — les doublons éventuels survivent.
+    let target = CAPI.with(|c| {
         c.borrow()
             .conns
             .iter()
-            .filter(|conn| {
+            .find(|conn| {
                 conn.borrow()
                     .url
                     .as_ref()
                     .is_some_and(|u| u.url_cmp(url) == 0)
             })
             .cloned()
-            .collect()
     });
-    for conn in targets {
+    if let Some(conn) = target {
         conn.borrow_mut().flags |= ABORTED;
         abort_or_defer(&conn);
     }
@@ -368,7 +386,7 @@ fn conn_resume() {
         };
         if let (Some(dstr), Some(i)) = (datastr, info_send) {
             let mut ch = chain.borrow_mut();
-            let dbuf = DataBuf::new(dstr.into_bytes(), 0, 0);
+            let dbuf = DataBuf::new(dstr, 0, 0);
             // `dbuf->Size` amont = strlen → len des octets.
             let mut dbuf = dbuf;
             dbuf.size = i32::try_from(dbuf.buf.len()).unwrap_or(i32::MAX);
@@ -696,10 +714,12 @@ pub fn capi_ccc() -> ChainCb {
 /// `Capi_url_uses_dpi` — `Some(server)` si l'URL relève d'un serveur dpi.
 fn url_uses_dpi(url: &DilloUrl) -> Option<String> {
     let s = url_str(url);
-    if s.starts_with(b"http:") || s.starts_with(b"https:") || s.starts_with(b"about:") {
+    // `dStrnAsciiCasecmp` amont : préfixes insensibles à la casse.
+    let pre = |p: &[u8]| s.len() >= p.len() && s[..p.len()].eq_ignore_ascii_case(p);
+    if pre(b"http:") || pre(b"https:") || pre(b"about:") {
         return None;
     }
-    if s.starts_with(b"dpi:/") {
+    if pre(b"dpi:/") {
         let rest = &s[5..];
         let mut server = match rest.iter().position(|&b| b == b'/') {
             Some(p) => String::from_utf8_lossy(&rest[..p]).into_owned(),
@@ -841,16 +861,14 @@ fn request_permitted(web: &HttpWeb) -> bool {
             return false;
         }
     }
-    if cache_get_flags(&web.url) & to_capi_cached() != 0 {
+    // `a_Capi_get_flags` amont : flags **mappés** CAPI (`IsCached` ⇔
+    // entrée existante), pas les bits bruts `CA_*`.
+    if capi_get_flags(&web.url) & CAPI_IS_CACHED != 0 {
         return true;
     }
     let mut req = requester.clone();
     let mut dst = web.url.clone();
     domain_permit(&mut req, &mut dst)
-}
-
-const fn to_capi_cached() -> u32 {
-    CAPI_IS_CACHED
 }
 
 /// `Capi_map_cache_flags`.
@@ -971,13 +989,16 @@ pub fn capi_open_url(mut web: Rc<HttpWeb>, call: Option<CaCb>) -> i32 {
                     .is_some_and(|s| s.eq_ignore_ascii_case(b"dpi"))
                     && server != "vsource"
                 {
-                    // `dpi:/` hors vsource : toujours reload
-                    // (`a_Url_set_flags(E2EQuery)` amont — mutation de
-                    // web->url ; ici web est `Rc` partagé → mutation
-                    // uniquement si exclusif, sinon la décision reload
-                    // couvre déjà le même effet).
+                    // `dpi:/` hors vsource : toujours reload.
+                    // Amont pose `E2EQuery` sur `web->url` — ici le web
+                    // est `Rc` : mutation in-place si exclusif ; sinon
+                    // l'effet observable (entrée cache retirée avant
+                    // réouverture par `cache_open_url`) est appliqué
+                    // directement.
                     if let Some(w) = Rc::get_mut(&mut web) {
                         w.url.flags |= url_flags::E2E_QUERY;
+                    } else {
+                        cache_entry_remove_by_url(&web.url);
                     }
                     reload = true;
                 }
@@ -1007,7 +1028,7 @@ pub fn capi_open_url(mut web: Rc<HttpWeb>, call: Option<CaCb>) -> i32 {
         {
             if reload {
                 conn_abort_by_url(&web.url);
-                let cr = CapiConn::new(Some(&web.url), web.bw, "http", "none");
+                let cr = CapiConn::new(Some(&web.url), web.bw, "http", b"none");
                 let chain = cr.borrow().chain.clone();
                 // Branche réception d'abord (le DNS peut répondre tout
                 // de suite — course amont).
@@ -1075,8 +1096,7 @@ pub fn capi_dpi_send_data(
     flags: i32,
 ) -> i32 {
     if flags & 1 != 0 {
-        let datastr = String::from_utf8_lossy(data).into_owned();
-        let conn = CapiConn::new(url, bw, server, &datastr);
+        let conn = CapiConn::new(url, bw, server, data);
         let chain = conn.borrow().chain.clone();
         let mut ch = chain.borrow_mut();
         let l2 = ch.new_link();
@@ -1253,7 +1273,7 @@ mod tests {
         // Insère un conn factice http (branches non armées : abort no-op
         // comme amont quand `InfoSend/InfoRecv` sont NULL).
         let url = u("http://example.com/");
-        let cr = CapiConn::new(Some(&url), 0, "http", "none");
+        let cr = CapiConn::new(Some(&url), 0, "http", b"none");
         conn_ref(&cr);
         conn_abort_by_url(&url);
         assert!(cr.borrow().flags & ABORTED != 0);
@@ -1283,5 +1303,95 @@ mod tests {
         let url = u("http://example.com/");
         capi_set_vsource_url(&url);
         assert!(CAPI.with(|c| c.borrow().vs_url.is_some()));
+    }
+
+    /// A11-D4 : `request_permitted` teste les flags **mappés** CAPI —
+    // `CAPI_IsCached` ⇔ entrée existante (amont `a_Capi_get_flags`).
+    /// Une entrée sans `CA_GotHeader` (bit brut 0x1) doit quand même
+    /// court-circuiter domainrc.
+    #[test]
+    fn request_permitted_uses_mapped_cached_flag() {
+        reset();
+        crate::domain::domain_parse("default deny\n");
+        let url = u("http://a.b/p");
+        // Entrée existante, header pas encore arrivé → flags bruts =
+        // IN_PROGRESS|IS_EMPTY (bit0 absent) mais IsCached mappé.
+        let w1 = Rc::new(HttpWeb::new(url.clone(), None, WEB_ROOT_URL));
+        assert!(cache::cache_open_url(w1, None) > 0);
+        let req = u("http://x.y/");
+        let sub = HttpWeb::new(url.clone(), Some(req), crate::web::WEB_IMAGE);
+        assert!(
+            request_permitted(&sub),
+            "entrée en cache → permise malgré default deny"
+        );
+        crate::domain::domain_freeall();
+    }
+
+    /// A11-D8 : `conn_abort_by_url` s'arrête à la **première** conn
+    /// dont l'URL matche (`break` amont).
+    #[test]
+    fn conn_abort_by_url_stops_at_first_match() {
+        reset();
+        let url = u("http://example.com/");
+        let c1 = CapiConn::new(Some(&url), 0, "http", b"none");
+        let c2 = CapiConn::new(Some(&url), 0, "http", b"none");
+        conn_ref(&c1);
+        conn_ref(&c2);
+        conn_abort_by_url(&url);
+        assert!(c1.borrow().flags & ABORTED != 0);
+        assert_eq!(c2.borrow().flags & ABORTED, 0, "2e conn abortée");
+        conn_unref(&c1);
+        conn_unref(&c2);
+    }
+
+    /// A11-D9 : `Capi_url_uses_dpi` compare les préfixes en ASCII-CI
+    /// (`dStrnAsciiCasecmp`) — `HTTP://x` reste http, pas `proto.http`.
+    #[test]
+    fn url_uses_dpi_is_case_insensitive() {
+        assert_eq!(url_uses_dpi(&u("HTTP://x/")), None);
+        assert_eq!(url_uses_dpi(&u("About:splash")), None);
+        assert_eq!(url_uses_dpi(&u("DPI:/bm/x")), Some("bookmarks".to_string()));
+    }
+
+    /// A11-D11 : `datastr` ≙ `dStrdup` — octets tronqués au premier
+    /// NUL, jamais altérés par un transcodage UTF-8.
+    #[test]
+    fn datastr_truncates_at_nul_keeps_bytes() {
+        let cr = CapiConn::new(None, 0, "http", b"ab\x00cd");
+        assert_eq!(cr.borrow().datastr.as_deref(), Some(b"ab".as_slice()));
+        let cr2 = CapiConn::new(None, 0, "http", b"\xff\xfebin");
+        assert_eq!(
+            cr2.borrow().datastr.as_deref(),
+            Some(b"\xff\xfebin".as_slice())
+        );
+    }
+
+    /// A11-D13 : `pending_abort` posé pendant `OP_START` doit être
+    /// drainé à la sortie — le conn est résolu depuis `d1` car le
+    /// `local_key` n'est pas encore posé à l'entrée du CCC.
+    #[test]
+    fn pending_abort_drains_after_op_start() {
+        reset();
+        let url = u("http://example.com/");
+        let conn = CapiConn::new(Some(&url), 0, "http", b"none");
+        conn_ref(&conn);
+        let web = Rc::new(HttpWeb::new(url.clone(), None, WEB_ROOT_URL));
+        let chain = conn.borrow().chain.clone();
+        let mut ch = chain.borrow_mut();
+        // Abort demandé pendant l'armement → différé puis drainé en
+        // sortie du CCC top-level.
+        conn.borrow().pending_abort.set(true);
+        let l1 = ch.new_link();
+        capi_ccc_fn(
+            &mut ch,
+            OP_START,
+            1,
+            BCK,
+            l1,
+            ChainData::Owned(conn.clone()),
+            ChainData::Owned(web.clone()),
+        );
+        assert!(!conn.borrow().pending_abort.get(), "abort jamais drainé");
+        assert_eq!(conn.borrow().info_send, None, "lien non aborté");
     }
 }

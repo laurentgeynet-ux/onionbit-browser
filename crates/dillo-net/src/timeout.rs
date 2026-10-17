@@ -60,10 +60,10 @@ pub fn timeout_add<F: FnMut() + 'static>(delay: f64, cb: F) -> TimeoutId {
     add_lease(delay, Box::new(cb))
 }
 
-/// `a_Timeout_repeat` ≙ `Fl::repeat_timeout` — amont réarme relativement au
-/// *premier* deadline FLTK ; ici relatif à `now` (déviation documentée — le
-/// drift importe peu, toutes les utilisations amont passent `0.0` ou des
-/// deadlines périodiques réarmées depuis le callback).
+/// `a_Timeout_repeat` — amont utilise `Fl::add_timeout` (identique à
+/// `a_Timeout_add`, `timeout.cc:34-37`) : one-shot relatif à l'appel,
+/// réarmé explicitement par le callback quand une périodicité est
+/// voulue. Semblable ici — pas de drift à documenter.
 pub fn timeout_repeat<F: FnMut() + 'static>(delay: f64, cb: F) -> TimeoutId {
     add_lease(delay, Box::new(cb))
 }

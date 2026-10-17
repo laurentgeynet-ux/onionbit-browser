@@ -567,7 +567,11 @@ impl Cache {
             s.push_str("<tr>\n");
             let _ = writeln!(s, "<td style='text-align:right'>{}</td>", e.hits);
             let _ = writeln!(s, "<td style='text-align:right'>{size_kb:.2} KiB</td>");
-            let short = url_str.chars().take(60).collect::<String>();
+            // `dStr_shorten(s, url, 60)` amont : moitiés + `...`
+            // (byte-based, pas `chars().take`).
+            let mut ds = dillo_common::dlib::Dstr::new(b"");
+            ds.shorten(&url_bytes, 60);
+            let short = String::from_utf8_lossy(&ds.into_vec()).into_owned();
             let _ = writeln!(s, "<td><a href='{url_str}'>{short}</a></td>");
             s.push_str("</tr>\n");
             total_kb += size_kb;
@@ -787,11 +791,15 @@ fn parse_header(c: &mut Cache, pos: usize) {
                 }
                 None => true,
             };
+            // `entry->Location` posé AVANT le test domainrc/dpi amont :
+            // une 30x bloquée garde `Location` sans `CA_Redirect` →
+            // `Cache_provide_redirection_blocked_page` peut servir la
+            // page « Dillo blocked a redirection ».
+            c.entries[pos].location = location;
             if blocked {
                 (c.log)("Redirection not followed (domainrc/dpi)");
             } else {
                 let e = &mut c.entries[pos];
-                e.location = location;
                 e.flags |= ca::REDIRECT;
                 match h9_11[2] {
                     b'1' => e.flags |= ca::FORCE_REDIRECT,
@@ -899,9 +907,9 @@ fn parse_header(c: &mut Cache, pos: usize) {
                 if send.is_some() {
                     c.dpi_send = send;
                 }
-                break;
+                break; // amont : stop après le premier client *autorisé*
             }
-            break; // un seul client par entrée testé amont (premier match)
+            // client tiers non autorisé → le scan continue amont
         }
     }
 
@@ -1081,7 +1089,7 @@ pub fn cache_open_url(web: Rc<HttpWeb>, call: Option<CaCb>) -> i32 {
         if let Some(pos) = c.entry_pos(&url) {
             let entry_url = c.entries[pos].url.clone();
             let key = c.client_enqueue(&entry_url, web, call);
-            (key, Some(entry_url))
+            (key, Some((entry_url, true)))
         } else {
             let pos = c.entry_add(&url);
             let entry_url = c.entries[pos].url.clone();
@@ -1089,17 +1097,28 @@ pub fn cache_open_url(web: Rc<HttpWeb>, call: Option<CaCb>) -> i32 {
                 c.internal_url(pos);
             }
             let key = c.client_enqueue(&entry_url, web, call);
-            (key, if internal { Some(entry_url) } else { None })
+            // miss interne : queue processée mais `Hits` n'augmente
+            // que sur hit amont (`cache.c` branche `entry` trouvée).
+            (
+                key,
+                if internal {
+                    Some((entry_url, false))
+                } else {
+                    None
+                },
+            )
         }
     });
-    if let Some(u) = hit_url {
+    if let Some((u, hit)) = hit_url {
         delayed_process_queue(&u);
-        CACHE.with(|c| {
-            let mut c = c.borrow_mut();
-            if let Some(p) = c.entry_pos(&u) {
-                c.entries[p].hits += 1;
-            }
-        });
+        if hit {
+            CACHE.with(|c| {
+                let mut c = c.borrow_mut();
+                if let Some(p) = c.entry_pos(&u) {
+                    c.entries[p].hits += 1;
+                }
+            });
+        }
     }
     key
 }
@@ -1590,6 +1609,9 @@ fn process_queue(url: &DilloUrl) -> bool {
 #[allow(clippy::too_many_lines)] // port direct de la boucle amont
 fn process_queue_inner(cell: &RefCell<Cache>, url: &DilloUrl) -> bool {
     // Phase 0 : garde + détection du type depuis les données.
+    // `TypeMismatch` amont : local de fonction posé ici (une fois, à
+    // la détection) — pas recalculé par client ni par passe.
+    let mut type_mismatch = false;
     {
         let mut c = cell.borrow_mut();
         let Some(pos) = c.entry_pos(url) else {
@@ -1602,9 +1624,9 @@ fn process_queue_inner(cell: &RefCell<Cache>, url: &DilloUrl) -> bool {
             let data = c.entries[pos].data.clone();
             let (ty, st) = misc::get_content_type_from_data(&data);
             if st == 0 || c.entries[pos].flags & ca::IN_PROGRESS == 0 {
-                let mismatch =
+                type_mismatch =
                     misc::content_type_check(c.entries[pos].type_hdr.as_deref(), ty.as_bytes()) < 0;
-                if mismatch {
+                if type_mismatch {
                     let h = c.entries[pos].type_hdr.clone().unwrap_or_default();
                     (c.log)(&format!(
                         "Content-Type '{}' doesn't match the real data.",
@@ -1643,8 +1665,12 @@ fn process_queue_inner(cell: &RefCell<Cache>, url: &DilloUrl) -> bool {
             }
         };
         // Détache le client (callback/dispatch peuvent ré-entrer).
+        // `i = idx` : sans réinsertion, le client suivant a glissé à
+        // `idx` — amont compense le shift par `--i` (sauter `idx+1`
+        // laisserait un client non servi sur toute entrée à ≥2
+        // clients). La branche réinsérée reprend à `idx + 1`.
         let mut cl = cell.borrow_mut().clients.remove(idx);
-        i = idx + 1;
+        i = idx;
         last_bw = cl.web.bw;
 
         // Pré-logique (root/non-root, msgs, redirect_level, dispatch).
@@ -1660,7 +1686,6 @@ fn process_queue_inner(cell: &RefCell<Cache>, url: &DilloUrl) -> bool {
             let e_flags = c.entries[pos].flags;
             let web_flags = cl.web.flags;
             let bw = cl.web.bw;
-            let mut type_mismatch = false;
             let mut dtype: Option<Vec<u8>> = None;
 
             if web_flags & WEB_ROOT_URL != 0 {
@@ -1675,11 +1700,8 @@ fn process_queue_inner(cell: &RefCell<Cache>, url: &DilloUrl) -> bool {
                     c.ui.set_msg(bw, "");
                     c.entries[pos].flags |= ca::MSG_ERASED;
                 }
-                type_mismatch = c.entries[pos].type_det.is_some()
-                    && misc::content_type_check(
-                        c.entries[pos].type_hdr.as_deref(),
-                        c.entries[pos].type_det.as_deref().unwrap_or(b""),
-                    ) < 0;
+                // `set_msg` root-only amont ; `AbortEntry` s'applique à
+                // tout client sans callback via `type_mismatch` partagé.
                 if type_mismatch {
                     let h = c.entries[pos].type_hdr.clone().unwrap_or_default();
                     c.ui.set_msg(
@@ -1855,10 +1877,12 @@ fn process_queue_inner(cell: &RefCell<Cache>, url: &DilloUrl) -> bool {
                 }
             }
         } else {
-            // Réinsère le client vivant à sa place.
+            // Réinsère le client vivant à sa place — le scan reprend
+            // après lui (≙ `++i` amont après réinsertion).
             let mut c = cell.borrow_mut();
             let at = idx.min(c.clients.len());
             c.clients.insert(at, cl);
+            i = idx + 1;
         }
     }
 
@@ -1881,11 +1905,17 @@ fn process_queue_inner(cell: &RefCell<Cache>, url: &DilloUrl) -> bool {
         return false;
     }
 
-    // Auth en attente (401) → dialog via timeout.
+    // Auth en attente (401) → dialog via timeout. `Cache_auth_entry`
+    // amont teste `busy` AVANT de consommer `entry->Auth` : si occupé,
+    // le défi reste posé sur l'entrée (rejouable) — pas de `take`.
     let auth = {
         let mut c = cell.borrow_mut();
         match c.entry_pos(url) {
-            Some(p) if c.entries[p].auth.is_some() && c.entries[p].flags & ca::IN_PROGRESS == 0 => {
+            Some(p)
+                if !c.auth_busy
+                    && c.entries[p].auth.is_some()
+                    && c.entries[p].flags & ca::IN_PROGRESS == 0 =>
+            {
                 c.entries[p].auth.take()
             }
             _ => None,
@@ -1893,6 +1923,16 @@ fn process_queue_inner(cell: &RefCell<Cache>, url: &DilloUrl) -> bool {
     };
     if let Some(challenges) = auth {
         auth_entry(url, challenges, last_bw);
+    } else {
+        let warn = CACHE.with(|c| {
+            let c = c.borrow();
+            c.auth_busy
+                && c.entry_pos(url)
+                    .is_some_and(|p| c.entries[p].auth.is_some())
+        });
+        if warn {
+            CACHE.with(|c| (c.borrow_mut().log)("Cache_auth_entry: caught busy!"));
+        }
     }
 
     // `a_Dicache_cleanup` quand la file est vide.
@@ -2211,5 +2251,181 @@ mod tests {
         cache_entry_remove_by_url(&url);
         assert_eq!(cache_get_flags(&url), 0);
         assert_eq!(cache_client_count(), 0);
+    }
+
+    /// A11-D1 : une 30x bloquée par domainrc garde `Location` sans
+    /// `CA_Redirect` → la page « Dillo blocked a redirection » est
+    /// servie au client (amont pose `entry->Location` avant le test).
+    #[test]
+    fn blocked_redirect_keeps_location_and_serves_block_page() {
+        reset();
+        crate::domain::domain_parse("default deny\n");
+        let url = u("http://a.b/old");
+        let events = Rc::new(RefCell::new(Vec::<(i32, Vec<u8>)>::new()));
+        let ev = events.clone();
+        let cb: CaCb = Box::new(move |op, cl| {
+            ev.borrow_mut().push((op, cl.buf.clone()));
+        });
+        cache_open_url(web(&url, WEB_ROOT_URL), Some(cb));
+        let raw = b"HTTP/1.0 302 Found\r\nLocation: http://c.d/new\r\nContent-Length: 0\r\n\r\n";
+        process_dbuf(IO_READ, raw, &url);
+        process_dbuf(IO_CLOSE, &[], &url);
+        crate::domain::domain_freeall();
+        assert_eq!(cache_get_flags(&url) & ca::REDIRECT, 0);
+        let evs = events.borrow();
+        let blocked = evs.iter().any(|(op, buf)| {
+            *op == CA_SEND && String::from_utf8_lossy(buf).contains("Dillo blocked a redirection")
+        });
+        assert!(blocked, "{evs:?}");
+    }
+
+    /// A11-D2 : quand un client est déqueued (`AbortEntry`), le client
+    /// suivant de la même entrée glisse à son index — il doit quand
+    /// même être servi (amont compense par `--i`).
+    #[test]
+    fn process_queue_serves_client_after_dequeued_sibling() {
+        reset();
+        let url = u("http://example.com/p");
+        // Client A : root sans callback → aborté à la détection de type
+        // (NullDispatch → « not viewable » → AbortEntry → dequeued).
+        cache_open_url(web(&url, WEB_ROOT_URL), None);
+        let events = Rc::new(RefCell::new(Vec::<(i32, Vec<u8>)>::new()));
+        let ev = events.clone();
+        let cb: CaCb = Box::new(move |op, cl| {
+            ev.borrow_mut().push((op, cl.buf.clone()));
+        });
+        // Client B : même entrée, callback posé.
+        cache_open_url(web(&url, WEB_ROOT_URL), Some(cb));
+        process_dbuf(
+            IO_READ,
+            &resp(
+                "HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: 5",
+                "hello",
+            ),
+            &url,
+        );
+        let evs = events.borrow();
+        assert!(
+            evs.iter().any(|(op, _)| *op == CA_CLOSE),
+            "client B sauté après le dequeue de A — {evs:?}"
+        );
+    }
+
+    /// A11-D3 : `Set-Cookie` — un client tiers non autorisé n'arrête
+    /// pas le scan ; le premier client autorisé pose les cookies.
+    #[test]
+    fn set_cookie_scans_past_unauthorized_client() {
+        reset();
+        crate::cookies::cookies_freeall();
+        assert_eq!(crate::cookies::cookies_init(Some("DEFAULT ACCEPT\n")), 0);
+        let sent = Rc::new(RefCell::new(Vec::<String>::new()));
+        let s2 = sent.clone();
+        cache_set_dpi_send(Box::new(move |cmd: &str| {
+            s2.borrow_mut().push(cmd.to_string());
+            None
+        }));
+        let url = u("http://a.b/p");
+        // Client 1 : requester cross-org, non-root → non autorisé.
+        let req = u("http://x.y/");
+        cache_open_url(Rc::new(HttpWeb::new(url.clone(), Some(req), 0)), None);
+        // Client 2 : requester None → autorisé.
+        cache_open_url(web(&url, WEB_ROOT_URL), None);
+        process_dbuf(
+            IO_READ,
+            &resp(
+                "HTTP/1.0 200 OK\nContent-Type: text/html\nSet-Cookie: k=v\nContent-Length: 1",
+                "x",
+            ),
+            &url,
+        );
+        crate::cookies::cookies_freeall();
+        let cmds = sent.borrow();
+        assert!(
+            cmds.iter().any(|c| c.contains("set_cookie")),
+            "cookie jamais posé — {cmds:?}"
+        );
+    }
+
+    /// A11-D5 : `TypeMismatch` → `AbortEntry` vaut pour tout client
+    /// sans callback, pas seulement les roots. Observable : l'entrée
+    /// est rapportée morte → `finish_msg` sauté → `IN_PROGRESS` resté.
+    #[test]
+    fn non_root_type_mismatch_aborts_entry() {
+        reset();
+        let url = u("http://example.com/m");
+        cache_open_url(web(&url, 0), None);
+        // Déclaré image/png mais le sniffer voit du HTML.
+        process_dbuf(
+            IO_READ,
+            &resp(
+                "HTTP/1.1 200 OK\nContent-Type: image/png\nContent-Length: 15",
+                "<html><body></",
+            ),
+            &url,
+        );
+        let flags = cache_get_flags(&url);
+        assert!(
+            flags & ca::IN_PROGRESS != 0,
+            "entrée non abortée — flags={flags:#x}"
+        );
+    }
+
+    /// A11-D6 : `hits` n'augmente que sur un vrai hit — l'ouverture
+    /// interne `about:cache`/`about:dicache` (miss + injection) ne
+    /// compte pas (amont `Hits++` branche hit seule).
+    #[test]
+    fn internal_url_open_does_not_count_as_hit() {
+        reset();
+        let url = u("about:cache");
+        cache_open_url(web(&url, WEB_ROOT_URL), None);
+        let buf = cache_get_buf(&url).unwrap_or_default();
+        let s = String::from_utf8_lossy(&buf);
+        // La page liste l'entrée about:cache elle-même avec Hits=0.
+        assert!(s.contains("right'>0</td>"), "{s}");
+        assert!(!s.contains("right'>1</td>"), "{s}");
+    }
+
+    /// A11-D7 : `auth_busy` → `entry->Auth` n'est PAS consommé (amont
+    // ne vide le défi qu'en armant le timeout — le défi reste rejouable).
+    #[test]
+    fn auth_challenge_survives_busy_auth_entry() {
+        reset();
+        let url = u("http://example.com/");
+        cache_open_url(web(&url, WEB_ROOT_URL), None);
+        // Dialog déjà en vol → busy.
+        CACHE.with(|c| c.borrow_mut().auth_busy = true);
+        process_dbuf(
+            IO_READ,
+            &resp(
+                "HTTP/1.0 401 Auth\nWWW-Authenticate: Basic realm=\"x\"\nContent-Length: 1",
+                "x",
+            ),
+            &url,
+        );
+        let kept = CACHE.with(|c| {
+            c.borrow()
+                .entry_pos(&url)
+                .is_some_and(|p| c.borrow().entries[p].auth.is_some())
+        });
+        assert!(kept, "défi perdu alors que le dialog était busy");
+    }
+
+    /// A11-D14 : `about:cache` tronque les URLs par `dStr_shorten`
+    /// (moitiés + `...`), pas un préfixe de 60 chars.
+    #[test]
+    fn about_cache_shortens_long_url_middle() {
+        reset();
+        let long = format!("http://example.com/{}", "a".repeat(80));
+        let url = u(&long);
+        cache_entry_inject(&url, b"x", ca::GOT_HEADER | ca::GOT_LENGTH);
+        let about = u("about:cache");
+        cache_open_url(web(&about, WEB_ROOT_URL), None);
+        let buf = cache_get_buf(&about).unwrap_or_default();
+        let s = String::from_utf8_lossy(&buf);
+        // dStr_shorten(60) : 28 premiers (`http://example.com/` + 9
+        // `a`) + "..." + 29 derniers — un préfixe `take(60)` n'aurait
+        // pas de "..." ni de queue.
+        assert!(s.contains("http://example.com/aaaaaaaaa..."), "{s}");
+        assert!(s.contains(&format!("...{}</a>", "a".repeat(29))), "{s}");
     }
 }
