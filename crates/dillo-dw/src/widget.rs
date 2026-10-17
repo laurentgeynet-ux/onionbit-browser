@@ -2231,7 +2231,15 @@ impl Layout {
         if self.node(parent, |n| matches!(&n.kind, WidgetKind::Table { .. })) {
             return true;
         }
-        let _ = parent;
+        self.w_affects_size_change_container_child_base(child)
+    }
+
+    /// `Widget::affectsSizeChangeContainerChild` — implémentation
+    /// de base (règle abs/per/auto + `usesAvail*`, widget.cc:479).
+    /// Amont les overrides appellent la méthode de base par liaison
+    /// statique (`Widget::affectsSizeChangeContainerChild`) — passer
+    /// ici, PAS par le dispatcher `w_*` (récursion infinie sinon).
+    pub(crate) fn w_affects_size_change_container_child_base(&mut self, child: WidgetId) -> bool {
         let Some(s) = self.node(child, |n| n.style.clone()) else {
             return false;
         };
@@ -2266,6 +2274,20 @@ impl Layout {
         if let Some(res) = self.embed_resource(w) {
             return res.get_avail_width_of_child(self, child, force_value);
         }
+        self.w_get_avail_width_of_child_base(w, child, force_value)
+    }
+
+    /// `Widget::getAvailWidthOfChild` — implémentation de base
+    /// (widget.cc:1774). Amont les overrides appellent la méthode
+    /// de base par liaison statique (`Widget::getAvailWidthOfChild`)
+    /// — passer ici, PAS par le dispatcher `w_*` (récursion
+    /// infinie sinon).
+    pub(crate) fn w_get_avail_width_of_child_base(
+        &mut self,
+        w: WidgetId,
+        child: WidgetId,
+        force_value: bool,
+    ) -> i32 {
         let style = self.node(child, |n| n.style.clone());
         let Some(s) = style else { return -1 };
         if s.width == LENGTH_AUTO {
@@ -2313,6 +2335,18 @@ impl Layout {
         if let Some(res) = self.embed_resource(w) {
             return res.get_avail_height_of_child(self, child, force_value);
         }
+        self.w_get_avail_height_of_child_base(w, child, force_value)
+    }
+
+    /// `Widget::getAvailHeightOfChild` — implémentation de base
+    /// (widget.cc:1823). Même règle de liaison statique que
+    /// [`Self::w_get_avail_width_of_child_base`].
+    pub(crate) fn w_get_avail_height_of_child_base(
+        &mut self,
+        w: WidgetId,
+        child: WidgetId,
+        force_value: bool,
+    ) -> i32 {
         let style = self.node(child, |n| n.style.clone());
         let Some(s) = style else { return -1 };
         if s.height == LENGTH_AUTO {

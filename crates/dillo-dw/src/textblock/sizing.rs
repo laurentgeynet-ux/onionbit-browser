@@ -492,7 +492,10 @@ impl Layout {
                 -1
             }
         } else {
-            self.w_get_avail_width_of_child(w, child, force_value)
+            // `Widget::getAvailWidthOfChild` — appel de base
+            // statique amont (PAS le dispatcher `w_*` : boucle
+            // infinie sinon — cf. stack overflow `about:splash`).
+            self.w_get_avail_width_of_child_base(w, child, force_value)
         };
 
         if force_value && self.node(child, |n| n.container) == Some(w) && !uses_max {
@@ -534,7 +537,9 @@ impl Layout {
                     .get_avail_height_of_child(self, child, force_value);
             }
         }
-        self.w_get_avail_height_of_child(w, child, force_value)
+        // `Widget::getAvailHeightOfChild` — appel de base
+        // statique amont (PAS le dispatcher `w_*`).
+        self.w_get_avail_height_of_child_base(w, child, force_value)
     }
 
     /// `containerSizeChangedForChildren` (textblock.cc:820-833) —
@@ -573,7 +578,11 @@ impl Layout {
         if !uses_max && self.node(w, |n| n.extremes_queued() || n.extremes_changed()) {
             true
         } else {
-            self.w_affects_size_change_container_child(w, child)
+            // `Widget::affectsSizeChangeContainerChild` — appel de
+            // base statique amont (PAS le dispatcher `w_*` :
+            // re-dispatch → récursion infinie, cf. stack overflow
+            // `about:splash` sur `Resized`).
+            self.w_affects_size_change_container_child_base(child)
         }
     }
 
@@ -596,8 +605,11 @@ impl Layout {
         if let Some(lw) = last_line_last_word {
             let _ = self.node_tb_mut(w, |tb| tb.last_word_drawn = lw);
         }
+        // Hauteur lue avant `node_tb_mut` (l'emprunt `arena` ne peut
+        // pas se chevaucher).
+        let h = self.node(w, super::super::widget::WidgetNode::get_height);
         let _ = self.node_tb_mut(w, |tb| {
-            tb.redraw_y = self.node(w, super::super::widget::WidgetNode::get_height);
+            tb.redraw_y = h;
         });
     }
 

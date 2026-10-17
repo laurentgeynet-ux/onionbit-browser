@@ -2577,4 +2577,35 @@ mod tests {
         l.drain_idles();
         assert!(l.node(w, WidgetNode::was_allocated));
     }
+
+    /// Régression : les overrides textblock rappelaient le
+    /// dispatcher `w_*` au lieu de l'implémentation de base
+    /// `Widget::*` (liaison statique amont) —
+    /// `affectsSizeChangeContainerChild`, `getAvailWidthOfChild`,
+    /// `getAvailHeightOfChild` → récursion infinie → stack
+    /// overflow sur la première `Resized` réelle.
+    #[test]
+    fn container_size_change_no_self_dispatch_recursion() {
+        let mut l = make_layout();
+        l.attach_view(RecView::viewport());
+        let top = l.add_widget_node(WidgetKind::Textblock {
+            tb: Box::new(crate::textblock::TextblockData::new(false, false)),
+        });
+        l.add_widget(top);
+        // Enfant in-flow du textblock (≙ `<div>` + `display:
+        // inline-block` dans `about:splash`).
+        let child = l.add_widget_node(WidgetKind::Textblock {
+            tb: Box::new(crate::textblock::TextblockData::new(false, false)),
+        });
+        let style = Style::create(&crate::style::StyleAttrs::default());
+        l.tb_add_widget(top, child, &style);
+
+        // `viewportSizeChanged` → `containerSizeChanged` →
+        // `affectsSizeChangeContainerChild` (top toplevel →
+        // `usesMaxGeneratorWidth` → fallback base) — boucle
+        // infinie avant le fix.
+        l.viewport_size_changed(800, 600);
+        l.drain_idles();
+        assert!(l.node(child, WidgetNode::was_allocated));
+    }
 }
