@@ -551,7 +551,9 @@ impl Layout {
                     self.tb_text_width(
                         text,
                         first_char_idx as usize,
-                        (last_char_idx - first_char_idx) as usize,
+                        // verbatim : `len` négatif amont →
+                        // `textWidth` retourne 0 (test `len > 0`).
+                        (last_char_idx - first_char_idx).max(0) as usize,
                         style,
                         is_start_total && first_char_idx == 0,
                         is_end_total && text.get(last_char_idx as usize).is_none(),
@@ -825,7 +827,8 @@ impl Layout {
                     while line_index < tb.lines.len() {
                         let line = tb.lines[line_index].clone();
                         let alloc = l.node(w, |n| n.allocation);
-                        if tb.line_y_offset_widget(&line, &alloc) >= area.y + area.height {
+                        let yo = tb.line_y_offset_widget(&line, &alloc);
+                        if yo >= area.y + area.height {
                             break;
                         }
                         l.tb_draw_line(w, tb, line_index, view, area, context);

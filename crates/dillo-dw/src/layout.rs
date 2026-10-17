@@ -761,8 +761,14 @@ impl Layout {
         }
 
         if self.scroll_idle_id != -1 {
-            // scroll pendant → draw différé après scrollIdle.
+            // scroll pendant → draw différé après scrollIdle. Le
+            // damage reste marqué : chez FLTK `damage()` persiste
+            // jusqu'au prochain expose ; ici `take_damage` consomme —
+            // re-queuer l'aire pour ne pas perdre la passe (canvas
+            // blanc sinon si le scroll ne bouge pas →
+            // `scrollIdle` ne ré-émet pas `queueDrawTotal`).
             self.draw_after_scroll_req = true;
+            view.queue_draw(area);
         } else if let Some(top) = self.top_level {
             let wa = self.node(top, |n| Allocation {
                 width: n.allocation.width,
@@ -2030,6 +2036,10 @@ mod tests {
         viewport: (i32, i32, i32, i32),
         /// `usesViewport`.
         viewport_mode: bool,
+        /// Nb d'ops de dessin reçues (sonde draw).
+        ops: usize,
+        /// Textes dessinés.
+        texts: Vec<String>,
     }
 
     impl RecView {
@@ -2102,6 +2112,7 @@ mod tests {
             _w: i32,
             _h: i32,
         ) {
+            self.ops += 1;
         }
         fn draw_arc(
             &mut self,
@@ -2116,8 +2127,13 @@ mod tests {
             _a2: i32,
         ) {
         }
-        fn draw_polygon(&mut self, _c: &Color, _s: Shading, _f: bool, _cv: bool, _p: &[Point]) {}
-        fn draw_text(&mut self, _f: &Font, _c: &Color, _s: Shading, _x: i32, _y: i32, _t: &[u8]) {}
+        fn draw_polygon(&mut self, _c: &Color, _s: Shading, _f: bool, _cv: bool, _p: &[Point]) {
+            self.ops += 1;
+        }
+        fn draw_text(&mut self, _f: &Font, _c: &Color, _s: Shading, _x: i32, _y: i32, t: &[u8]) {
+            self.ops += 1;
+            self.texts.push(String::from_utf8_lossy(t).into_owned());
+        }
         fn draw_simple_wrapped_text(
             &mut self,
             _f: &Font,
@@ -2151,6 +2167,9 @@ mod tests {
             RecView::viewport()
         }
         fn merge_clipping_view(&mut self, _cv: std::boxed::Box<dyn View>) {}
+        fn as_any(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
     }
 
     /// Layout de test (limit activée).
@@ -2607,5 +2626,59 @@ mod tests {
         l.viewport_size_changed(800, 600);
         l.drain_idles();
         assert!(l.node(child, WidgetNode::was_allocated));
+    }
+
+    /// Régression : un draw pendant `scrollIdle` diffère — le
+    /// damage doit être re-queué sur la vue, sinon `take_damage`
+    /// l'a déjà consommé et `scrollIdle` ne ré-émet
+    /// `queueDrawTotal` que si la position bouge → le contenu
+    /// n'est jamais repeint (canvas blanc après `set_scroll_xy`
+    /// de fin de navigation — bug réel `about:splash`).
+    #[test]
+    fn deferred_draw_during_scroll_requeues_damage() {
+        let mut l = make_layout();
+        l.attach_view(RecView::viewport());
+        let top = l.add_widget_node(WidgetKind::Textblock {
+            tb: Box::new(crate::textblock::TextblockData::new(false, false)),
+        });
+        l.add_widget(top);
+        l.viewport_size_changed(800, 600);
+        l.drain_idles();
+
+        // Scroll en attente ≙ `nav` → `set_scroll_xy` : l'idle
+        // est posée, pas encore drainée → `scroll_idle_id != -1`.
+        l.scroll_to(
+            crate::types::HPosition::NoChange,
+            crate::types::VPosition::Top,
+            0,
+            0,
+            0,
+            0,
+        );
+        assert_ne!(l.scroll_idle_id, -1);
+
+        let mut v = RecView::viewport();
+        let area = Rectangle {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        };
+        l.draw(&mut *v, &area);
+        let rv = v
+            .as_any()
+            .and_then(|a| a.downcast_ref::<RecView>())
+            .expect("recview");
+        assert!(
+            rv.draws.contains(&area),
+            "deferred draw lost the damage: {:?}",
+            rv.draws
+        );
+        assert!(l.draw_after_scroll_req);
+
+        // Une fois l'idle scroll résolu, le damage re-queué permet
+        // le vrai draw.
+        l.drain_idles();
+        assert_eq!(l.scroll_idle_id, -1);
     }
 }
