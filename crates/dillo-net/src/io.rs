@@ -35,6 +35,10 @@ use crate::chain::{
 /// `IORead | IOWrite` (op de l'`IOData_t`).
 pub const IO_READ: i32 = 0;
 pub const IO_WRITE: i32 = 1;
+/// `IOClose` (IO.h) — événement « flux terminé » vers le consommateur.
+pub const IO_CLOSE: i32 = 2;
+/// `IOAbort` (IO.h) — événement « flux avorté ».
+pub const IO_ABORT: i32 = 3;
 
 /// `IOBufLen`.
 pub const IO_BUFLEN: usize = 8192;

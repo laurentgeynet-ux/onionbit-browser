@@ -6,6 +6,8 @@
 
 pub mod about;
 pub mod auth;
+pub mod cache;
+pub mod capi;
 pub mod chain;
 pub mod cookies;
 pub mod decode;
@@ -19,5 +21,7 @@ pub mod hsts;
 pub mod http;
 pub mod io;
 pub mod mime;
+pub mod timeout;
 pub mod tls;
 pub mod url;
+pub mod web;

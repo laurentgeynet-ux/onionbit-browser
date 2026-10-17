@@ -51,14 +51,7 @@ use crate::tls::{
 };
 use crate::url::{flags as url_flags, url_new, DilloUrl};
 
-/// `WEB_RootUrl` (web.hh).
-pub const WEB_ROOT_URL: u32 = 1;
-/// `WEB_Image`.
-pub const WEB_IMAGE: u32 = 2;
-/// `WEB_Stylesheet`.
-pub const WEB_STYLESHEET: u32 = 4;
-/// `WEB_Download`.
-pub const WEB_DOWNLOAD: u32 = 8;
+pub use crate::web::{WEB_DOWNLOAD, WEB_IMAGE, WEB_ROOT_URL, WEB_STYLESHEET};
 
 const HTTP_SOCKET_USE_PROXY: u32 = 0x1;
 const HTTP_SOCKET_QUEUED: u32 = 0x2;
@@ -69,17 +62,36 @@ const HTTP_SOCKET_IOWATCH_ACTIVE: u32 = 0x10;
 /// `MsgSink` — sink `a_UIcmd_set_msg` (status bar / tests).
 type MsgSink = std::cell::RefCell<Box<dyn FnMut(&str)>>;
 
-/// `DilloWeb` — sous-ensemble utilisé par `http.c`.
-/// `valid` ≙ `a_Web_valid` (le web peut mourir entre l'enqueue et la
-/// connexion — abort navigateur) ; `msg` ≙ `MSG_BW` →
+/// `DilloWeb` (web.hh) — la requête vue par `http.c`, `cache.c`, `capi.c`
+/// et `web.cc`. `valid` ≙ `a_Web_valid` (le web peut mourir entre
+/// l'enqueue et la connexion — abort navigateur) ; `msg` ≙ `MSG_BW` →
 /// `a_UIcmd_set_msg` injecté (status bar).
+static NEXT_WEB_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+/// `DilloWeb` (web.hh) — la requête vue par `http.c`, `cache.c`, `capi.c`
+/// et `web.cc`. `valid` ≙ `a_Web_valid` (le web peut mourir entre
+/// l'enqueue et la connexion — abort navigateur) ; `msg` ≙ `MSG_BW` →
+/// `a_UIcmd_set_msg` injecté (status bar). Partagé en `Rc` entre transport
+/// et cache (≙ `DilloWeb*` amont) ; `valid` via `Cell` → invalidation
+/// visible de tous les détenteurs.
 pub struct HttpWeb {
+    /// Identité du web (≙ adresse dans `ValidWebs` amont — la seam de
+    /// dispatch navigateur peut l'utiliser comme clé).
+    pub id: usize,
     /// `web->url` — URL demandée (jamais modifiée par le transport).
     pub url: DilloUrl,
     /// `web->requester` — URL à l'origine de la requête (cookies).
+    /// `None` = action utilisateur (≙ `NULL` amont).
     pub requester: Option<DilloUrl>,
-    /// `web->flags` — `WEB_*` ci-dessus.
+    /// `web->bw` — fenêtre navigateur (handle opaque, résolu côté
+    /// `dillo-browser` via les seams `BrowserOps`/`UiOps`/`NavOps`).
+    pub bw: u32,
+    /// `web->flags` — `WEB_*` (module [`crate::web`]).
     pub flags: u32,
+    /// `web->filename` — destination téléchargement (`WEB_Download`).
+    pub filename: Option<String>,
+    /// `web->SavedBytes` — octets déjà écrits sur disque.
+    pub saved_bytes: usize,
     valid: std::cell::Cell<bool>,
     msg_sink: MsgSink,
 }
@@ -98,9 +110,13 @@ impl HttpWeb {
     #[must_use]
     pub fn new(url: DilloUrl, requester: Option<DilloUrl>, flags: u32) -> Self {
         Self {
+            id: NEXT_WEB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             url,
             requester,
+            bw: 0,
             flags,
+            filename: None,
+            saved_bytes: 0,
             valid: std::cell::Cell::new(true),
             msg_sink: std::cell::RefCell::new(Box::new(|_| {})),
         }

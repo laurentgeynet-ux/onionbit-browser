@@ -219,3 +219,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   DENY→drop, cross-org non-racine→`""`, canal `DpiSend` injecté ≙
   `a_Dpi_send_blocking_cmd`, disabled sans contenu. Flags `URL_*`
   ajoutés à `url.rs` (`URL_Post` pour digest). 18 nouveaux tests.
+- `dillo-net::{timeout,web,cache,capi}` : lot C — glue centrale
+  navigateur. `timeout.cc` : file thread-local one-shot ≙
+  `Fl::add_timeout`, `poll_timeouts` drainé main-thread (réentrant),
+  `a_Timeout_remove` no-op amont porté, `actually_remove` par id.
+  `web.cc` : `dispatch_by_type` — root→seam `WebDispatch`, non-root→
+  `image/*` uniquement (filtre mime, pas `WEB_Image` — quirk amont) ;
+  `ValidWebs` ≙ `HttpWeb::valid` partagé `Rc`/`Cell`. `cache.c` :
+  entrées triées `url_cmp`, clients à clés, `process_dbuf` verbatim
+  (header jusqu'à `\n\n`, strip `\r`/NUL, unfold garde l'espace de
+  continuation — quirk, `100 Continue` reset), `parse_header` complet
+  (30x→REDIRECT/FORCE/TEMP + blocage domainrc/dpi, 401→challenges,
+  Set-Cookie→`cookies_set`, HSTS, Content-Length→GOT_LENGTH, HTTP/1.0
+  retire KEEP_ALIVE, Content-Type hdr/meta/norm/det, Content-
+  Disposition), chaîne transfer→content→charset→`UTF8Data` lazy
+  refcountée, `process_queue` verbatim (dispatch, `AbortEntry`+
+  `OfferDownload`, savelink différé, redirect→`nav.push`+
+  `redirect_level`, page « blocked redirection » `text/html`, auth via
+  timeout 0), delayed queue ≙ `timeout_add(0)`, `about:cache`/
+  `about:dicache` `CA_InternalUrl` jamais retirés. Seams
+  `BrowserOps`/`UiOps`/`NavOps`/`DicacheOps`/`WebDispatch` injectées.
+  `capi.c` : `capi_conn_t`→`Rc<RefCell>` ≙ `Ref`+`CapiConns`, abort
+  différé `pending_abort` si CCC en vol (`RefCell` impose le report ≙
+  synchrone amont), CCC 4 branches verbatim (`"FD"`→sock_fd+relais,
+  `"DpidOK"`→`conn_resume` des `PENDING`, `"DpidERROR"`/`"Both"`,
+  `"send_page_2eof"`→`process_dbuf`+`"reply_complete"`,
+  `send_status_message`/`chat`/`dialog`/`reload_request`→seams,
+  `IO_CLOSE`/`IO_ABORT`→`process_dbuf`) ; `open_url` dispatch
+  (download→fichier/dpi, `url_uses_dpi` verbatim `?`/`bm`→`bookmarks`/
+  `proto.*`, `dpi_verify_request` GET|POST depuis page dpi seulement,
+  `request_permitted` mixed-content https sauf `data:` + domainrc
+  sauf cache-hit, http→2 branches recv-avant-send ≙ course DNS) ;
+  seams `DpiOps`/`dpi_ccc` injectées (phase DPI). 24 nouveaux tests
+  (137 total `dillo-net`).

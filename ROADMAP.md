@@ -120,15 +120,18 @@ prototype phase 0).
       clipboard, cursors) — replaces `dw/fltk*.cc`
 - [ ] `src/ui.cc` chrome (toolbars, tabs via `UI`/`CustTabs`),
       `uicmd.cc`, `keys.cc`+`keysrc`, `menu.cc`, `dialog.cc`,
-      `findbar.cc`, `tipwin.cc`, `timeout.cc`
+      `findbar.cc`, `tipwin.cc` (`timeout.cc` déjà porté dans
+      `dillo-net` — la boucle de drain `poll_timeouts` y est partagée)
 - [ ] `paths.cc`, `dillo.cc` main, `dilloc.c`
 
 **Audit** : `audit-10-platform-ui`
 
 ## Phase 7 — Browser services
 
-- [ ] `cache.c` + `capi.c` (client API, chain glue), `bw.c`
-      (browser windows), `web.cc`
+- [x] `cache.c` + `capi.c` + `web.cc` (dans `dillo-net` — pré-requis
+      du transport/dicache ; seams `BrowserOps`/`UiOps`/`NavOps`/
+      `DicacheOps`/`WebDispatch`/`DpiOps` injectées depuis le futur
+      `dillo-browser`) — reste `bw.c` (browser windows)
 - [ ] `dicache.c`, `imgbuf.cc`, `image.cc` (src) + decoders
       `gif.c`,`png.c`,`jpeg.c`,`webp.c`,`svg.c` → pure-Rust crates
 - [ ] `nav.c`, `history.c`, `bookmark.c`, `auth.c`, `digest.c` (md-5),
