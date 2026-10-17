@@ -383,6 +383,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `[dw]::imgbuf` : receveurs `&self` (mutabilité intérieure ≙
   méthodes appelées via `Imgbuf*` partagés amont) ; `copy_to` prend
   `&dyn Imgbuf`. 8 nouveaux tests (tuilage, bordures, fond).
+### dw-3a — couche OOF (floats)
+- `[dw]::oof` (~3 200 lignes) : `outofflowmgr.hh` (trait `OofMgr`
+  complet), `oofawarewidget.cc/.hh` verbatim (`OofAwareData`,
+  recherche de containers, `notifySetParent`/`notifySetAsTopLevel`,
+  `initOutOfFlowMgrs`, `addWidgetOOF`/`addWidgetInFlow`,
+  `createOOFWidgetRef`, `markSizeChange(Extremes)`,
+  `correctRequisition/ExtremesByOOF`, `sizeAllocateImpl`,
+  `drawOOF`/`getWidgetOOFAtPoint`, `moveExternalIndices`),
+  `oofawarewidget_iterator.cc` (`OofAwareIterator` : sections
+  IN_FLOW→FLOATS→ABS→REL→FIXED, `parent_ref` encodé
+  subRef/oofmIndex bit à bit, `compare` cross-section verbatim),
+  `ooffloatsmgr.cc/.hh` (floats triés left/right bsearch GB,
+  `tellPosition`+clamp, `collides` vertical-puis-horizontal,
+  `getBorder`/`getGB`/`getClearPosition`, `updateGenerators`,
+  `mark*`/`sizeAllocate*`/`getFloatsAtPoint` verbatim),
+  `regardingborder.*` (tag → `is_regarding_border_kind`).
+- `WidgetKind::OofAware` + dispatchs `w_*` dans `widget.rs` ;
+  `detach_widget`/`widget_delete` ≙ `~OOFAwareWidget` (enfants
+  OOF détachés, tombstones d'arène).
+- `IMPL_POS=false` verbatim : mgrs positionnés = `None`
+  (inatteignables amont — `getOOFMIndex`≡FLOATS, consommateurs
+  NULL-check → identique observablement, documenté A08-D1).
+- Seams `SC_BOTTOM`/`SC_TOP` posées pour `stackingcontextmgr`.
+- 19 tests oof (codecs parent_ref, recherche containers,
+  collisions/clear/tellPosition, sections itérateur,
+  détachement). Audit `docs/audits/reports/A08_dw-oof_partial.md`.
 ### dw-1b — imgbuf dw/imgbridge aligné
 - `[dw]::imgbuf` trait complet (`set_cmap`/`copy_row`/`new_scan`/
   `get_scaled_buf`/`get_row_area`/`root_w·h`/`similar_buf`/`copy_to`/

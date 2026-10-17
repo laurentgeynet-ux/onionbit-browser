@@ -116,6 +116,15 @@ pub enum WidgetKind {
         /// Le mot (`const char *text` amont).
         text: Rc<[u8]>,
     },
+    /// `dw::oof::OOFAwareWidget` — widget pouvant servir de
+    /// container et de générateur de widgets hors-flux
+    /// (oof.rs — `RegardingBorder`/Textblock/Table/Ruler
+    /// embarqueront le même `OofAwareData`).
+    OofAware {
+        /// Champs `OOFAwareWidget` (`oofContainer`,
+        /// `outOfFlowMgr`, `requisitionWithoutOOF`).
+        oof: crate::oof::OofAwareData,
+    },
 }
 
 // ------------------------------------------------------------------
@@ -1576,8 +1585,33 @@ impl Layout {
     pub(crate) fn widget_children_for_container_change(&self, w: WidgetId) -> Vec<WidgetId> {
         self.node(w, |n| match &n.kind {
             WidgetKind::Container { children } => children.clone(),
-            WidgetKind::Base | WidgetKind::Text { .. } => Vec::new(),
+            // `OofAware` : les kinds OOF-aware notifient les
+            // enfants OOF via `containerSizeChangedForChildrenOOF`
+            // (contrat oofawarewidget.hh:33) — ici in-flow
+            // seulement (vide pour le kind nu).
+            WidgetKind::Base | WidgetKind::Text { .. } | WidgetKind::OofAware { .. } => Vec::new(),
         })
+    }
+
+    /// Seam enfants pour `detachWidget`/`widget_delete` — ≙
+    /// itération amont `WIDGET_IN_FLOW | WIDGET_OOF_CONT`
+    /// (sections OOF de l'`OOFAwareWidgetIterator` incluses).
+    pub(crate) fn widget_children_for_detach(&self, w: WidgetId) -> Vec<WidgetId> {
+        let mut out = self.widget_children_for_container_change(w);
+        if let Some(oof) = self.node_oof(w, |o| {
+            let mut widgets = Vec::new();
+            for mgr in o.out_of_flow_mgr.iter().flatten() {
+                for i in 0..mgr.borrow().get_num_widgets() {
+                    if let Some(c) = mgr.borrow().get_widget(i) {
+                        widgets.push(c);
+                    }
+                }
+            }
+            widgets
+        }) {
+            out.extend(oof);
+        }
+        out
     }
 
     /// `Widget::iterator` — dispatch `WidgetKind` :
@@ -1594,11 +1628,13 @@ impl Layout {
         enum Dispatch {
             Child(Vec<WidgetId>),
             Text(Rc<[u8]>),
+            OofAware,
             Empty,
         }
         match self.node(w, |n| match &n.kind {
             WidgetKind::Container { children } => Dispatch::Child(children.clone()),
             WidgetKind::Text { text } => Dispatch::Text(text.clone()),
+            WidgetKind::OofAware { .. } => Dispatch::OofAware,
             WidgetKind::Base => Dispatch::Empty,
         }) {
             Dispatch::Child(children) => Box::new(crate::iterator::ChildIterator::new(
@@ -1610,12 +1646,22 @@ impl Layout {
             Dispatch::Text(text) => {
                 Box::new(crate::iterator::TextIterator::new(w, mask, at_end, &text))
             }
+            Dispatch::OofAware => Box::new(crate::oof::OofAwareIterator::new(
+                w,
+                mask,
+                at_end,
+                Box::new(crate::oof::EmptyInFlow),
+                self,
+                0,
+            )),
             Dispatch::Empty => Box::new(crate::iterator::EmptyIterator::new(w, mask, at_end)),
         }
     }
 
     /// `Widget::sizeRequestImpl` — délègue à la variante simple
-    /// (widget.cc:1693 verbatim).
+    /// (widget.cc:1693 verbatim). `OofAware` : +
+    /// `correctRequisitionByOOF` (contrat oofawarewidget.hh:28 ;
+    /// split « tout en ascent » pour le kind nu — seam).
     pub(crate) fn w_size_request_impl(
         &mut self,
         w: WidgetId,
@@ -1627,6 +1673,12 @@ impl Layout {
     ) {
         let _ = (num_pos, references, x, y);
         self.w_size_request_simpl(w, requisition);
+        if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
+            self.correct_requisition_by_oof(w, requisition, |h, a, d| {
+                *a = h;
+                *d = 0;
+            });
+        }
     }
 
     /// `Widget::sizeRequestSimpl` — `notImplemented` amont
@@ -1648,6 +1700,9 @@ impl Layout {
     ) {
         let _ = (num_pos, references, x, y);
         self.w_get_extremes_simpl(w, extremes);
+        if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
+            self.correct_extremes_by_oof(w, extremes);
+        }
     }
 
     /// `Widget::getExtremesSimpl` — `notImplemented` amont →
@@ -1669,7 +1724,15 @@ impl Layout {
     }
 
     /// `Widget::sizeAllocateImpl` — vide amont (widget.cc:1726).
+    /// `OofAware` : `sizeAllocateStart`/`End` autour (contrat
+    /// oofawarewidget.hh:30 — le kind nu n'a pas de contenu
+    /// propre entre les deux).
     pub(crate) fn w_size_allocate_impl(&mut self, w: WidgetId, allocation: &Allocation) {
+        if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
+            self.oof_size_allocate_start(w, allocation);
+            self.oof_size_allocate_end(w);
+            return;
+        }
         let _ = (w, allocation);
     }
 
@@ -1688,13 +1751,20 @@ impl Layout {
         let _ = (w, ref_);
     }
 
-    /// `Widget::notifySetAsTopLevel` / `notifySetParent` — vides.
+    /// `Widget::notifySetAsTopLevel` — vide amont ;
+    /// `OOFAwareWidget` : containing blocks = soi-même
+    /// (oofawarewidget.cc:86).
     pub(crate) fn w_notify_set_as_top_level(&mut self, w: WidgetId) {
-        let _ = w;
+        if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
+            self.oof_notify_set_as_top_level(w);
+        }
     }
-    /// `notifySetParent`.
+    /// `notifySetParent` — vide amont ; `OOFAwareWidget` :
+    /// recherche des containing blocks (oofawarewidget.cc:185).
     pub(crate) fn w_notify_set_parent(&mut self, w: WidgetId) {
-        let _ = w;
+        if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
+            self.oof_notify_set_parent(w);
+        }
     }
 
     /// `Widget::numSizeRequestReferences` — 0 amont (seam —
@@ -1780,8 +1850,14 @@ impl Layout {
     /// `Widget::containerSizeChangedForChildren` — verbatim :
     /// itération `WIDGET_IN_FLOW | WIDGET_OOF_CONT` (seam
     /// `children_for_container_change` tant qu'iterator.cc
-    /// n'est pas porté).
+    /// n'est pas porté). `OofAware` : contrat amont —
+    /// in-flow (vide pour le kind nu) +
+    /// `containerSizeChangedForChildrenOOF`.
     pub(crate) fn w_container_size_changed_for_children(&mut self, w: WidgetId) {
+        if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
+            self.oof_container_size_changed_for_children(w);
+            return;
+        }
         for c in self.widget_children_for_container_change(w) {
             self.widget_container_size_changed(c);
         }
@@ -2048,13 +2124,17 @@ impl Layout {
         area: &crate::types::Rectangle,
         context: &mut DrawingContext,
     ) {
-        let _ = (w, view, area, context);
+        if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
+            self.oof_draw(w, view, area, context);
+        }
     }
 
     /// `Widget::getWidgetAtPoint` — verbatim widget.cc:207 :
     /// widgets simples sans enfants → `self` si `inAllocation`.
     /// `Container` : descend dans les enfants (seam — les kinds
     /// concrets affineront leurs règles de hit-test).
+    /// `OofAware` : niveaux `SL_*` verbatim
+    /// (oofawarewidget.cc:456).
     pub(crate) fn w_get_widget_at_point(
         &mut self,
         w: WidgetId,
@@ -2062,6 +2142,9 @@ impl Layout {
         y: i32,
         context: &mut GettingWidgetAtPointContext,
     ) -> Option<WidgetId> {
+        if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
+            return self.oof_get_widget_at_point(w, x, y, context);
+        }
         let _ = context;
         if !self.node(w, |n| n.in_allocation(x, y)) {
             return None;
@@ -2078,7 +2161,13 @@ impl Layout {
 
     /// `Widget::removeChild` — `notImplemented` amont ; pour
     /// `Container`, retrait verbatim attendu par `~Widget`.
+    /// `OofAware` : assert `isWidgetOOF` verbatim
+    /// (oofawarewidget.cc:540 — corps vide).
     pub(crate) fn w_remove_child(&mut self, w: WidgetId, child: WidgetId) {
+        if self.node(w, |n| crate::oof::is_oof_aware_kind(&n.kind)) {
+            self.oof_remove_child(w, child);
+            return;
+        }
         self.node_mut(w, |n| {
             if let WidgetKind::Container { children } = &mut n.kind {
                 children.retain(|c| *c != child);
@@ -2579,6 +2668,25 @@ impl Layout {
     /// reste dans l'arène sous forme de tombe `Base` (modèle D —
     /// les `WidgetId` restants ne sont pas réutilisés).
     pub fn widget_delete(&mut self, w: WidgetId) {
+        // `~OOFAwareWidget` (oofawarewidget.cc:55) : les widgets
+        // OOF sont détruits avec le container (avant le callback
+        // `~Widget` — verbatim ordre d'exécution amont : corps
+        // de `~OOFAwareWidget` puis `~Widget`).
+        if let Some(oof_children) = self.node_oof(w, |o| {
+            let mut out = Vec::new();
+            for mgr in o.out_of_flow_mgr.iter().flatten() {
+                for i in 0..mgr.borrow().get_num_widgets() {
+                    if let Some(c) = mgr.borrow().get_widget(i) {
+                        out.push(c);
+                    }
+                }
+            }
+            out
+        }) {
+            for c in oof_children {
+                self.widget_delete(c);
+            }
+        }
         self.node_mut(w, WidgetNode::run_delete_callback);
 
         // Renderer externe + style (verbatim ~Widget:120-129).

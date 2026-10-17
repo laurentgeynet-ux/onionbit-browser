@@ -590,7 +590,7 @@ impl Layout {
         let mut stack = vec![widget];
         while let Some(w) = stack.pop() {
             self.arena.borrow_mut().detached.insert(w);
-            for c in self.widget_children_for_container_change(w) {
+            for c in self.widget_children_for_detach(w) {
                 stack.push(c);
             }
         }

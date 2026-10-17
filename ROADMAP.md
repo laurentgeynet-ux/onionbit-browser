@@ -117,9 +117,10 @@ prototype phase 0).
 
 - [ ] `table.cc`/`tablecell`/`simpletablecell`/`alignedtablecell` +
       `table_iterator.cc`
-- [ ] `outofflowmgr.cc`, `oofawarewidget.cc` (+iterator)
-- [ ] `ooffloatsmgr.cc`, `oofposabs{,like}mgr.cc`, `oofposrelmgr.cc`,
-      `oofposfixedmgr.cc`, `oofpositionedmgr.cc`
+- [x] `outofflowmgr.cc`, `oofawarewidget.cc` (+iterator)
+- [x] `ooffloatsmgr.cc` — `oofposabs{,like}mgr.cc`, `oofposrelmgr.cc`,
+      `oofposfixedmgr.cc`, `oofpositionedmgr.cc` = `None` (`IMPL_POS=false`
+      amont : morts et inaccessibles — vrai port si un jour activés)
 - [ ] `stackingcontextmgr.cc`, `regardingborder.cc`
 
 **Audit** : `audit-07-dw-table`, `audit-08-dw-oof`

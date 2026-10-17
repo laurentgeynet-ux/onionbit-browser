@@ -158,16 +158,17 @@ Légende cible : `[common]`=dillo-common · `[net]`=dillo-net ·
 | `dw/simpletablecell.cc` + `.hh` | `[dw]::table` | not started | |
 | `dw/alignedtablecell.cc` + `.hh` | `[dw]::table` | not started | |
 | `dw/table_iterator.cc` | `[dw]::table` | not started | |
-| `dw/outofflowmgr.cc` + `.hh` | `[dw]::oof` | not started | mgr OOF générique |
-| `dw/oofawarewidget.cc` + `.hh` + `oofawarewidget_iterator.cc` | `[dw]::oof` | not started | |
-| `dw/ooffloatsmgr.cc` + `.hh` | `[dw]::oof::floats` | not started | floats |
-| `dw/oofpositionedmgr.cc` + `.hh` | `[dw]::oof::pos` | not started | |
-| `dw/oofposabsmgr.cc` + `.hh` | `[dw]::oof::abs` | not started | |
-| `dw/oofposabslikemgr.cc` + `.hh` | `[dw]::oof::abslike` | not started | |
-| `dw/oofposrelmgr.cc` + `.hh` | `[dw]::oof::rel` | not started | |
-| `dw/oofposfixedmgr.cc` + `.hh` | `[dw]::oof::fixed` | not started | |
-| `dw/stackingcontextmgr.cc` + `.hh` | `[dw]::stacking` | not started | z-order |
-| `dw/regardingborder.cc` + `.hh` | `[dw]::border` | not started | |
+| `dw/outofflowmgr.cc` + `.hh` | `[dw]::oof` | ported | trait `OofMgr` (getSize/getExtremes/addWidgetOOF/sizeAllocate*/tellPosition/markSizeChange/markExtremesChange/getLeftOOFBorder/getRightOOFBorder/hasClearLeft/Right/moveExternalIndices/getClearPosition/sizeAllocate*/draw/getWidgetAtPoint/containerMustAdjustExtraSpace/containerSizeChangedForChildren/doWidgetsOverlap), index OOFM_* + `OOFM_NAME` verbatim |
+| `dw/oofawarewidget.cc` + `.hh` + `oofawarewidget_iterator.cc` | `[dw]::oof` | ported | `OofAwareData` (oofContainer/outOfFlowMgr dans le kind), `getOOFContainer`/`getOOFContainerParent`/`getOOFMIndex`/`getWidgetOOF`/`getWidgetOOFInFlow`/`notifySetParent`/`notifySetAsTopLevel`/`initOutOfFlowMgrs`/`addWidgetOOF`/`addWidgetInFlow`/`ensureOOFReferences`/`createOOFWidgetRef`/`markSizeChange(Extremes)`/`containerSizeChangedForChildren`/`sizeAllocateImpl`/`correctRequisitionByOOF`/`correctExtremesByOOF`/`drawOOF`/`getWidgetOOFAtPoint`/`doesWidgetOOFInterruptDrawing`/`oofSizeChanged`/`moveExternalIndices` verbatim + `OofAwareIterator` (sections IN_FLOW→FLOATS→ABS→REL→FIXED, parentRef encodé subRef/oofmIndex, compare cross-mgr verbatim) ; `~OOFAwareWidget` ≙ `widget_delete` (destruction enfants OOF) |
+| `dw/ooffloatsmgr.cc` + `.hh` | `[dw]::oof::floats` | ported | `OofFloatsMgr` : floats triés left/right (bsearch GB compare verbatim, `findFloatIndex`/`findInList` dichotomie), `Float` arena (realSize/realCBAllocation/generators/dirty/covers/accumulateHeight), `t1` initial + `updateGenerators`/`createGenerator`, `tellPosition` (side lists, `ensureFloatSize`/`isAllocated`, clamp largeur verbatim), `collides`/`getSide`/`getCombinedPosition`, `getBorder`/`getGB`/`getClearPosition`, `getSize`/`getExtremes`/`addWidgetOOF`/`mark*`/`moveExternalIndices`/`getFloatsAtPoint`/`sizeAllocate*` verbatim |
+| `dw/oofpositionedmgr.cc` + `.hh` | `[dw]::oof` | ported | `IMPL_POS=false` amont : instancié vide et **inaccessible** (`getOOFMIndex`≡FLOATS ou assert) → `None` dans `out_of_flow_mgr` (consommateurs NULL-check amont → identique observablement) ; vrai port si `IMPL_POS` un jour |
+| `dw/oofposabsmgr.cc` + `.hh` | `[dw]::oof` | ported | idem — `None` (mort amont, `IMPL_POS=false`) |
+| `dw/oofposabslikemgr.cc` + `.hh` | `[dw]::oof` | ported | idem — `None` |
+| `dw/oofposrelmgr.cc` + `.hh` | `[dw]::oof` | ported | idem — `None` |
+| `dw/oofposfixedmgr.cc` + `.hh` | `[dw]::oof` | ported | idem — `None` |
+| `dw/stackingcontextmgr.cc` + `.hh` | `[dw]::stacking` | not started | z-order — seams `SC_BOTTOM`/`SC_TOP` posées dans `oof.rs` |
+| `dw/regardingborder.cc` + `.hh` | `[dw]::oof` | ported | tag interface vide amont (ctor/dtor debug only) → `is_regarding_border_kind` |
+| `dw/tools.cc` + `.hh` | `[dw]::tools` | not started | misc draw helpers |
 | `dw/tools.cc` + `.hh` | `[dw]::tools` | not started | misc draw helpers |
 
 ## dw/ — couche FLTK (remplacée, ADR-0002)

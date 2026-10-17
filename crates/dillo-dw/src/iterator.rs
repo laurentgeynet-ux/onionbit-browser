@@ -155,10 +155,7 @@ pub fn iterator_scroll_to(
             x2 = x1 + layout.get_width_viewport();
         }
     }
-    if alloc1.y > alloc2.y
-        && layout.get_uses_viewport()
-        && y2 - y1 > layout.get_height_viewport()
-    {
+    if alloc1.y > alloc2.y && layout.get_uses_viewport() && y2 - y1 > layout.get_height_viewport() {
         y1 = y2 - layout.get_height_viewport();
         y2 = y1 + layout.get_height_viewport();
     }

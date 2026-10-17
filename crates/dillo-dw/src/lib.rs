@@ -16,6 +16,7 @@ pub mod imgbuf;
 pub mod imgrenderer;
 pub mod iterator;
 pub mod layout;
+pub mod oof;
 pub mod platform;
 pub mod style;
 pub mod tools;
