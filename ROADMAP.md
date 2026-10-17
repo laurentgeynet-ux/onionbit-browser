@@ -209,15 +209,21 @@ prototype phase 0).
 
 ## Phase 8 — DPI subsystem
 
-- [ ] `dpip/dpip.c` → `dillo-dpi` protocol lib (byte-exact framing)
-- [ ] `dpid/*` → daemon (unix socket dir + Windows named-pipe
-      equivalent, service registry)
-- [ ] `dpi/*` plugins : `file.c`, `datauri.c`, `downloads.cc`,
-      `bookmarks.c`, `cookies.c`, `vsource.c`, `hello.c`, `ftp.c`,
-      `dpiutil.c`
-- [ ] `src/IO/dpi.c` client side
+- [x] `dpip/dpip.c` → `dillo-net::dpip` (client) +
+      `dillo-dpi::dpip` (serveur : `DpIo`/`DpIoTcp`/`DpIoSock`,
+      `Dsh` tokens/modes/`check_auth`) — framing byte-exact
+- [x] `dpid/*` → `dillo-dpi::{dpid,dpid_common}` + bins
+      `dillo-dpid`/`dillo-dpidc` (registry `*:` wildcards,
+      spawn-on-demand, socket dir, boucle select→tokio)
+- [x] `dpi/*` plugins : `file.c`→`dpi-file`, `datauri.c`→
+      `dpi-datauri`, `downloads.cc`→`dlitem`+`dpi-downloads`
+      (fenêtre native ≙ FLTK — ADR-0002), `bookmarks.c`→
+      `bookmarks`+`dpi-bookmarks`, `cookies.c`→`cookies`+
+      `dpi-cookies`, `vsource.c`→`dpi-vsource`, `hello.c`→
+      `dpi-hello`, `ftp.c`→`dpi-ftp`, `dpiutil.c`→`dpiutil`
+- [x] `src/IO/dpi.c` client side → `dillo-net::dpi`
 
-**Audit** : `audit-12-dpi`
+**Audit** : `audit-12-dpi` — rapport `A12_dpi.md`
 
 ## Phase 9 — Hardening & release
 

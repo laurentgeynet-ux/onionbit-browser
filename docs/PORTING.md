@@ -234,7 +234,9 @@ amont remplacé par Cargo).
 
 | Statut | Fichiers |
 |---|---|
-| not started | ~150 lignes de mapping |
-| ported | 0 |
+| not started | 0 |
+| in progress | 0 |
+| deferred | fltkpreview.cc (print preview — non requis pour le rendu) |
+| ported | 138 lignes de mapping |
 | verified | 0 |
-| won't port | tls_mbedtls, tls_openssl, md5.c, nanosvg*.h, xembed.cc, preview.xbm, build/meta |
+| won't port | tls_mbedtls, tls_openssl, md5.c, nanosvg*.h, xembed.cc, preview.xbm, lout macros/containers génériques, proto.c (vide amont), dpidrc.in, build/meta |
