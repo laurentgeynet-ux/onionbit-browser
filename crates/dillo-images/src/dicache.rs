@@ -555,7 +555,7 @@ pub fn dicache_image(
     if web.image.borrow().is_none() {
         let (rndr, dpi) =
             IMAGE_FACTORY.with(|f| f.borrow_mut().as_mut().map(|f| f.new_image(web)))?;
-        let img = image_new(0, rndr, web.bg_color, 0, dpi);
+        let img = image_new(0, rndr, web.bg_color.get(), 0, dpi);
         let _ = image_ref(&img);
         *web.image.borrow_mut() = Some(img as Rc<dyn std::any::Any>);
     }

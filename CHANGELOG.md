@@ -7,6 +7,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- chrome-4 (phase 6, fin du shell) — **le binaire `dillo` est réel** :
+  `dillo.rs` main verbatim `dillo.cc` (table `Options`/`getCmdOption`,
+  `makeStartUrl` F_OK→`file:/`, ordre verbatim des `a_*_init` :
+  paths→prefs(dillorc)→keysrc→domainrc→capi→dicache→cookies→hsts→
+  auth→control→StyleEngine UA→`gen_about_keys`→réglages dw→overrides
+  CLI→factory moteurs tokio→fenêtre initiale→boucle→`*_freeall`),
+  `dilloc.rs` verbatim `dilloc.c` (socket `~/.dillo/ctl/<pid>`,
+  forward stdin, code retour 1er octet), `dillo-net::control` verbatim
+  `control.c` (machine d'état, seams `CtlIo`/`CtlOps`, `wait` différé),
+  `dillo-browser::doc` (dispatch MIME→viewers ≙ `a_Web_dispatch_by_type`
+  + `Html_callback`/`Plain_callback`, `DocImageFactory` ≙
+  `a_Image_new_with_dw`, file `GlueOp` ≙ appels UI synchrones amont
+  reportés au tick), `dillo-browser::glue` (`ShellGlue` complet :
+  événements→chrome verbatim `UI::handle`/`CustTabs`, pompe réseau
+  `capi_poll`+`poll_timeouts`+`Control::poll` par tick,
+  `wake_after`≙`Fl::wait(0.01)`, `CtlOps`, `WinOp` fenêtres natives).
+  `DwApp` multi-fenêtres (`DwWin` par fenêtre ≙ `Fl_Double_Window`,
+  tombstones ≙ ids stables, `new_empty`≙main amont, `set_shell`,
+  `ControlFlow::WaitUntil` ≙ `Fl::wait(timeout)`). `BwRegistry`
+  mutabilité intérieure + tombstones ≙ `BrowserWindow*` stables amont.
+  Déviations documentées : `-x` xembed rejeté (X11), signaux
+  SIGUSR1/2 non câblés (reload via `dilloc`), `-geometry` verbatim.
+
 - `dillo-browser` (phase 6, lot chrome-1) : glue navigateur —
   `bw.rs` (`src/bw.c` verbatim : `BrowserWindow` à mutabilité
   intérieure ≙ pointeur nu amont, `BwRegistry` ≙ `bws`/`num_bws`,

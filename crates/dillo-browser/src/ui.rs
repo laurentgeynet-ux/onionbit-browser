@@ -38,6 +38,7 @@ use std::rc::Rc;
 use dillo_common::utf8::end_of_char;
 use dillo_dw::layout::Layout;
 use dillo_dw::platform::Platform;
+use dillo_dw::view::View;
 use dillo_net::url::DilloUrl;
 use dillo_platform::platform::SkiaPlatform;
 use dillo_platform::view::{SharedView, SkiaView};
@@ -699,6 +700,9 @@ pub struct Ui {
     /// Vue de l'onglet (back-buffer propre ≙ `FltkViewport` par tab —
     /// seul le pixmap de l'onglet actif est présenté).
     pub view: Rc<RefCell<SkiaView>>,
+    /// Scrollbars de l'onglet (≙ `Fl_Scrollbar` enfants du viewport
+    /// amont) — hit/drag/draw dans le pixmap de [`Ui::view`].
+    pub scroll: dillo_platform::app::ScrollbarGlue,
     /// `Location` textsize (`rint(14*font_factor)`).
     pub loc_font_px: i32,
 }
@@ -750,6 +754,7 @@ impl Ui {
             p_xpos: 0,
             p_ypos: 0,
             view: Rc::new(RefCell::new(SkiaView::new(platform, 1, 1))),
+            scroll: dillo_platform::app::ScrollbarGlue::default(),
             loc_font_px: (14.0 * prefs.font_factor).round() as i32,
         };
         if let Some(cur) = cur_ui {
@@ -1897,6 +1902,46 @@ pub struct Win {
     pub pos: Option<(i32, i32)>,
 }
 
+/// Effet de bord natif demandé par [`Chrome`] — drainé par le driver
+/// [`crate::glue`] vers `DwApp` (≙ appels `Fl_Window` amont : la
+/// création winit réelle est différée à la passe d'events).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WinOp {
+    /// `new Fl_Window(w, h)` + `win->show()` (≙ `window_new` +
+    /// `window_show` verbatim — création = présentation côté winit).
+    Open {
+        /// Handle `tabs` (index stable dans [`Chrome`]).
+        tabs: usize,
+        /// Taille demandée.
+        w: i32,
+        /// Taille demandée.
+        h: i32,
+    },
+    /// `win->position(x, y)` (prefs `xpos`/`ypos`).
+    Position {
+        /// Handle `tabs`.
+        tabs: usize,
+        /// Position écran (px).
+        x: i32,
+        /// Position écran (px).
+        y: i32,
+    },
+    /// `delete win` — dernier onglet fermé (`win_cb`/`close_bw`).
+    Close {
+        /// Handle `tabs`.
+        tabs: usize,
+    },
+    /// `win->copy_label(title)` (≙ `UIcmd_set_window_labels`).
+    SetTitle {
+        /// Handle `tabs`.
+        tabs: usize,
+        /// Titre.
+        title: String,
+    },
+    /// `Fl::flush()` ≙ redraw de toutes les fenêtres vivantes.
+    RedrawAll,
+}
+
 /// Implémentation concrète de [`UiShell`] — registre des fenêtres/
 /// onglets/UIs (≙ globaux `tabgroups` + FLTK amont). Les widgets
 /// sont logiques ; le dessin passe par [`Chrome::draw_window`].
@@ -1907,8 +1952,14 @@ pub struct Chrome {
     prefs: Rc<RefCell<Prefs>>,
     /// `ui` handles → `Ui` (sparse : `Vec<Option<Ui>>`).
     uis: Vec<Option<Ui>>,
-    /// Fenêtres (≙ `tabgroups`).
-    wins: Vec<Win>,
+    /// Fenêtres (≙ `tabgroups`) — **tombstones** : `None` = fenêtre
+    /// détruite, les index `tabs` restent stables pour le mapping
+    /// `DwApp` (verbatim : les `Fl_Window*` amont sont des pointeurs
+    /// stables, jamais réalloués).
+    wins: Vec<Option<Win>>,
+    /// Effets de bord natifs en attente — drainés par le driver
+    /// ([`crate::glue`] → `DwApp`). En tests : lus, jamais appliqués.
+    pub app_ops: std::collections::VecDeque<WinOp>,
     /// Compteur de handles `ui`/`tabs` (1-based).
     next_handle: usize,
     /// Layouts par ui (≙ `bw->render_layout` côté shell).
@@ -1923,10 +1974,12 @@ pub struct Chrome {
     deferred_close_all: bool,
     /// Répertoire de lancement (`Paths::getOldWorkingDir`).
     old_cwd: Vec<u8>,
-    /// `a_Control_is_waiting` (dilloc) — posé par le shell binaire.
-    control_waiting: bool,
+    /// `a_Control_is_waiting`/`a_Control_notify_finish` (dilloc) —
+    /// la machine [`Control`] injectée par le binaire (amont :
+    /// globaux `bw_waiting`/`bw_waiting_req`).
+    control: Option<Rc<RefCell<dillo_net::control::Control>>>,
     /// Chat `bookmarks` dpi (état de fonction amont → instance shell).
-    bookmarks: crate::bookmark::Bookmarks,
+    pub(crate) bookmarks: crate::bookmark::Bookmarks,
     /// Globaux `popup_*`/`history_*`/`current_page_url` amont + file
     /// des popups différés (≙ `a_Timeout_add(0, Menu_popup_cb)`).
     pub menus: MenuCtx,
@@ -1974,6 +2027,7 @@ impl Chrome {
             prefs,
             uis: Vec::new(),
             wins: Vec::new(),
+            app_ops: std::collections::VecDeque::new(),
             next_handle: 1,
             layouts: HashMap::new(),
             icons_std: IconSet::new(false, bg),
@@ -1983,7 +2037,7 @@ impl Chrome {
             old_cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned().into_bytes())
                 .unwrap_or_default(),
-            control_waiting: false,
+            control: None,
             bookmarks: crate::bookmark::Bookmarks::default(),
             menus: MenuCtx::default(),
             tipwin: TipWin::new(show_tip),
@@ -1996,6 +2050,12 @@ impl Chrome {
             keys: Keys::new(),
             docdir: std::path::PathBuf::new(),
         }
+    }
+
+    /// `Rc` plateforme partagée (clipboard/fontes — seam glue).
+    #[must_use]
+    pub fn platform_rc(&self) -> &Rc<RefCell<SkiaPlatform>> {
+        &self.platform
     }
 
     /// Injecte le `DialogRunner` natif (fenêtres modales de l'app).
@@ -2019,7 +2079,7 @@ impl Chrome {
     pub fn popup_dispatch(
         &mut self,
         uicmd: &UiCmd,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         popup: &mut menu::Popup,
         item: usize,
         sub: Option<usize>,
@@ -2062,9 +2122,10 @@ impl Chrome {
         self.old_cwd = dir;
     }
 
-    /// `a_Control_set_waiting` (dilloc `--remote`).
-    pub fn set_control_waiting(&mut self, w: bool) {
-        self.control_waiting = w;
+    /// Injecte la machine [`dillo_net::control::Control`] du binaire ≙ `a_Control_init`
+    /// (les globaux `bw_waiting`/`bw_waiting_req` y vivent).
+    pub fn set_control(&mut self, ctl: Rc<RefCell<dillo_net::control::Control>>) {
+        self.control = Some(ctl);
     }
 
     /// Vide les ops différées (≙ `a_Timeout_add(0)` — l'app draine
@@ -2094,13 +2155,14 @@ impl Chrome {
     fn tabs_mut_of(&mut self, ui: usize) -> Option<&mut Tabs> {
         self.wins
             .iter_mut()
+            .flatten()
             .find(|w| w.tabs.get_btn_idx(ui) >= 0)
             .map(|w| &mut w.tabs)
     }
 
     /// Index fenêtre d'un handle `tabs`.
     fn win_of_tabs(&mut self, tabs: usize) -> Option<&mut Win> {
-        self.wins.get_mut(tabs)
+        self.wins.get_mut(tabs).and_then(|w| w.as_mut())
     }
 
     /// `a_UIcmd_get_bw_by_widget` — `wid` = handle `ui` (nos widgets
@@ -2177,23 +2239,36 @@ impl Chrome {
 impl UiShell for Chrome {
     fn window_new(&mut self, w: i32, h: i32) -> usize {
         let th = self.prefs.borrow().ui_tab_height;
-        self.wins.push(Win {
+        // Slot stable : réutilise une tombstone sinon append (≙
+        // pointeur `Tabgroup*` amont — jamais réalloué).
+        let idx = self
+            .wins
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or_else(|| {
+                self.wins.push(None);
+                self.wins.len() - 1
+            });
+        self.wins[idx] = Some(Win {
             tabs: Tabs::new(w, h, th),
             title: String::new(),
             pos: None,
         });
-        self.wins.len() - 1
+        self.app_ops.push_back(WinOp::Open { tabs: idx, w, h });
+        idx
     }
 
     fn window_show(&mut self, _tabs: usize) {
-        // `win->show()` — effectué par l'app (winit Window visible
-        // dès `resumed` ; marqueur pour verbatim).
+        // `win->show()` — la création winit matérialisée par
+        // `WinOp::Open` au drain est aussi la présentation (verbatim
+        // : la fenêtre apparaît après le premier onglet).
     }
 
     fn window_position(&mut self, tabs: usize, x: i32, y: i32) {
         if let Some(w) = self.win_of_tabs(tabs) {
             w.pos = Some((x, y));
         }
+        self.app_ops.push_back(WinOp::Position { tabs, x, y });
     }
 
     fn tab_ui_new(
@@ -2245,7 +2320,7 @@ impl UiShell for Chrome {
         self.layouts.insert(id, layout.clone());
 
         let mut title_ui = None;
-        if let Some(w) = self.wins.get_mut(tabs) {
+        if let Some(w) = self.win_of_tabs(tabs) {
             let lw = |s: &str| text_w(s, 12);
             if w.tabs.add_new_tab(id, focus, lw) {
                 // strip apparu — rien à faire côté modèle
@@ -2259,7 +2334,7 @@ impl UiShell for Chrome {
     }
 
     fn tab_ui_remove(&mut self, ui: usize) {
-        for w in &mut self.wins {
+        for w in self.wins.iter_mut().flatten() {
             if w.tabs.get_btn_idx(ui) >= 0 {
                 w.tabs.remove_tab(ui);
                 break;
@@ -2269,16 +2344,27 @@ impl UiShell for Chrome {
             *u = None;
         }
         self.layouts.remove(&ui);
-        // verbatim : `num_tabs()==0` → delete tabgroup + window.
-        self.wins.retain(|w| w.tabs.num_tabs() > 0);
+        // verbatim : `num_tabs()==0` → delete tabgroup + window
+        // (tombstone — index stables) + effet de bord natif.
+        for (i, slot) in self.wins.iter_mut().enumerate() {
+            if slot.as_ref().is_some_and(|w| w.tabs.num_tabs() == 0) {
+                *slot = None;
+                self.app_ops.push_back(WinOp::Close { tabs: i });
+            }
+        }
     }
 
     fn tab_count(&self, tabs: usize) -> i32 {
-        self.wins.get(tabs).map_or(0, |w| w.tabs.num_tabs() as i32)
+        self.wins
+            .get(tabs)
+            .and_then(|w| w.as_ref())
+            .map_or(0, |w| w.tabs.num_tabs() as i32)
     }
 
     fn tabs_of(&self, ui: usize) -> Option<usize> {
-        self.wins.iter().position(|w| w.tabs.get_btn_idx(ui) >= 0)
+        self.wins
+            .iter()
+            .position(|w| w.as_ref().is_some_and(|w| w.tabs.get_btn_idx(ui) >= 0))
     }
 
     fn switch_tab(&mut self, tabs: usize, index: i32) {
@@ -2313,18 +2399,26 @@ impl UiShell for Chrome {
     }
 
     fn is_active_tab(&self, ui: usize) -> bool {
-        self.wins.iter().any(|w| w.tabs.value() == Some(ui))
+        self.wins
+            .iter()
+            .flatten()
+            .any(|w| w.tabs.value() == Some(ui))
     }
 
     fn tabs_active_ui(&self, tabs: usize) -> usize {
         self.wins
             .get(tabs)
+            .and_then(|w| w.as_ref())
             .and_then(|w| w.tabs.value())
             .unwrap_or(0)
     }
 
     fn active_ui_handles(&self) -> Vec<usize> {
-        self.wins.iter().filter_map(|w| w.tabs.value()).collect()
+        self.wins
+            .iter()
+            .flatten()
+            .filter_map(|w| w.tabs.value())
+            .collect()
     }
 
     fn ui_contains(&self, ui: usize, wid: usize) -> bool {
@@ -2341,6 +2435,7 @@ impl UiShell for Chrome {
     fn ui_label(&self, ui: usize) -> String {
         self.wins
             .iter()
+            .flatten()
             .find_map(|w| {
                 w.tabs
                     .pack
@@ -2360,8 +2455,18 @@ impl UiShell for Chrome {
     }
 
     fn set_window_title(&mut self, ui: usize, title: &str) {
-        if let Some(w) = self.wins.iter_mut().find(|w| w.tabs.get_btn_idx(ui) >= 0) {
-            w.title = title.to_string();
+        let tabs = self
+            .wins
+            .iter()
+            .position(|w| w.as_ref().is_some_and(|w| w.tabs.get_btn_idx(ui) >= 0));
+        if let Some(t) = tabs {
+            if let Some(w) = self.win_of_tabs(t) {
+                w.title = title.to_string();
+            }
+            self.app_ops.push_back(WinOp::SetTitle {
+                tabs: t,
+                title: title.to_string(),
+            });
         }
     }
 
@@ -2630,16 +2735,23 @@ impl UiShell for Chrome {
         self.old_cwd.clone()
     }
     fn control_is_waiting(&self) -> bool {
-        self.control_waiting
+        self.control
+            .as_ref()
+            .is_some_and(|c| c.borrow().is_waiting())
     }
-    fn control_notify_finish(&mut self, _bw: u32) {
-        self.control_waiting = false;
+    fn control_notify_finish(&mut self, bw: u32) {
+        // verbatim `a_Control_notify_finish` — la réponse `0\n`
+        // est écrite au prochain `Control::poll` (writable).
+        if let Some(c) = &self.control {
+            let _ = c.borrow_mut().notify_finish(bw);
+        }
     }
     fn add_bookmark(&mut self, bw: u32, url: &DilloUrl) {
         self.bookmarks.add(bw, &mut url.clone());
     }
     fn flush(&mut self) {
-        // ≙ Fl::flush — la présentation est faite par l'app.
+        // ≙ `Fl::flush` — redraw de toutes les fenêtres vivantes.
+        self.app_ops.push_back(WinOp::RedrawAll);
     }
     fn defer_nav(&mut self, bw: u32, op: NavOp) {
         self.deferred_nav.push((bw, op));
@@ -2723,7 +2835,7 @@ impl Ui {
 /// temporaire se replie (`temporaryPanels` → `panels_toggle`).
 pub fn location_commit(
     uicmd: &UiCmd,
-    reg: &mut BwRegistry,
+    reg: &BwRegistry,
     shell: &mut Chrome,
     prefs: &Prefs,
     bw: u32,
@@ -2743,7 +2855,7 @@ pub fn location_commit(
 /// `KeysCommand` vers `a_UIcmd_*`. Retourne `true` si consommé.
 pub fn ui_shortcut(
     uicmd: &UiCmd,
-    reg: &mut BwRegistry,
+    reg: &BwRegistry,
     shell: &mut Chrome,
     prefs: &Prefs,
     bw: u32,
@@ -2825,7 +2937,7 @@ pub fn ui_shortcut(
 /// shift/ctrl/alt. Retourne `true` si consommé, `false` → remonter.
 pub fn cust_input_key(
     uicmd: &UiCmd,
-    reg: &mut BwRegistry,
+    reg: &BwRegistry,
     shell: &mut Chrome,
     prefs: &Prefs,
     bw: u32,
@@ -3393,7 +3505,9 @@ impl Chrome {
     /// l'onglet actif + blit de sa vue contenu dans `Main`
     /// (≙ `Fl_Window::draw` + `FltkViewport` présentation).
     pub fn draw_window(&mut self, tabs: usize, pm: &mut dillo_platform::tiny_skia::Pixmap) {
-        let Some(w) = self.wins.get(tabs) else { return };
+        let Some(w) = self.wins.get(tabs).and_then(|w| w.as_ref()) else {
+            return;
+        };
         let prefs = self.prefs.borrow();
         let fg_def = if prefs.ui_fg_color != -1 {
             prefs.ui_fg_color as u32
@@ -3486,33 +3600,83 @@ impl Chrome {
         }
     }
 
+    /// Layout d'un `ui` (≙ `bw->render_layout` côté shell).
+    #[must_use]
+    pub fn layout_of(&self, ui: usize) -> Option<Rc<RefCell<Layout>>> {
+        self.layouts.get(&ui).cloned()
+    }
+
+    /// Repose les rects `Ui` d'une fenêtre après resize ou bascule
+    /// du strip (verbatim : `Wizard->resize` cascade `UI::resize` →
+    /// `rearrange` + viewport `resize` → `layoutViewportSizeChanged`).
+    pub fn layout_win(&mut self, tabs: usize, w: i32, h: i32) {
+        let Some(win) = self.wins.get_mut(tabs).and_then(|w| w.as_mut()) else {
+            return;
+        };
+        win.tabs.win_w = w;
+        win.tabs.win_h = h;
+        let ctab_h = win.tabs.ctab_h;
+        let ids: Vec<usize> = win.tabs.pack.iter().map(|b| b.ui).collect();
+        for ui in ids {
+            if let Some(u) = self.ui_mut(ui) {
+                u.rect = Rect {
+                    x: 0,
+                    y: ctab_h,
+                    w,
+                    h: h - ctab_h,
+                };
+                u.win_w = w;
+                u.win_h = h - ctab_h;
+                u.rearrange();
+                u.set_main_rect();
+                let (mw, mh) = (u.main.w, u.main.h);
+                u.view.borrow_mut().queue_draw_total();
+                if let Some(l) = self.layouts.get(&ui) {
+                    l.borrow_mut().viewport_size_changed(mw, mh);
+                }
+            }
+        }
+    }
+
     /// `Tabs` d'une fenêtre (lecture — hit-test event).
     #[must_use]
     pub fn tabs(&self, tabs: usize) -> Option<&Tabs> {
-        self.wins.get(tabs).map(|w| &w.tabs)
+        self.wins
+            .get(tabs)
+            .and_then(|w| w.as_ref())
+            .map(|w| &w.tabs)
     }
 
     /// `Tabs` mutable.
     pub fn tabs_mut(&mut self, tabs: usize) -> Option<&mut Tabs> {
-        self.wins.get_mut(tabs).map(|w| &mut w.tabs)
+        self.wins
+            .get_mut(tabs)
+            .and_then(|w| w.as_mut())
+            .map(|w| &mut w.tabs)
     }
 
     /// Nombre de fenêtres ouvertes.
     #[must_use]
     pub fn win_count(&self) -> usize {
-        self.wins.len()
+        self.wins.iter().flatten().count()
     }
 
     /// Titre courant d'une fenêtre.
     #[must_use]
     pub fn win_title(&self, tabs: usize) -> Option<&str> {
-        self.wins.get(tabs).map(|w| w.title.as_str())
+        self.wins
+            .get(tabs)
+            .and_then(|w| w.as_ref())
+            .map(|w| w.title.as_str())
     }
 
     /// Position demandée d'une fenêtre (`prefs.xpos/ypos` appliqués).
     #[must_use]
     pub fn win_pos(&self, tabs: usize) -> Option<(i32, i32)> {
-        self.wins.get(tabs).and_then(|w| w.pos)
+        self.wins
+            .get(tabs)
+            .and_then(|w| w.as_ref())
+            .and_then(|w| w.pos)
     }
 }
 
@@ -3537,7 +3701,7 @@ pub const MOUSE_RIGHT: i32 = 3;
 #[allow(clippy::too_many_arguments)]
 pub fn chrome_widget(
     uicmd: &UiCmd,
-    reg: &mut BwRegistry,
+    reg: &BwRegistry,
     shell: &mut Chrome,
     prefs: &RefCell<Prefs>,
     bw: u32,
@@ -3718,7 +3882,7 @@ pub fn chrome_widget(
 /// Retourne `true` si consommé par la barre.
 pub fn findbar_key(
     uicmd: &UiCmd,
-    reg: &mut BwRegistry,
+    reg: &BwRegistry,
     shell: &mut Chrome,
     bw: u32,
     key: i32,
@@ -4301,23 +4465,16 @@ mod tests {
         let p = platform();
         let prefs = Rc::new(RefCell::new(Prefs::default()));
         let mut c = Chrome::new(p, Rc::clone(&prefs));
-        let mut reg = BwRegistry::new();
+        let reg = BwRegistry::new();
         let uicmd = UiCmd::new(&Prefs::default());
         let pr = prefs.borrow();
-        let bw = uicmd.browser_window_new(&mut reg, &mut c, &pr, 800, 600, None);
+        let bw = uicmd.browser_window_new(&reg, &mut c, &pr, 800, 600, None);
         let ui_id = reg.get(bw).unwrap().ui.get();
         // Nop → consommé sans effet ; invalid bw → non consommé
-        assert!(ui_shortcut(
-            &uicmd,
-            &mut reg,
-            &mut c,
-            &pr,
-            bw,
-            KeysCommand::Nop
-        ));
+        assert!(ui_shortcut(&uicmd, &reg, &mut c, &pr, bw, KeysCommand::Nop));
         assert!(!ui_shortcut(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             &pr,
             999,
@@ -4325,7 +4482,7 @@ mod tests {
         ));
         // HidePanels → panels toggled
         let before = c.ui(ui_id).unwrap().panel_mode;
-        ui_shortcut(&uicmd, &mut reg, &mut c, &pr, bw, KeysCommand::HidePanels);
+        ui_shortcut(&uicmd, &reg, &mut c, &pr, bw, KeysCommand::HidePanels);
         assert_ne!(c.ui(ui_id).unwrap().panel_mode, before);
     }
 
@@ -4337,21 +4494,21 @@ mod tests {
         let p = platform();
         let prefs = Rc::new(RefCell::new(Prefs::default()));
         let mut c = Chrome::new(p, Rc::clone(&prefs));
-        let mut reg = BwRegistry::new();
+        let reg = BwRegistry::new();
         let uicmd = UiCmd::new(&Prefs::default());
         let pr = prefs.borrow();
-        let bw = uicmd.browser_window_new(&mut reg, &mut c, &pr, 800, 600, None);
+        let bw = uicmd.browser_window_new(&reg, &mut c, &pr, 800, 600, None);
         let ui_id = reg.get(bw).unwrap().ui.get();
         c.ui_mut(ui_id).unwrap().location.set_value("ab");
         // Ctrl+E → curseur fin (verbatim)
         assert!(cust_input_key(
-            &uicmd, &mut reg, &mut c, &pr, bw, 'e' as i32, None, CTRL
+            &uicmd, &reg, &mut c, &pr, bw, 'e' as i32, None, CTRL
         ));
         assert_eq!(c.ui(ui_id).unwrap().location.pos, 2);
         // Esc → remonte (non consommé)
         assert!(!cust_input_key(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             &pr,
             bw,
@@ -4362,7 +4519,7 @@ mod tests {
         // Shift+Left → remonte
         assert!(!cust_input_key(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             &pr,
             bw,
@@ -4374,7 +4531,7 @@ mod tests {
         c.ui_mut(ui_id).unwrap().focus = Focus::Location;
         assert!(!cust_input_key(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             &pr,
             bw,
@@ -4386,7 +4543,7 @@ mod tests {
         // insertion texte
         assert!(cust_input_key(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             &pr,
             bw,
@@ -4402,11 +4559,11 @@ mod tests {
     fn chrome_bw() -> (Rc<RefCell<Prefs>>, Chrome, BwRegistry, UiCmd, u32, usize) {
         let prefs = Rc::new(RefCell::new(Prefs::default()));
         let mut c = Chrome::new(platform(), Rc::clone(&prefs));
-        let mut reg = BwRegistry::new();
+        let reg = BwRegistry::new();
         let uicmd = UiCmd::new(&Prefs::default());
         let bw = {
             let pr = prefs.borrow();
-            uicmd.browser_window_new(&mut reg, &mut c, &pr, 800, 600, None)
+            uicmd.browser_window_new(&reg, &mut c, &pr, 800, 600, None)
         };
         let ui = reg.get(bw).unwrap().ui.get();
         (prefs, c, reg, uicmd, bw, ui)
@@ -4414,7 +4571,7 @@ mod tests {
 
     #[test]
     fn file_popup_builds_and_dispatches() {
-        let (prefs, mut c, mut reg, uicmd, bw, ui) = chrome_bw();
+        let (prefs, mut c, reg, uicmd, bw, ui) = chrome_bw();
         // verbatim : filemenu_cb L → popup sous le bouton File
         let r = c.ui(ui).unwrap().rect_of(WId::FileMenu).unwrap();
         uicmd.file_popup(&mut c, bw, r.x, r.y + r.h);
@@ -4422,19 +4579,19 @@ mod tests {
         assert_eq!(pop.items.len(), 6);
         assert_eq!(pop.items[0].label, "New tab");
         // "Open URL..." (idx 3) → focus location
-        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 3, None, 1, false);
+        c.popup_dispatch(&uicmd, &reg, &mut pop, 3, None, 1, false);
         assert_eq!(c.ui(ui).unwrap().focus, Focus::Location);
         // "Exit Dillo" (idx 5) → defer_close_all (verbatim)
         uicmd.file_popup(&mut c, bw, r.x, r.y + r.h);
         let mut pop2 = c.take_popup().unwrap();
-        c.popup_dispatch(&uicmd, &mut reg, &mut pop2, 5, None, 1, false);
+        c.popup_dispatch(&uicmd, &reg, &mut pop2, 5, None, 1, false);
         assert!(c.take_close_all());
         drop(prefs);
     }
 
     #[test]
     fn link_popup_dispatch_opens_nt() {
-        let (prefs, mut c, mut reg, uicmd, bw, _ui) = chrome_bw();
+        let (prefs, mut c, reg, uicmd, bw, _ui) = chrome_bw();
         prefs.borrow_mut().focus_new_tab = false;
         let link = url_new(b"https://ex.org/l", None).unwrap();
         let page = url_new(b"https://ex.org/p", None).unwrap();
@@ -4445,23 +4602,23 @@ mod tests {
         let count = |reg: &BwRegistry| (0..10).filter(|i| reg.get(*i).is_some()).count();
         let n0 = count(&reg);
         // "Open link in new tab" → nt créé
-        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 0, None, 1, false);
+        c.popup_dispatch(&uicmd, &reg, &mut pop, 0, None, 1, false);
         assert_eq!(count(&reg), n0 + 1);
     }
 
     #[test]
     fn tools_popup_panel_change_dispatch() {
-        let (prefs, mut c, mut reg, uicmd, bw, ui) = chrome_bw();
+        let (prefs, mut c, reg, uicmd, bw, ui) = chrome_bw();
         c.tools_popup(bw, ui, 10, 20);
         let mut pop = c.take_popup().unwrap();
         assert_eq!(pop.items[5].submenu.as_ref().unwrap().len(), 4);
         // sous-item "tiny" (index 0) → panel_size 0
-        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 5, Some(0), 1, false);
+        c.popup_dispatch(&uicmd, &reg, &mut pop, 5, Some(0), 1, false);
         assert_eq!(c.ui(ui).unwrap().panel_size, 0);
         // "small icons" (sub idx 3) — garde la taille
         c.tools_popup(bw, ui, 0, 0);
         let mut pop2 = c.take_popup().unwrap();
-        c.popup_dispatch(&uicmd, &mut reg, &mut pop2, 5, Some(3), 1, false);
+        c.popup_dispatch(&uicmd, &reg, &mut pop2, 5, Some(3), 1, false);
         assert!(c.ui(ui).unwrap().small_icons);
         assert_eq!(c.ui(ui).unwrap().panel_size, 0);
         drop(prefs);
@@ -4469,30 +4626,30 @@ mod tests {
 
     #[test]
     fn tools_toggle_remote_css_writes_prefs() {
-        let (prefs, mut c, mut reg, uicmd, bw, ui) = chrome_bw();
+        let (prefs, mut c, reg, uicmd, bw, ui) = chrome_bw();
         prefs.borrow_mut().load_stylesheets = true;
         c.tools_popup(bw, ui, 0, 0);
         let mut pop = c.take_popup().unwrap();
-        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 0, None, 1, false);
+        c.popup_dispatch(&uicmd, &reg, &mut pop, 0, None, 1, false);
         assert!(!prefs.borrow().load_stylesheets);
         assert!(!pop.items[0].set);
     }
 
     #[test]
     fn bugmeter_validate_strips_fragment() {
-        let (prefs, mut c, mut reg, uicmd, bw, _ui) = chrome_bw();
+        let (prefs, mut c, reg, uicmd, bw, _ui) = chrome_bw();
         let u0 = url_new(b"https://ex.org/page#frag", None).unwrap();
         {
             let pr = prefs.borrow();
-            uicmd.open_url(&mut reg, &mut c, &pr, bw, Some(&u0));
-            uicmd.expect_done(&mut reg, &mut c, &pr, bw); // ≙ capi→nav
+            uicmd.open_url(&reg, &mut c, &pr, bw, Some(&u0));
+            uicmd.expect_done(&reg, &mut c, &pr, bw); // ≙ capi→nav
         }
-        uicmd.bugmeter_popup(&mut reg, &mut c, bw);
+        uicmd.bugmeter_popup(&reg, &mut c, bw);
         let mut pop = c.take_popup().unwrap();
-        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 0, None, 1, false);
+        c.popup_dispatch(&uicmd, &reg, &mut pop, 0, None, 1, false);
         {
             let pr = prefs.borrow();
-            uicmd.expect_done(&mut reg, &mut c, &pr, bw); // ≙ réponse capi
+            uicmd.expect_done(&reg, &mut c, &pr, bw); // ≙ réponse capi
         }
         let b = reg.get(bw).unwrap();
         let nav = b.nav.borrow();
@@ -4505,20 +4662,20 @@ mod tests {
 
     #[test]
     fn history_popup_dispatch_jump() {
-        let (prefs, mut c, mut reg, uicmd, bw, _ui) = chrome_bw();
+        let (prefs, mut c, reg, uicmd, bw, _ui) = chrome_bw();
         {
             let pr = prefs.borrow();
             for s in ["https://a/", "https://b/", "https://c/"] {
                 let u = url_new(s.as_bytes(), None).unwrap();
-                uicmd.open_url(&mut reg, &mut c, &pr, bw, Some(&u));
-                uicmd.expect_done(&mut reg, &mut c, &pr, bw);
+                uicmd.open_url(&reg, &mut c, &pr, bw, Some(&u));
+                uicmd.expect_done(&reg, &mut c, &pr, bw);
             }
         }
-        uicmd.back_popup(&mut reg, &mut c, bw, 3, 4);
+        uicmd.back_popup(&reg, &mut c, bw, 3, 4);
         let mut pop = c.take_popup().unwrap();
         assert_eq!(pop.items.len(), 2); // b,a (+sentinel)
                                         // item idx 1 = le plus ancien → retour à "a"
-        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 1, None, 1, false);
+        c.popup_dispatch(&uicmd, &reg, &mut pop, 1, None, 1, false);
         let b = reg.get(bw).unwrap();
         let nav = b.nav.borrow();
         let mut top = dillo_net::history::history_get_url(nav.get_top_uidx()).unwrap();
@@ -4539,7 +4696,7 @@ mod tests {
             fn form_reset(&mut self, _d: usize, _f: usize) {}
             fn form_display_hiddens(&mut self, _d: usize, _f: usize, _x: bool) {}
         }
-        let (prefs, mut c, mut reg, uicmd, bw, _ui) = chrome_bw();
+        let (prefs, mut c, reg, uicmd, bw, _ui) = chrome_bw();
         c.set_doc_ops(Box::new(Rec));
         let page = url_new(b"https://ex.org/f", None).unwrap();
         reg.get(bw).unwrap().add_doc(11);
@@ -4548,19 +4705,19 @@ mod tests {
         uicmd.form_popup(&mut c, bw, &page, 42, false);
         let mut pop = c.take_popup().unwrap();
         assert_eq!(pop.items[2].label, "Show hiddens");
-        c.popup_dispatch(&uicmd, &mut reg, &mut pop, 0, None, 1, false);
+        c.popup_dispatch(&uicmd, &reg, &mut pop, 0, None, 1, false);
         CALLS.with(|v| assert_eq!(*v.borrow(), vec![(11, 42)]));
         drop(prefs);
     }
 
     #[test]
     fn chrome_widget_button_verbatim() {
-        let (prefs, mut c, mut reg, uicmd, bw, _ui) = chrome_bw();
+        let (prefs, mut c, reg, uicmd, bw, _ui) = chrome_bw();
         let mut paste = || None;
         // Back right-click → history popup (verbatim b1_cb)
         chrome_widget(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             prefs.as_ref(),
             bw,
@@ -4574,7 +4731,7 @@ mod tests {
         // FileMenu → file popup
         chrome_widget(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             prefs.as_ref(),
             bw,
@@ -4589,7 +4746,7 @@ mod tests {
         // BugMeter right → bugmeter popup
         chrome_widget(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             prefs.as_ref(),
             bw,
@@ -4605,14 +4762,14 @@ mod tests {
 
     #[test]
     fn findbar_toggle_and_keys() {
-        let (prefs, mut c, mut reg, uicmd, bw, ui) = chrome_bw();
-        uicmd.findbar_toggle(&mut reg, &mut c, bw, true);
+        let (prefs, mut c, reg, uicmd, bw, ui) = chrome_bw();
+        uicmd.findbar_toggle(&reg, &mut c, bw, true);
         assert!(c.ui(ui).unwrap().findbar_visible);
         assert!(c.ui(ui).unwrap().findbar_state.input_focused);
         // Escape → Pass (remonte à l'UI qui cache la barre)
         assert!(!findbar_key(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             bw,
             keysym::ESCAPE,
@@ -4626,7 +4783,7 @@ mod tests {
         c.ui_mut(ui).unwrap().findbar_state.input.buf = "x".into();
         assert!(findbar_key(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             bw,
             keysym::ENTER,
@@ -4640,7 +4797,7 @@ mod tests {
         c.ui_mut(ui).unwrap().findbar_state.input.buf.clear();
         assert!(findbar_key(
             &uicmd,
-            &mut reg,
+            &reg,
             &mut c,
             bw,
             keysym::ENTER,
@@ -4652,7 +4809,7 @@ mod tests {
         ));
         // HidePanels shortcut cache la barre (verbatim)
         let pr = prefs.borrow();
-        ui_shortcut(&uicmd, &mut reg, &mut c, &pr, bw, KeysCommand::HidePanels);
+        ui_shortcut(&uicmd, &reg, &mut c, &pr, bw, KeysCommand::HidePanels);
         assert!(!c.ui(ui).unwrap().findbar_visible);
     }
 }

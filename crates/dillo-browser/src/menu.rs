@@ -769,7 +769,7 @@ fn url_str(u: &DilloUrl) -> Vec<u8> {
 /// tronqué, url hex-encodée dans le gabarit validator.
 fn bugmeter_validate(
     uicmd: &UiCmd,
-    reg: &mut BwRegistry,
+    reg: &BwRegistry,
     shell: &mut dyn UiShell,
     prefs: &Prefs,
     ctx: &MenuCtx,
@@ -803,7 +803,7 @@ fn bugmeter_validate(
 pub fn dispatch(
     ctx: &mut MenuCtx,
     uicmd: &UiCmd,
-    reg: &mut BwRegistry,
+    reg: &BwRegistry,
     shell: &mut dyn UiShell,
     prefs: &RefCell<Prefs>,
     item: &mut MenuItem,

@@ -37,6 +37,10 @@ dillo-browser = { path = "crates/dillo-browser" }
 # pin minor, ≥ 7 jours depuis publication.
 thiserror = "2.0"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
+# Runtime I/O (ADR-0003) — worker threads alimentent les moteurs
+# Io/Dns/Http/Tls ; l'UI draine via `poll_*` à chaque tick.
+tokio = { version = "1.53", features = ["rt-multi-thread"] }
 # ADR-0002 : stack de rendu validée — fenêtre/surface/raster/fontes.
 tiny-skia = "0.11"
 winit = "0.30"

@@ -10,6 +10,8 @@
 //! navigateur passe par la seam [`WebDispatch`] injectée — `dillo-net` ne
 //! connaît ni layout ni UI.
 
+use std::rc::Rc;
+
 use crate::cache::CaCb;
 use crate::http::HttpWeb;
 
@@ -33,7 +35,7 @@ pub const WEB_DOWNLOAD: u32 = 8;
 pub trait WebDispatch {
     /// `a_Web_dispatch_by_type` (partie navigateur) — retourne le viewer
     /// (`Client->Callback`/`CbData` fusionnés dans une closure) ou `None`.
-    fn dispatch(&mut self, mime: &str, web: &HttpWeb) -> Option<CaCb>;
+    fn dispatch(&mut self, mime: &str, web: &Rc<HttpWeb>) -> Option<CaCb>;
 }
 
 /// `a_Web_new` — web frais, enregistré dans `ValidWebs` amont (ici :
@@ -63,7 +65,7 @@ pub fn web_free(web: &HttpWeb) {
 /// rejetés comme `a_Web_dispatch_by_type` amont). Tout le reste (style,
 /// fond, titre, `a_Nav_expect_done`, choix du viewer) est derrière
 /// [`WebDispatch`].
-pub fn dispatch_by_type(mime: &str, web: &HttpWeb, seam: &mut dyn WebDispatch) -> Option<CaCb> {
+pub fn dispatch_by_type(mime: &str, web: &Rc<HttpWeb>, seam: &mut dyn WebDispatch) -> Option<CaCb> {
     if web.flags & WEB_ROOT_URL == 0 && !mime.starts_with("image/") {
         // Requête non-racine : amont ne dispatch que les `image/*` —
         // le reste est rejeté (enfant non-image).
@@ -83,17 +85,17 @@ mod tests {
         calls: Rc<Cell<u32>>,
     }
     impl WebDispatch for FakeDispatch {
-        fn dispatch(&mut self, _mime: &str, _web: &HttpWeb) -> Option<CaCb> {
+        fn dispatch(&mut self, _mime: &str, _web: &Rc<HttpWeb>) -> Option<CaCb> {
             self.calls.set(self.calls.get() + 1);
             Some(Box::new(|_, _| {}))
         }
     }
 
-    fn web(flags: u32) -> HttpWeb {
+    fn web(flags: u32) -> Rc<HttpWeb> {
         let u = url_new(b"http://example.org/", None).unwrap_or_else(|| unreachable!());
         let mut w = HttpWeb::new(u, None, 0);
         w.flags = flags;
-        w
+        Rc::new(w)
     }
 
     #[test]

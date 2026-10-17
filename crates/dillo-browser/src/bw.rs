@@ -75,6 +75,14 @@ pub struct BrowserWindow {
     pub page_urls: RefCell<Vec<DilloUrl>>,
     /// `bw->nav_stack`/`nav_stack_ptr`/`meta_refresh_*` ≙ [`Nav`].
     pub nav: RefCell<Nav>,
+    /// Snapshots `a_Nav_stack_size`/`a_Nav_top_url` pour les seams
+    /// capi (maintenus par `uicmd_set_buttons_sens_impl` à chaque
+    /// mutation de pile — verbatim amont : les seams lisent
+    /// `bw->nav` directement, impossible ici pendant
+    /// `nav.borrow_mut()` — ex. `dpi_verify` depuis `open_url`).
+    pub nav_size_snap: Cell<i32>,
+    /// Idem — URL du sommet (`None` ≙ pile vide).
+    pub nav_top_snap: RefCell<Option<DilloUrl>>,
     /// `bw->nav_expect_url` — URL « cliquée » en attente de dw.
     pub nav_expect_url: RefCell<Option<DilloUrl>>,
     /// `bw->redirect_level` — compteur anti-boucle (root seul).
@@ -106,6 +114,8 @@ impl BrowserWindow {
             num_pending_style_sheets: Cell::new(0),
             page_urls: RefCell::new(Vec::new()),
             nav: RefCell::new(Nav::default()),
+            nav_size_snap: Cell::new(0),
+            nav_top_snap: RefCell::new(None),
             nav_expect_url: RefCell::new(None),
             redirect_level: Cell::new(0),
             num_page_bugs: Cell::new(0),
@@ -282,12 +292,22 @@ impl Default for BrowserWindow {
 
 /// `BwRegistry` — ≙ `static bws[]`/`num_bws` (bw.c:29-30).
 /// Possède les fenêtres ; `bw_id` = index ≙ `BrowserWindow*`.
-/// `Rc` sans `RefCell` externe : les cellules sont par champ
-/// (seams utilisables pendant un `borrow` d'un autre champ).
+///
+/// Mutabilité intérieure + partage `Rc` : amont `bws` est un
+/// **global librement lisible** pendant les callbacks réseau
+/// (`a_Capi_*` lit `bw` sous un appel `a_UIcmd_*` en cours — ex.
+/// `a_Capi_dpi_verify_request` → `a_Nav_stack_size`). Un
+/// `RefCell<BwRegistry>` externe rendrait ces lectures
+/// impossibles (réentrance) ; les cellules par champ couvrent le
+/// reste.
 #[derive(Default)]
 pub struct BwRegistry {
-    /// `bws` — fenêtres actives.
-    windows: Vec<Rc<BrowserWindow>>,
+    /// `bws` — fenêtres actives. Tombstones (`None`) à la fermeture
+    /// : amont `Web->bw`/`bw` sont des **pointeurs stables**, pas
+    /// des index — compacter décalerait les ids (alors qu'amont le
+    /// pointeur reste valide jusqu'au free). `borrow_mut` bref et
+    /// sans callbacks → réentrants sûrs.
+    windows: RefCell<Vec<Option<Rc<BrowserWindow>>>>,
 }
 
 impl BwRegistry {
@@ -297,36 +317,61 @@ impl BwRegistry {
         Self::default()
     }
 
-    /// `a_Bw_new` — crée + enregistre ; retourne `bw_id`.
-    pub fn add(&mut self, bw: BrowserWindow) -> u32 {
-        let id = u32::try_from(self.windows.len()).unwrap_or(u32::MAX);
-        self.windows.push(Rc::new(bw));
+    /// `a_Bw_new` — crée + enregistre ; retourne `bw_id`
+    /// (réutilise un slot mort ≙ `malloc` qui recycle).
+    pub fn add(&self, bw: BrowserWindow) -> u32 {
+        let mut w = self.windows.borrow_mut();
+        if let Some((i, slot)) = w.iter_mut().enumerate().find(|(_, s)| s.is_none()) {
+            *slot = Some(Rc::new(bw));
+            return u32::try_from(i).unwrap_or(u32::MAX);
+        }
+        let id = u32::try_from(w.len()).unwrap_or(u32::MAX);
+        w.push(Some(Rc::new(bw)));
         id
     }
 
-    /// `a_Bw_get` — `None` hors bornes ≙ `NULL`.
+    /// `a_Bw_get` — `None` hors bornes ou slot mort ≙ `NULL`.
     #[must_use]
     pub fn get(&self, id: u32) -> Option<Rc<BrowserWindow>> {
-        self.windows.get(id as usize).cloned()
+        self.windows
+            .borrow()
+            .get(id as usize)
+            .and_then(Option::clone)
     }
 
-    /// `a_Bw_num`.
+    /// `a_Bw_num` — fenêtres vivantes.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.windows.len()
+        self.windows.borrow().iter().flatten().count()
     }
 
     /// `bws` vide ?
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.windows.is_empty()
+        self.len() == 0
     }
 
-    /// `a_Bw_free` — retire du registre (les listes internes
-    /// sont libérées par `Drop` ≙ `dList_free`/`a_Url_free`).
-    pub fn free(&mut self, id: u32) {
-        if (id as usize) < self.windows.len() {
-            self.windows.remove(id as usize);
+    /// Itérateur snapshot des vivantes (≙ `dList_iterate(bws)`).
+    #[must_use]
+    pub fn windows(&self) -> Vec<Rc<BrowserWindow>> {
+        self.windows.borrow().iter().flatten().cloned().collect()
+    }
+
+    /// `find_bw_cb` (control.c) — id de la première fenêtre vivante.
+    #[must_use]
+    pub fn first_id(&self) -> Option<u32> {
+        self.windows
+            .borrow()
+            .iter()
+            .position(Option::is_some)
+            .and_then(|i| u32::try_from(i).ok())
+    }
+
+    /// `a_Bw_free` — le slot devient tombstone (les listes
+    /// internes sont libérées par `Drop` ≙ `dList_free`/`a_Url_free`).
+    pub fn free(&self, id: u32) {
+        if let Some(slot) = self.windows.borrow_mut().get_mut(id as usize) {
+            *slot = None;
         }
     }
 }
@@ -337,38 +382,38 @@ impl BwRegistry {
 /// mute `bw` via pointeur).
 impl NavBw for BwRegistry {
     /// `a_Bw_expecting`.
-    fn expecting(&mut self, bw: u32) -> bool {
+    fn expecting(&self, bw: u32) -> bool {
         self.get(bw).is_some_and(|b| b.expecting())
     }
 
     /// `a_Bw_cancel_expect`.
-    fn cancel_expect(&mut self, bw: u32) {
+    fn cancel_expect(&self, bw: u32) {
         if let Some(b) = self.get(bw) {
             b.cancel_expect();
         }
     }
 
     /// `a_Bw_expected_url`.
-    fn expected_url(&mut self, bw: u32) -> Option<DilloUrl> {
+    fn expected_url(&self, bw: u32) -> Option<DilloUrl> {
         self.get(bw).and_then(|b| b.expected_url())
     }
 
     /// `a_Bw_expect`.
-    fn expect(&mut self, bw: u32, url: &DilloUrl) {
+    fn expect(&self, bw: u32, url: &DilloUrl) {
         if let Some(b) = self.get(bw) {
             b.expect(url);
         }
     }
 
     /// `a_Bw_stop_clients` — verbatim (capi appelé ici ≙ bw.c).
-    fn stop_clients(&mut self, bw: u32, which: i32) {
+    fn stop_clients(&self, bw: u32, which: i32) {
         if let Some(b) = self.get(bw) {
             b.stop_clients(which);
         }
     }
 
     /// `a_Bw_cleanup`.
-    fn cleanup(&mut self, bw: u32) {
+    fn cleanup(&self, bw: u32) {
         if let Some(b) = self.get(bw) {
             b.cleanup();
         }
@@ -377,7 +422,7 @@ impl NavBw for BwRegistry {
     /// `a_Bw_add_client` — sans progression (la seam `NavBw` ne
     /// porte pas [`BwUi`] — la version UI est appelée par le
     /// shell via [`BrowserWindow::add_client`] directement).
-    fn add_client(&mut self, bw: u32, key: i32, root: bool) {
+    fn add_client(&self, bw: u32, key: i32, root: bool) {
         if let Some(b) = self.get(bw) {
             if root {
                 b.root_clients.borrow_mut().push(key);
@@ -389,14 +434,14 @@ impl NavBw for BwRegistry {
     }
 
     /// `a_Bw_add_url`.
-    fn add_url(&mut self, bw: u32, url: &DilloUrl) {
+    fn add_url(&self, bw: u32, url: &DilloUrl) {
         if let Some(b) = self.get(bw) {
             b.add_url(url);
         }
     }
 
     /// `bw->bgColor`.
-    fn bg_color(&mut self, bw: u32) -> i32 {
+    fn bg_color(&self, bw: u32) -> i32 {
         self.get(bw).map_or(0x00ff_ffff, |b| b.bg_color.get())
     }
 }
@@ -554,7 +599,7 @@ mod tests {
     /// `BwRegistry` ≙ `bws[]` — add/get/free/num + `NavBw`.
     #[test]
     fn registry_ops() {
-        let mut reg = BwRegistry::new();
+        let reg = BwRegistry::new();
         let id = reg.add(BrowserWindow::new());
         assert_eq!(reg.len(), 1);
         assert!(reg.get(id).is_some());

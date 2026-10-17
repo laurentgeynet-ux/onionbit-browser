@@ -1320,6 +1320,14 @@ impl SkiaView {
         RefMut::filter_map(self.canvas.borrow_mut(), |c| c.pixmap.as_mut()).ok()
     }
 
+    /// Accès borné au back-buffer (`f(&mut Pixmap)`) — ≙ écriture
+    /// directe dans l'offscreen par la composition chrome
+    /// (`dillo-browser::glue`).
+    pub fn with_pixmap<R>(&mut self, f: impl FnOnce(&mut Pixmap) -> R) -> Option<R> {
+        let mut c = self.canvas.borrow_mut();
+        c.pixmap.as_mut().map(f)
+    }
+
     /// `linesize` — pas de scroll par ligne (≙ `linesize` amont
     /// utilisé par `FL_MOUSEWHEEL`).
     #[must_use]

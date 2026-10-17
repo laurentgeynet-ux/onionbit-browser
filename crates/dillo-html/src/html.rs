@@ -519,6 +519,13 @@ impl<'p> DilloHtml<'p> {
             );
     }
 
+    /// `html->dw` — le widget toplevel (créé par `initDw` au
+    /// constructeur ; ≙ retour de `a_Html_text` amont).
+    #[must_use]
+    pub fn dw(&self) -> Option<WidgetId> {
+        self.core.dw
+    }
+
     /// `DilloHtml::write` (html.cc:578) — `buf` = buffer COMPLET du
     /// document jusqu'à présent (verbatim `Client->Buf`/`BufSize`).
     pub fn write(&mut self, buf: &Rc<Vec<u8>>, eof: bool) {

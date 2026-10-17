@@ -22,20 +22,22 @@ use dillo_net::url::url_new;
 
 /// Bits de modificateurs internes (≙ `FL_SHIFT`/`FL_CTRL`/`FL_ALT`/…).
 pub mod mods {
+    // Valeurs verbatim FLTK (`Fl::event_state()` — Enumerations.H) :
+    // `keysrc`, `key_cmd` et les inputs chrome partagent ce masque.
     /// `FL_SHIFT`.
-    pub const SHIFT: i32 = 1 << 0;
+    pub const SHIFT: i32 = 0x0001;
     /// `FL_CTRL`.
-    pub const CTRL: i32 = 1 << 1;
+    pub const CTRL: i32 = 0x0004;
     /// `FL_ALT`.
-    pub const ALT: i32 = 1 << 2;
+    pub const ALT: i32 = 0x0008;
     /// `FL_META`.
-    pub const META: i32 = 1 << 3;
+    pub const META: i32 = 0x0020;
     /// `FL_BUTTON1` (≙ keys.cc `modifierNames`).
-    pub const BUTTON1: i32 = 1 << 4;
+    pub const BUTTON1: i32 = 0x0100;
     /// `FL_BUTTON2`.
-    pub const BUTTON2: i32 = 1 << 5;
+    pub const BUTTON2: i32 = 0x0200;
     /// `FL_BUTTON3`.
-    pub const BUTTON3: i32 = 1 << 6;
+    pub const BUTTON3: i32 = 0x0400;
 }
 
 /// Keysyms X11 = valeurs `FL_*` (verbatim — compat `keysrc` `0x…`).

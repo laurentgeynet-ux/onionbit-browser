@@ -11,14 +11,20 @@ workspace = true
 [dependencies]
 dillo-browser.workspace = true
 dillo-common.workspace = true
+dillo-css.workspace = true
+dillo-dw.workspace = true
 dillo-html.workspace = true
+dillo-images.workspace = true
 dillo-net.workspace = true
 dillo-platform.workspace = true
+tokio.workspace = true
 tracing.workspace = true
-winit.workspace = true
-tiny-skia.workspace = true
-cosmic-text.workspace = true
+tracing-subscriber.workspace = true
 
 [[bin]]
 name = "dillo"
 path = "src/main.rs"
+
+[[bin]]
+name = "dilloc"
+path = "src/dilloc.rs"

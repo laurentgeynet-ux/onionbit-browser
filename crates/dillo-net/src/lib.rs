@@ -9,6 +9,7 @@ pub mod auth;
 pub mod cache;
 pub mod capi;
 pub mod chain;
+pub mod control;
 pub mod cookies;
 pub mod decode;
 pub mod digest;

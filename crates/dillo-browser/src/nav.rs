@@ -63,23 +63,23 @@ impl Default for Nav {
 /// portée — `bw` = l'id fenêtre passé aux `HttpWeb`).
 pub trait NavBw {
     /// `a_Bw_expecting`.
-    fn expecting(&mut self, bw: u32) -> bool;
+    fn expecting(&self, bw: u32) -> bool;
     /// `a_Bw_cancel_expect`.
-    fn cancel_expect(&mut self, bw: u32);
+    fn cancel_expect(&self, bw: u32);
     /// `a_Bw_expected_url`.
-    fn expected_url(&mut self, bw: u32) -> Option<DilloUrl>;
+    fn expected_url(&self, bw: u32) -> Option<DilloUrl>;
     /// `a_Bw_expect`.
-    fn expect(&mut self, bw: u32, url: &DilloUrl);
+    fn expect(&self, bw: u32, url: &DilloUrl);
     /// `a_Bw_stop_clients` (`BW_Root | BW_Img` [| `BW_Force`]).
-    fn stop_clients(&mut self, bw: u32, which: i32);
+    fn stop_clients(&self, bw: u32, which: i32);
     /// `a_Bw_cleanup`.
-    fn cleanup(&mut self, bw: u32);
+    fn cleanup(&self, bw: u32);
     /// `a_Bw_add_client` — `root` ≙ le `1` amont.
-    fn add_client(&mut self, bw: u32, key: i32, root: bool);
+    fn add_client(&self, bw: u32, key: i32, root: bool);
     /// `a_Bw_add_url`.
-    fn add_url(&mut self, bw: u32, url: &DilloUrl);
+    fn add_url(&self, bw: u32, url: &DilloUrl);
     /// `bw->bgColor` — lu par `a_Web_new` amont (`web->bgColor`).
-    fn bg_color(&mut self, bw: u32) -> i32;
+    fn bg_color(&self, bw: u32) -> i32;
 }
 
 /// Seam `a_UIcmd_*` + `a_Dialog_choice` appelés par `nav.c`.
@@ -88,11 +88,11 @@ pub trait NavUi {
     fn set_msg(&mut self, bw: u32, msg: &str);
     /// `a_UIcmd_set_location_text`.
     fn set_location_text(&mut self, bw: u32, text: &[u8]);
-    /// `a_UIcmd_set_buttons_sens` — `ptr`/`size` = snapshot de la
-    /// pile nav (verbatim amont : lit `bw->nav` directement ; ici le
-    /// `Nav` est déjà emprunté par l'appelant, le seam ne peut pas le
-    /// re-emprunter).
-    fn set_buttons_sens(&mut self, bw: u32, ptr: i32, size: i32);
+    /// `a_UIcmd_set_buttons_sens` — `ptr`/`size`/`top` = snapshot
+    /// de la pile nav (verbatim amont : lit `bw->nav` directement ;
+    /// ici le `Nav` est déjà emprunté par l'appelant, le seam ne peut
+    /// pas le re-emprunter). `top` ≙ `a_Nav_top_url` (referer seam).
+    fn set_buttons_sens(&mut self, bw: u32, ptr: i32, size: i32, top: Option<DilloUrl>);
     /// `a_UIcmd_get_scroll_xy`.
     fn get_scroll_xy(&mut self, bw: u32) -> (i32, i32);
     /// `a_UIcmd_set_scroll_xy`.
@@ -169,6 +169,12 @@ impl Nav {
     #[must_use]
     pub fn get_top_uidx(&self) -> i32 {
         self.get_uidx(self.stack_ptr)
+    }
+
+    /// `a_Nav_top_url` — URL du sommet (`NULL` ≙ pile vide).
+    #[must_use]
+    pub fn top_url(&self) -> Option<DilloUrl> {
+        history::history_get_url(self.get_top_uidx())
     }
 
     /// `Nav_stack_move_ptr` — `dReturn_if_fail` hors bornes.
@@ -270,7 +276,7 @@ impl Nav {
             let mut w = web::web_new(url.clone(), requester);
             w.flags |= web::WEB_ROOT_URL;
             w.bw = bw_id;
-            w.bg_color = seams.bg_color(bw_id);
+            w.bg_color.set(seams.bg_color(bw_id));
             let client_key = capi::capi_open_url(Rc::new(w), None);
             if client_key != 0 {
                 seams.add_client(bw_id, client_key, true);
@@ -284,7 +290,7 @@ impl Nav {
     pub fn cancel_expect(&mut self, bw_id: u32, seams: &mut dyn NavIo) {
         if seams.expecting(bw_id) {
             seams.cancel_expect(bw_id);
-            seams.set_buttons_sens(bw_id, self.stack_ptr, self.stack_size());
+            seams.set_buttons_sens(bw_id, self.stack_ptr, self.stack_size(), self.top_url());
         }
         if self.meta_refresh_status > 0 {
             self.meta_refresh_status -= 1;
@@ -359,7 +365,7 @@ impl Nav {
         }
 
         self.stack_clean();
-        seams.set_buttons_sens(bw_id, self.stack_ptr, self.stack_size());
+        seams.set_buttons_sens(bw_id, self.stack_ptr, self.stack_size(), self.top_url());
         seams.finish_loading(bw_id);
     }
 
@@ -540,7 +546,7 @@ impl Nav {
             if let Some(u) = &url {
                 self.open_url(bw_id, u, None, offset, seams);
             }
-            seams.set_buttons_sens(bw_id, self.stack_ptr, self.stack_size());
+            seams.set_buttons_sens(bw_id, self.stack_ptr, self.stack_size(), self.top_url());
         }
     }
 }
@@ -624,38 +630,38 @@ mod tests {
     /// `NavIo` de test : expect/expected + appels mémorisés
     /// (≙ `FakeBw`/`FakeUi` fusionnés — la seam est unique).
     struct FakeSeams {
-        expected: Option<DilloUrl>,
+        expected: RefCell<Option<DilloUrl>>,
         calls: Rc<RefCell<Vec<String>>>,
         scroll: (i32, i32),
         evs: Rc<RefCell<Vec<String>>>,
         dialog_ret: i32,
     }
     impl NavBw for FakeSeams {
-        fn expecting(&mut self, _bw: u32) -> bool {
-            self.expected.is_some()
+        fn expecting(&self, _bw: u32) -> bool {
+            self.expected.borrow().is_some()
         }
-        fn cancel_expect(&mut self, _bw: u32) {
-            self.expected = None;
+        fn cancel_expect(&self, _bw: u32) {
+            *self.expected.borrow_mut() = None;
         }
-        fn expected_url(&mut self, _bw: u32) -> Option<DilloUrl> {
-            self.expected.clone()
+        fn expected_url(&self, _bw: u32) -> Option<DilloUrl> {
+            self.expected.borrow().clone()
         }
-        fn expect(&mut self, _bw: u32, url: &DilloUrl) {
-            self.expected = Some(url.clone());
+        fn expect(&self, _bw: u32, url: &DilloUrl) {
+            *self.expected.borrow_mut() = Some(url.clone());
         }
-        fn stop_clients(&mut self, _bw: u32, which: i32) {
+        fn stop_clients(&self, _bw: u32, which: i32) {
             self.calls.borrow_mut().push(format!("stop:{which}"));
         }
-        fn cleanup(&mut self, _bw: u32) {
+        fn cleanup(&self, _bw: u32) {
             self.calls.borrow_mut().push("cleanup".into());
         }
-        fn add_client(&mut self, _bw: u32, key: i32, root: bool) {
+        fn add_client(&self, _bw: u32, key: i32, root: bool) {
             self.calls.borrow_mut().push(format!("client:{key}:{root}"));
         }
-        fn add_url(&mut self, _bw: u32, _url: &DilloUrl) {
+        fn add_url(&self, _bw: u32, _url: &DilloUrl) {
             self.calls.borrow_mut().push("add_url".into());
         }
-        fn bg_color(&mut self, _bw: u32) -> i32 {
+        fn bg_color(&self, _bw: u32) -> i32 {
             0
         }
     }
@@ -668,7 +674,7 @@ mod tests {
                 .borrow_mut()
                 .push(format!("loc:{}", String::from_utf8_lossy(text)));
         }
-        fn set_buttons_sens(&mut self, _bw: u32, _p: i32, _s: i32) {
+        fn set_buttons_sens(&mut self, _bw: u32, _p: i32, _s: i32, _t: Option<DilloUrl>) {
             self.evs.borrow_mut().push("sens".into());
         }
         fn get_scroll_xy(&mut self, _bw: u32) -> (i32, i32) {
@@ -710,7 +716,7 @@ mod tests {
         (
             Nav::default(),
             FakeSeams {
-                expected: None,
+                expected: RefCell::new(None),
                 calls: Rc::new(RefCell::new(Vec::new())),
                 scroll: (0, 0),
                 evs: Rc::new(RefCell::new(Vec::new())),
@@ -733,7 +739,7 @@ mod tests {
         // Push A : pile vide → expect + open_url (pas de client sans capi
         // http — key 0 → pas d'add_client ; la pile bouge à expect_done).
         nav.push(1, &u("http://a/"), None, &mut s);
-        assert!(s.expected.is_some());
+        assert!(s.expected.borrow().is_some());
         // expect_done empile l'url_idx dans history.
         nav.expect_done(1, &mut s);
         assert_eq!(nav.stack_size(), 1);
@@ -797,7 +803,7 @@ mod tests {
             Some(NavOp::Repush)
         ));
         nav.repush_now(1, &mut s);
-        let e = s.expected.expect("expect");
+        let e = s.expected.borrow().clone().expect("expect");
         assert!(e.flags & url_flags::RELOAD_FROM_CACHE != 0);
     }
 
@@ -815,7 +821,7 @@ mod tests {
         s.dialog_ret = 1;
         nav.reload(1, &mut sched);
         nav.reload_now(1, &mut s);
-        assert!(s.expected.is_none());
+        assert!(s.expected.borrow().is_none());
         // "Yes" → expect avec RELOAD_PAGE|E2E_QUERY, SPAM_SAFE retiré.
         url.flags |= url_flags::SPAM_SAFE;
         let idx2 = history::history_add_url(&mut url.clone());
@@ -823,7 +829,7 @@ mod tests {
         nav.stack_move_ptr(1);
         s.dialog_ret = 2;
         nav.reload_now(1, &mut s);
-        let e = s.expected.expect("expect");
+        let e = s.expected.borrow().clone().expect("expect");
         assert!(e.flags & url_flags::RELOAD_PAGE != 0);
         assert!(e.flags & url_flags::E2E_QUERY != 0);
         assert_eq!(e.flags & url_flags::SPAM_SAFE, 0);
@@ -845,7 +851,7 @@ mod tests {
         assert_eq!(nav.meta_refresh_status, 0);
         assert!(nav.meta_refresh_url.is_none());
         // Push b a été déclenché (expect en cours).
-        assert!(s.expected.is_some());
+        assert!(s.expected.borrow().is_some());
     }
 
     #[test]
@@ -855,6 +861,6 @@ mod tests {
         s.expect(1, &u("http://a/"));
         nav.cancel_expect(1, &mut s);
         assert_eq!(nav.meta_refresh_status, 2);
-        assert!(s.expected.is_none());
+        assert!(s.expected.borrow().is_none());
     }
 }

@@ -176,7 +176,11 @@ prototype phase 0).
 - [x] `bw.c`/`nav.c`/`keys.cc`+`keysrc`/`uicmd.cc` — glue
       `BrowserWindow`, pile de navigation, raccourcis clavier,
       dispatch `a_UIcmd_*` via seams `UiShell`/`NavIo`/`NavSched`
-- [ ] `paths.cc`, `dillo.cc` main, `dilloc.c`
+- [x] `paths.cc`, `dillo.cc` main, `dilloc.c` + `IO/control.c`
+      — `dillo-browser::{paths,glue,doc}`, `dillo-net::control`
+      (machine d'état + `CtlListener` Unix ≙ `ENABLE_CONTROL_SOCKET`),
+      `dillo` bin : main verbatim (CLI, prefs, inits modules, factory
+      moteurs tokio, fenêtre initiale, boucle `DwApp`, freeall)
 
 **Audit** : `audit-10-platform-ui`
 

@@ -107,6 +107,21 @@ pub fn pending_count() -> usize {
     TIMERS.with(|t| t.borrow().list.len())
 }
 
+/// Délai jusqu'au prochain timer — ≙ le `timeout` que `Fl::wait`
+/// calcule pour bloquer la boucle ; utilisé pour armer
+/// `ControlFlow::WaitUntil` quand des timers sont actifs.
+#[must_use]
+pub fn next_due() -> Option<Duration> {
+    TIMERS.with(|t| {
+        let now = Instant::now();
+        t.borrow()
+            .list
+            .iter()
+            .map(|p| p.deadline.saturating_duration_since(now))
+            .min()
+    })
+}
+
 /// `a_Timeout_remove` global au reset — vide la file (≙ `freeall` amont).
 pub fn timeout_freeall() {
     TIMERS.with(|t| t.borrow_mut().list.clear());

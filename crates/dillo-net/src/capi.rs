@@ -123,6 +123,10 @@ pub struct Capi {
     /// `a_Dpi_ccc` injecté (phase DPI — `None` = pas de serveur dpi :
     /// les requêtes dpi sont refusées proprement).
     dpi_ccc: Option<ChainCb>,
+    /// Installateur des moteurs de chaîne (`IoEngine`/`HttpEngine`/
+    /// `Dns`/`TlsEngine`) ≙ les `a_*_init` amont — injecté par le
+    /// binaire (`a_Capi_init` côté process, runtime tokio global).
+    engines: Option<EngineFactory>,
     /// Seams navigateur (mêmes traits que `cache`).
     ui: Box<dyn UiOps>,
     /// Seam nav.
@@ -145,6 +149,7 @@ impl Capi {
             conns: Vec::new(),
             vs_url: None,
             dpi_ccc: None,
+            engines: None,
             ui: Box::new(cache::NullUiOps),
             nav: Box::new(cache::NullNavOps),
             dpi: Box::new(NullDpiOps),
@@ -201,9 +206,56 @@ pub fn capi_set_seams(ui: Box<dyn UiOps>, nav: Box<dyn NavOps>, dpi: Box<dyn Dpi
     });
 }
 
+/// Factory de moteurs réseau — installe `IoEngine`/`Dns`/
+/// `HttpEngine`/`TlsEngine` dans la `Chain` d'une connexion.
+pub type EngineFactory = Rc<dyn Fn(&mut Chain)>;
+
 /// Injecte `a_Dpi_ccc` (phase DPI).
 pub fn capi_set_dpi_ccc(cb: ChainCb) {
     CAPI.with(|c| c.borrow_mut().dpi_ccc = Some(cb));
+}
+
+/// `a_Http_init`+`a_IO_init`+`a_Dns_init`+`a_Tls_init` par connexion —
+/// le binaire injecte la closure qui installe les moteurs
+/// (`IoEngine`/`HttpEngine`/`Dns`/`TlsEngine`) dans la `Chain` de
+/// chaque nouvelle `CapiConn` http(s) (≙ les `a_*_init` amont,
+/// regroupés car les moteurs partagent le même runtime tokio).
+pub fn capi_set_engine_factory(f: EngineFactory) {
+    CAPI.with(|c| c.borrow_mut().engines = Some(f));
+}
+
+/// Nombre de connexions HTTP(S) vivantes (≙ taille de `CapiConns`
+/// amont) — lu par la boucle pour décider `WaitUntil` vs `Wait`.
+#[must_use]
+pub fn capi_conns_active() -> usize {
+    CAPI.with(|c| c.borrow().conns.len())
+}
+
+/// Passe de pompe réseau ≙ les callbacks `a_IOwatch` + timers
+/// HTTP/DNS de la boucle FLTK amont : sur la chaîne de chaque
+/// connexion vivante, draine les événements du reactor
+/// ([`crate::io::poll_io`]), les réponses DNS
+/// ([`crate::dns::poll_dns`]) et la machine à états HTTP
+/// ([`crate::http::poll_http`]). À appeler à chaque tick de la
+/// boucle d'événements (shell). Retourne le nombre de connexions
+/// en cours — l'appelant en déduit l'intervalle de réveil
+/// (`ControlFlow::WaitUntil`).
+#[must_use]
+pub fn capi_poll() -> usize {
+    let conns = CAPI.with(|c| c.borrow().conns.clone());
+    for conn in &conns {
+        let chain = conn.borrow().chain.clone();
+        // `try_borrow_mut` ≙ garde « chaîne occupée » amont
+        // (`Cache_process_queue` busy) — une chaîne en CCC plein
+        // est reportée à la passe suivante.
+        let Ok(mut ch) = chain.try_borrow_mut() else {
+            continue;
+        };
+        crate::io::poll_io(&mut ch);
+        crate::dns::poll_dns(&mut ch);
+        crate::http::poll_http(&mut ch);
+    }
+    conns.len()
 }
 
 /// Injecte `prefs.http_user_agent`.
@@ -960,6 +1012,11 @@ pub fn capi_open_url(mut web: Rc<HttpWeb>, call: Option<CaCb>) -> i32 {
                 // Branche réception d'abord (le DNS peut répondre tout
                 // de suite — course amont).
                 let mut ch = chain.borrow_mut();
+                // `a_*_init` amont (globaux) → ici les moteurs sont
+                // par-connexion : installés à la création de la chaîne.
+                if let Some(f) = CAPI.with(|c| c.borrow().engines.clone()) {
+                    f(&mut ch);
+                }
                 let l2 = ch.new_link();
                 capi_ccc_fn(
                     &mut ch,

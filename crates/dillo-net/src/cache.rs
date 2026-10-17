@@ -1563,7 +1563,7 @@ fn provide_redirection_blocked_page(cell: &RefCell<Cache>, cl: &mut CacheClient)
 /// Dispatch muet quand la seam n'est pas injectée.
 struct NullDispatch;
 impl crate::web::WebDispatch for NullDispatch {
-    fn dispatch(&mut self, _mime: &str, _web: &HttpWeb) -> Option<CaCb> {
+    fn dispatch(&mut self, _mime: &str, _web: &Rc<HttpWeb>) -> Option<CaCb> {
         None
     }
 }

@@ -102,8 +102,9 @@ pub struct HttpWeb {
     /// stockée en `Rc<RefCell<DilloImage>>`).
     pub image: std::cell::RefCell<Option<std::rc::Rc<dyn std::any::Any>>>,
     /// `web->bgColor` — couleur de fond de la page (≙ `bw->bgColor`
-    /// amont, propagé à `a_Image_new_with_dw`).
-    pub bg_color: i32,
+    /// amont, propagé à `a_Image_new_with_dw`). `Cell` ≙ le champ
+    /// muté à travers `Rc` par `a_Web_dispatch_by_type`.
+    pub bg_color: std::cell::Cell<i32>,
     valid: std::cell::Cell<bool>,
     msg_sink: MsgSink,
 }
@@ -131,7 +132,7 @@ impl HttpWeb {
             stream: std::cell::RefCell::new(None),
             saved_bytes: std::cell::Cell::new(0),
             image: std::cell::RefCell::new(None),
-            bg_color: 0,
+            bg_color: std::cell::Cell::new(0),
             valid: std::cell::Cell::new(true),
             msg_sink: std::cell::RefCell::new(Box::new(|_| {})),
         }
@@ -209,7 +210,9 @@ struct Server {
 
 /// Configuration ≙ les champs `prefs` lus par `http.c`. Construite
 /// par l'appelant depuis `dillo_browser::prefs::Prefs` (deps
-/// descendantes — net ne connaît pas browser).
+/// descendantes — net ne connaît pas browser). `Clone` : partagée
+/// par les `HttpEngine` de chaque connexion (≙ globaux `http.c`).
+#[derive(Clone)]
 pub struct HttpConfig {
     /// `prefs.http_language` → en-tête `Accept-Language` (vide sinon).
     pub http_language: Option<String>,

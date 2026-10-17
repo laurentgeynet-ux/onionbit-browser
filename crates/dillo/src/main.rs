@@ -1,328 +1,525 @@
-//! dillo — façade + binaire du navigateur.
+//! `dillo` — binaire principal du navigateur.
 //!
-//! Port de `src/dillo.cc`. **Phase 0.5** : tranche verticale pilote
-//! — fenêtre `winit`, présentation `softbuffer`, raster `tiny-skia`,
-//! texte `cosmic-text`, parseur `minidoc`, `file://` via
-//! `dillo-net::fetch`. Layout minimal (blocs empilés + wrap mot) —
-//! sera remplacé par `dw/` en phase 4 (ADR-0005 option D).
+//! Port de `src/dillo.cc` : parsing CLI (table `Options` verbatim),
+//! init des prefs/paths/modules dans l'ordre amont, création de la
+//! première `BrowserWindow`, ouverture des URL de la ligne de
+//! commande, boucle d'événements ([`DwApp::run`] ≙ `while
+//! (Fl::wait() > 0)`), puis nettoyage (`*_freeall`).
 //!
-//! Idle/boucle : `ControlFlow::Wait` (équivalent calme de
-//! `Fl::add_idle` — ADR-0003 §6) + `request_redraw` ciblé ; pas de
-//! spin CPU une fois la page posée.
+//! Déviations documentées (cf. `docs/PORTING.md`) :
+//! - `xembed`/`-x XID` est X11-spécifique → option rejetée
+//!   (`won't port`, ADR-0002) ;
+//! - les signaux `SIGUSR1/2`/`SIGCHLD` n'ont pas d'équivalent sûr en
+//!   std-Rust : le rechargement passe par le socket de contrôle
+//!   (`dilloc`) et `dpid` est réapé par le runtime (phase dpi) ;
+//! - `Fl::scheme(theme)`, `fl_message_title_default` et les label
+//!   types FLTK sont absorbés par le chrome `dillo-browser` (le
+//!   rendu n'est pas celui d'un toolkit natif).
 
-// Pilote 0.5 : les casts de géométrie écran (px bornés à la taille
-// fenêtre) et les noms courts de coordonnées sont tolérés ici ; le
-// vrai pipeline dw/platform utilisera des types stricts.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::many_single_char_names
-)]
+#![allow(clippy::too_many_lines)]
 
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap};
-use dillo_html::minidoc::{parse_minidoc, Block, Inline};
-use dillo_net::fetch::{fetch, resolve_href};
-use dillo_platform::surface::PlatformSurface;
-use std::sync::Arc;
-use tiny_skia::{Pixmap, PremultipliedColorU8};
-use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowId};
+use std::cell::RefCell;
+use std::rc::Rc;
 
-const DEMO: &str = concat!(
-    "<h1>DilloRust &mdash; tranche verticale</h1>",
-    "<p>Phase 0.5 : winit + softbuffer + tiny-skia + cosmic-text. ",
-    "Un <a href=\"page2.html\">lien test</a> pour la navigation.</p>",
-    "<p>Second paragraphe, assez long pour forcer le wrap de mots ",
-    "quand la fenêtre est étroite — le layout est recalculé au ",
-    "redimensionnement.</p>"
-);
+use dillo_browser::glue::Glue;
+use dillo_browser::paths;
+use dillo_browser::prefs::Prefs;
+use dillo_common::misc;
+use dillo_net::cache;
+use dillo_net::capi;
+#[cfg(unix)]
+use dillo_net::control::unix;
+use dillo_net::cookies;
+use dillo_net::dns::Dns;
+use dillo_net::domain;
+use dillo_net::history;
+use dillo_net::hsts;
+use dillo_net::http::{HttpConfig, HttpEngine};
+use dillo_net::io::IoEngine;
+use dillo_net::tls::TlsEngine;
+use dillo_net::url::{self, DilloUrl};
+use dillo_net::{auth, timeout};
+use dillo_platform::app::DwApp;
 
-/// Hitbox d'un lien à l'écran (coordonnées page, scroll soustrait
-/// au hit-test).
-#[derive(Debug)]
-struct LinkBox {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    href: String,
+/// `OptID` (verbatim `dillo.cc`).
+const DILLO_CLI_XID: u32 = 1 << 0;
+const DILLO_CLI_FULLWINDOW: u32 = 1 << 1;
+const DILLO_CLI_HELP: u32 = 1 << 2;
+const DILLO_CLI_VERSION: u32 = 1 << 3;
+const DILLO_CLI_LOCAL: u32 = 1 << 4;
+const DILLO_CLI_GEOMETRY: u32 = 1 << 5;
+
+/// `CLI_options` (verbatim).
+struct CliOption {
+    shortopt: &'static str,
+    longopt: &'static str,
+    /// Positif : argument obligatoire ; négatif : optionnel.
+    opt_argc: i32,
+    id: u32,
+    help: &'static str,
 }
 
-struct App {
-    window: Option<Arc<Window>>,
-    surface: Option<PlatformSurface>,
-    font_system: FontSystem,
-    swash: SwashCache,
-    blocks: Vec<Block>,
-    base: String,
-    links: Vec<LinkBox>,
-    cursor: (f64, f64),
-    scroll_y: f32,
-    page_height: f32,
-    status: String,
+/// Table `Options[]` verbatim.
+const OPTIONS: &[CliOption] = &[
+    CliOption {
+        shortopt: "-f",
+        longopt: "--fullwindow",
+        opt_argc: 0,
+        id: DILLO_CLI_FULLWINDOW,
+        help: "  -f, --fullwindow       Start in full window mode: hide address bar,\n  \
+               \x20                        navigation buttons, menu, and status bar.",
+    },
+    CliOption {
+        shortopt: "-g",
+        longopt: "-geometry",
+        opt_argc: 1,
+        id: DILLO_CLI_GEOMETRY,
+        help: "  -g, -geometry GEO      Set initial window position where GEO is\n  \
+               \x20                        WxH[{+-}X{+-}Y]",
+    },
+    CliOption {
+        shortopt: "-h",
+        longopt: "--help",
+        opt_argc: 0,
+        id: DILLO_CLI_HELP,
+        help: "  -h, --help             Display this help text and exit.",
+    },
+    CliOption {
+        shortopt: "-l",
+        longopt: "--local",
+        opt_argc: 0,
+        id: DILLO_CLI_LOCAL,
+        help: "  -l, --local            Don't load images or stylesheets, or follow\n  \
+               \x20                        redirections, for these FILEs or URLs.",
+    },
+    CliOption {
+        shortopt: "-v",
+        longopt: "--version",
+        opt_argc: 0,
+        id: DILLO_CLI_VERSION,
+        help: "  -v, --version          Display version info and exit.",
+    },
+    CliOption {
+        shortopt: "-x",
+        longopt: "--xid",
+        opt_argc: 1,
+        id: DILLO_CLI_XID,
+        help: "  -x, --xid XID          Open first Dillo window in an existing\n  \
+               \x20                        window whose window ID is XID.",
+    },
+];
+
+/// `printHelp` verbatim.
+fn print_help(cmdname: &str) {
+    eprintln!("Usage: {cmdname} [OPTION]... [URL|FILE]...\nOptions:");
+    for o in OPTIONS {
+        eprintln!("{}", o.help);
+    }
 }
 
-impl App {
-    fn new() -> Self {
-        Self {
-            window: None,
-            surface: None,
-            font_system: FontSystem::new(),
-            swash: SwashCache::new(),
-            blocks: parse_minidoc(DEMO),
-            base: String::new(),
-            links: Vec::new(),
-            cursor: (0.0, 0.0),
-            scroll_y: 0.0,
-            page_height: 0.0,
-            status: "about:demo".to_owned(),
-        }
+/// `getCmdOption` verbatim — retourne l'`OptID` et avance `idx`.
+/// `opt_args` reçoit la valeur d'option (verbatim `opt_argv`).
+fn get_cmd_option<'a>(args: &'a [String], idx: &mut usize, opt_args: &mut Vec<&'a str>) -> u32 {
+    if *idx >= args.len() {
+        return 0;
     }
-
-    fn load(&mut self, url: &str) {
-        match fetch(url) {
-            Ok(bytes) => {
-                let text = String::from_utf8_lossy(&bytes);
-                self.blocks = parse_minidoc(&text);
-                self.base.clone_from(&url.to_owned());
-                self.scroll_y = 0.0;
-                self.status = url.to_string();
-            }
-            Err(e) => {
-                self.status = format!("ERR {url}: {e}");
-            }
-        }
-        if let Some(w) = &self.window {
-            w.set_title(&format!("dillo — {}", self.status));
-            w.request_redraw();
-        }
-    }
-
-    /// Rendu bloc-par-bloc dans la `Pixmap` : wraps via cosmic-text
-    /// (`Wrap::Word`), collecte les hitboxes de liens par `metadata`.
-    fn render(&mut self, width: u32, height: u32) -> Pixmap {
-        let mut pm = Pixmap::new(width, height)
-            .unwrap_or_else(|| Pixmap::new(1, 1).unwrap_or_else(|| unreachable!()));
-        pm.fill(tiny_skia::Color::WHITE);
-        self.links.clear();
-        let mut y = 16.0f32 - self.scroll_y;
-        for block in &self.blocks {
-            let (runs, size) = match block {
-                Block::Heading { level, runs } => (runs, 30.0 - f32::from(*level) * 2.0),
-                Block::Paragraph { runs } => (runs, 16.0),
-            };
-            let metrics = Metrics::new(size, size * 1.25);
-            let mut buf = Buffer::new(&mut self.font_system, metrics);
-            buf.set_size(
-                &mut self.font_system,
-                Some((width as f32 - 32.0).max(8.0)),
-                None,
-            );
-            buf.set_wrap(&mut self.font_system, Wrap::Word);
-            let plain = Attrs::new().family(Family::SansSerif);
-            let spans: Vec<(String, Attrs)> = runs
-                .iter()
-                .enumerate()
-                .map(|(i, r)| match r {
-                    Inline::Text(t) => (t.clone(), plain),
-                    Inline::Link { text, .. } => (
-                        text.clone(),
-                        plain.color(Color::rgb(0x10, 0x40, 0xd0)).metadata(i),
-                    ),
-                })
-                .collect();
-            buf.set_rich_text(
-                &mut self.font_system,
-                spans.iter().map(|(s, a)| (s.as_str(), *a)),
-                plain,
-                Shaping::Advanced,
-            );
-            buf.shape_until_scroll(&mut self.font_system, false);
-
-            // Hitboxes par metadata (= index du run Inline)
-            for run in buf.layout_runs() {
-                for g in run.glyphs {
-                    if let Inline::Link { href, .. } = &runs[g.metadata] {
-                        self.links.push(LinkBox {
-                            x: 16.0 + g.x,
-                            y: y + run.line_y,
-                            w: g.w,
-                            h: run.line_height,
-                            href: href.clone(),
-                        });
-                    }
+    let arg = &args[*idx];
+    for o in OPTIONS {
+        if arg == o.shortopt || arg == o.longopt {
+            *idx += 1;
+            let need = o.opt_argc.unsigned_abs() as usize;
+            for _ in 0..need {
+                if *idx >= args.len() {
+                    eprintln!("Not enough parameters for option \"{arg}\".");
+                    return 1 << 15; // DILLO_CLI_ERROR
                 }
+                opt_args.push(&args[*idx]);
+                *idx += 1;
             }
-            let block_h = buf
-                .layout_runs()
-                .last()
-                .map_or(0.0, |r| r.line_y + r.line_height);
-            buf.draw(
-                &mut self.font_system,
-                &mut self.swash,
-                Color::rgb(0x20, 0x20, 0x20),
-                |x, yy, w, h, c| {
-                    blend(&mut pm, x + 16, yy + y as i32, w, h, c);
-                },
-            );
-            // souligné des liens (1px sous chaque glyph box)
-            for lb in self.links.iter().rev() {
-                if lb.y + lb.h < y || lb.y > y + block_h {
-                    continue;
-                }
-                draw_line(
-                    &mut pm,
-                    lb.x,
-                    lb.y + lb.h - 2.0,
-                    lb.w,
-                    Color::rgb(0x10, 0x40, 0xd0),
-                );
-            }
-            y += block_h + size * 0.5;
-        }
-        self.page_height = y + self.scroll_y;
-        pm
-    }
-
-    fn hit(&self) -> Option<String> {
-        let (cx, cy) = (self.cursor.0 as f32, self.cursor.1 as f32);
-        self.links
-            .iter()
-            .find(|lb| cx >= lb.x && cx <= lb.x + lb.w && cy >= lb.y && cy <= lb.y + lb.h)
-            .map(|lb| lb.href.clone())
-    }
-}
-
-fn blend(pm: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, c: Color) {
-    let (pw, ph) = (pm.width() as i32, pm.height() as i32);
-    for dy in 0..h as i32 {
-        for dx in 0..w as i32 {
-            let (px, py) = (x + dx, y + dy);
-            if px < 0 || py < 0 || px >= pw || py >= ph {
-                continue;
-            }
-            let idx = (py * pw + px) as usize;
-            let a = u16::from(c.a());
-            let inv = 255 - a;
-            let Some(d) = pm.pixels().get(idx).copied() else {
-                continue;
-            };
-            let mix =
-                |s: u8, d: u8| -> u8 { ((u16::from(s) * a + u16::from(d) * inv) / 255) as u8 };
-            if let Some(p) = PremultipliedColorU8::from_rgba(
-                mix(c.r(), d.red()),
-                mix(c.g(), d.green()),
-                mix(c.b(), d.blue()),
-                255,
-            ) {
-                pm.pixels_mut()[idx] = p;
-            }
+            return o.id;
         }
     }
+    0 // pas une option — fin du scan (verbatim : non-reconnu ⇒ arrêt)
 }
 
-fn draw_line(pm: &mut Pixmap, x: f32, y: f32, w: f32, c: Color) {
-    blend(
-        pm,
-        x as i32,
-        y as i32,
-        w.max(1.0) as u32,
-        1,
-        Color::rgba(c.r(), c.g(), c.b(), 200),
+/// `a_Version_print_info` ≙ version.cc (`dillo --version`).
+fn print_version() {
+    println!("Dillo {}", env!("CARGO_PKG_VERSION"));
+    println!("  (port Rust — stack winit/softbuffer/tiny-skia/cosmic-text, rustls)");
+}
+
+/// `makeStartUrl` verbatim — fichier local (`F_OK`) ou URL.
+fn make_start_url(arg: &str, local: bool) -> Option<DilloUrl> {
+    // Chemin relatif → préfixe du cwd de lancement
+    // (`Paths::getOldWorkingDir`).
+    let p: Vec<u8> = if arg.starts_with('/') {
+        arg.as_bytes().to_vec()
+    } else {
+        let mut v = paths::old_working_dir().unwrap_or_default();
+        if !v.ends_with(b"/") {
+            v.push(b'/');
+        }
+        v.extend_from_slice(arg.as_bytes());
+        v
+    };
+
+    let mut start_url = if std::fs::metadata(String::from_utf8_lossy(&p).as_ref()).is_ok() {
+        // F_OK ≙ access() — le chemin absolu peut contenir des
+        // caractères non-URL.
+        let url_str = misc::escape_chars(&p, b"% #");
+        url::url_new(&url_str[1..], Some(b"file:/"))
+    } else {
+        // Pas un fichier → filtrage URL.
+        let url_str = url::string_strip_delimiters(arg.as_bytes());
+        url::url_new(&url_str, None)
+    }?;
+
+    if local {
+        let f = start_url.flags | url::flags::SPAM_SAFE;
+        start_url.set_flags(f);
+    }
+    Some(start_url)
+}
+
+/// Lit un fichier de prefs (retourne `None` si absent ≙ `NULL` amont).
+fn prefs_content(rc_file: &str) -> Option<String> {
+    let mut r = paths::prefs_fp(rc_file)?;
+    let mut s = String::new();
+    std::io::Read::read_to_string(&mut r, &mut s).ok()?;
+    Some(s)
+}
+
+fn main() -> std::process::ExitCode {
+    tracing_subscriber_init();
+    let args: Vec<String> = std::env::args().collect();
+
+    // --- CLI (verbatim) -------------------------------------------------
+    let mut options_got: u32 = 0;
+    let mut idx = 1usize;
+    let mut xpos = 0;
+    let mut ypos = 0;
+    let mut width = 0;
+    let mut height = 0;
+
+    loop {
+        let mut opt_args: Vec<&str> = Vec::new();
+        let opt_id = get_cmd_option(&args, &mut idx, &mut opt_args);
+        if opt_id == 0 {
+            break;
+        }
+        options_got |= opt_id;
+        match opt_id {
+            DILLO_CLI_FULLWINDOW | DILLO_CLI_LOCAL => {}
+            DILLO_CLI_XID => {
+                // xembed non porté (X11) — l'option est reconnue puis
+                // refusée proprement plutôt qu'ignorée en silence.
+                eprintln!("dillo: -x/--xid (xembed) is not supported by this port");
+                return std::process::ExitCode::from(2);
+            }
+            DILLO_CLI_GEOMETRY => {
+                let Some((x, y, w, h)) = misc::parse_geometry(opt_args[0].as_bytes()) else {
+                    eprintln!(
+                        "geometry argument \"{}\" not valid. Must be of the form WxH[{{+-}}X{{+-}}Y].",
+                        opt_args[0]
+                    );
+                    return std::process::ExitCode::from(2);
+                };
+                width = w;
+                height = h;
+                xpos = x.unwrap_or(-1);
+                ypos = y.unwrap_or(-1);
+            }
+            DILLO_CLI_VERSION => {
+                print_version();
+                return std::process::ExitCode::from(0);
+            }
+            DILLO_CLI_HELP => {
+                print_help(&args[0]);
+                return std::process::ExitCode::from(0);
+            }
+            _ => {
+                print_help(&args[0]);
+                return std::process::ExitCode::from(2);
+            }
+        }
+    }
+
+    // --- a_Prefs_init + fichiers de conf (ordre verbatim) ---------------
+    paths::init();
+
+    let mut prefs = Prefs::default();
+    if let Some(mut fp) = paths::prefs_fp(paths::RC_PREFS) {
+        let _ = prefs.parse_dillorc(&mut fp);
+    }
+
+    // `a_Control_init` côté transport — créé avant Glue (le listener
+    // est injecté dessous ; hors Unix ≙ `ENABLE_CONTROL_SOCKET` off).
+    #[cfg(unix)]
+    let ctl_listener = unix::CtlListener::init(&paths::dillo_dir()).ok();
+
+    // Moteurs réseau : leurs `a_*_init` amont sont globaux ; ici ils
+    // partagent un runtime tokio worker (ADR-0003) et s'installent
+    // dans la `Chain` de chaque connexion via la factory capi.
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("dillo: cannot start io runtime: {e}");
+            return std::process::ExitCode::from(1);
+        }
+    };
+    let handle = rt.handle().clone();
+
+    // Partage `prefs` Chrome↔glue (≙ global `prefs` amont).
+    let prefs_rc = Rc::new(RefCell::new(prefs));
+    let mut app = DwApp::new_empty();
+    let mut glue = Glue::new(app.platform(), Rc::clone(&prefs_rc));
+
+    // keysrc / domainrc (verbatim — après dillorc).
+    if let Some(content) = prefs_content(paths::RC_KEYS) {
+        glue.chrome.keys.parse(&content);
+    }
+    if let Some(content) = prefs_content(paths::RC_DOMAIN) {
+        domain::domain_parse(&content);
+    }
+    // `dLib_show_messages(prefs.show_msg)` ≙ filtre tracing.
+    if !prefs_rc.borrow().show_msg {
+        tracing::info!("dillo: show_msg off");
+    }
+
+    // --- initialisation des modules (ordre verbatim de `dillo.cc`) ------
+    // a_Dpi_init (vide amont) — le démon dpid arrive en phase dpi.
+    // a_Dns_init + a_IO_init + a_Http_init + a_Tls_init → factory.
+    capi::capi_init();
+    // a_Mime_init + a_Dicache_init des viewers/factory : Glue::new.
+    dillo_images::dicache::dicache_init(prefs_rc.borrow().ignore_image_formats.as_deref());
+    // a_Bw_init → registre dans Glue::new.
+    // a_Cookies_init — contrôle `~/.dillo/cookiesrc` (verbatim : pas
+    // de fallback sysconfdir pour ce fichier).
+    let cookiesrc = std::fs::read_to_string(paths::dillo_dir().join("cookiesrc")).ok();
+    let _ = cookies::cookies_init(cookiesrc.as_deref());
+    // a_Actions_init → Chrome::new (`actions_init`).
+    let hsts_preload = prefs_content(paths::HSTS_PRELOAD);
+    hsts::hsts_init(
+        prefs_rc.borrow().http_strict_transport_security,
+        hsts_preload.as_deref(),
     );
+    auth::auth_init();
+    // a_UIcmd_init → UiCmd::new (Glue::new).
+    // a_Control_init → Control::new (Glue::new) + listener injecté.
+    #[cfg(unix)]
+    if let Some(l) = ctl_listener {
+        glue.set_ctl_listener(l);
+    }
+
+    // StyleEngine::init — feuille UA statique.
+    {
+        let mut ti = dillo_html::html::HtmlTagIndex;
+        dillo_css::styleengine::StyleEngine::init(&mut ti);
+    }
+
+    // Keys::genAboutKeys — page `about:keys` injectée dans le cache.
+    glue.chrome.keys.gen_about_keys();
+
+    // Réglages dw (verbatim — statiques globaux amont).
+    {
+        let p = prefs_rc.borrow();
+        dillo_dw::widget::set_adjust_min_width(p.adjust_min_width);
+        dillo_dw::table::set_adjust_table_min_width(p.adjust_table_min_width);
+        dillo_dw::textblock::set_penalty_hyphen(p.penalty_hyphen);
+        dillo_dw::textblock::set_penalty_hyphen2(p.penalty_hyphen_2);
+        dillo_dw::textblock::set_penalty_em_dash_left(p.penalty_em_dash_left);
+        dillo_dw::textblock::set_penalty_em_dash_right(p.penalty_em_dash_right);
+        dillo_dw::textblock::set_penalty_em_dash_right2(p.penalty_em_dash_right_2);
+        dillo_dw::textblock::set_stretchability_factor(p.stretchability_factor);
+    }
+
+    // La ligne de commande prime sur dillorc (verbatim).
+    {
+        let mut p = prefs_rc.borrow_mut();
+        if options_got & DILLO_CLI_FULLWINDOW != 0 {
+            p.fullwindow_start = true;
+        }
+        if options_got & DILLO_CLI_GEOMETRY != 0 {
+            p.width = width;
+            p.height = height;
+            p.xpos = xpos;
+            p.ypos = ypos;
+        }
+    }
+
+    // --- moteurs I/O/HTTP/DNS/TLS partagés (≙ a_Http_init…) -------------
+    // Le mot de passe proxy est saisi plus bas (dialog) puis injecté
+    // dans chaque `HttpEngine` via cette cellule partagée.
+    let proxy_passwd: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    {
+        let p = prefs_rc.borrow();
+        let cfg = HttpConfig {
+            http_language: p
+                .http_language
+                .as_deref()
+                .map(|s| String::from_utf8_lossy(s).into_owned()),
+            http_proxy: p.http_proxy.clone(),
+            http_proxyuser: p
+                .http_proxyuser
+                .as_deref()
+                .map(|s| String::from_utf8_lossy(s).into_owned()),
+            no_proxy: p
+                .no_proxy
+                .as_deref()
+                .map(|s| String::from_utf8_lossy(s).into_owned()),
+            http_max_conns: p.http_max_conns,
+            http_persistent_conns: p.http_persistent_conns,
+            http_user_agent: p
+                .http_user_agent
+                .as_deref()
+                .map(|s| String::from_utf8_lossy(s).into_owned())
+                .unwrap_or_default(),
+            http_referer: p.http_referer.as_deref().map_or_else(
+                || "host".to_string(),
+                |s| String::from_utf8_lossy(s).into_owned(),
+            ),
+            trace_http: p.trace_http,
+            brotli: true, // ≙ ENABLE_BROTLI amont
+        };
+        let rt2 = handle.clone();
+        let passwd = Rc::clone(&proxy_passwd);
+        let dialogs = Rc::clone(&glue.dialogs);
+        capi::capi_set_engine_factory(Rc::new(move |chain| {
+            chain.set_module(IoEngine::new(rt2.clone()));
+            chain.set_module(Dns::new(rt2.clone()));
+            let mut http = HttpEngine::new(rt2.clone(), cfg.clone());
+            if let Some(pw) = passwd.borrow().as_ref() {
+                http.set_proxy_passwd(pw);
+            }
+            chain.set_module(http);
+            // `Tls_fd_dialog` ≙ `a_Dialog_choice(title,msg,"Continue",
+            // "Cancel")` — via le runner partagé (≙ `a_Dialog_*` amont).
+            let dl = Rc::clone(&dialogs);
+            let dialog: dillo_net::tls::CertDialog = Rc::new(move |title, msg| {
+                let spec = dillo_browser::dialog::choice_spec(title, msg, &["Continue", "Cancel"]);
+                match spec {
+                    Some(spec) => match dl.try_borrow_mut() {
+                        Ok(mut d) => match d.run(&spec) {
+                            dillo_browser::dialog::DialogAnswer::Choice(i) => i,
+                            _ => 2, // échec fermé ≙ Cancel amont
+                        },
+                        Err(_) => 2,
+                    },
+                    None => 2,
+                }
+            });
+            if let Ok(tls) = TlsEngine::with_dialog(rt2.clone(), dialog) {
+                chain.set_module(tls);
+            }
+        }));
+    }
+
+    // --- première BrowserWindow (verbatim) -------------------------------
+    let p = prefs_rc.borrow();
+    let bw = glue
+        .uicmd
+        .browser_window_new(&glue.reg, &mut glue.chrome, &p, 0, 0, None);
+    // ≙ `((Fl_Widget*)bw->ui)->window()->make_current()` — la fenêtre
+    // native est créée au premier tick (`drain_pending`).
+
+    // --- auth proxy (verbatim, après la fenêtre) -------------------------
+    if let Some(user) = p.http_proxyuser.as_deref() {
+        if proxy_passwd.borrow().is_none() {
+            // ≙ `!a_Http_proxy_auth()` — jamais renseigné à ce stade.
+            let user_s = String::from_utf8_lossy(user).into_owned();
+            if let Some(pw) = glue.uicmd.get_passwd(&mut glue.chrome, &user_s) {
+                *proxy_passwd.borrow_mut() = Some(pw);
+            } else {
+                tracing::warn!("Not using proxy authentication.");
+            }
+        }
+    }
+
+    // --- URL/fichiers de la ligne de commande (verbatim) -----------------
+    let local = options_got & DILLO_CLI_LOCAL != 0;
+    if idx >= args.len() {
+        // Pas d'URL → page de démarrage (`about:blank` → focus location).
+        let start = p.start_page.clone();
+        let blank = start.as_ref().is_some_and(|u| {
+            u.scheme.as_deref() == Some(b"about") && u.path.as_deref() == Some(b"blank")
+        });
+        if blank || start.is_none() {
+            glue.uicmd
+                .open_url(&glue.reg, &mut glue.chrome, &p, bw, None);
+        } else if let Some(mut u) = start {
+            glue.uicmd
+                .open_url(&glue.reg, &mut glue.chrome, &p, bw, Some(&u));
+            let txt = u.str_().to_vec();
+            glue.uicmd
+                .set_location_text(&glue.reg, &mut glue.chrome, bw, &txt);
+        }
+    } else {
+        for (i, a) in args.iter().enumerate().skip(idx) {
+            let Some(start_url) = make_start_url(a, local) else {
+                continue;
+            };
+            if i > idx {
+                if p.middle_click_opens_new_tab {
+                    glue.uicmd.open_url_nt(
+                        &glue.reg,
+                        &mut glue.chrome,
+                        &p,
+                        bw,
+                        Some(&start_url),
+                        1,
+                    );
+                } else {
+                    glue.uicmd
+                        .open_url_nw(&glue.reg, &mut glue.chrome, &p, bw, Some(&start_url));
+                }
+            } else {
+                glue.uicmd
+                    .open_url(&glue.reg, &mut glue.chrome, &p, bw, Some(&start_url));
+                let mut u = start_url;
+                let txt = u.str_().to_vec();
+                glue.uicmd
+                    .set_location_text(&glue.reg, &mut glue.chrome, bw, &txt);
+            }
+        }
+    }
+    drop(p);
+
+    // --- boucle `while (Fl::wait() > 0)` --------------------------------
+    app.set_shell(Rc::new(RefCell::new(glue)));
+    let ret = app.run();
+
+    // --- nettoyage (verbatim ordre de `dillo.cc`) ------------------------
+    // a_Control_free → `Drop` du listener (unlink du socket).
+    drop(rt); // arrête les worker tokio (dns/io/tls/http moteurs)
+    domain::domain_freeall();
+    cookies::cookies_freeall();
+    hsts::hsts_freeall();
+    cache::cache_freeall();
+    dillo_images::dicache::dicache_freeall();
+    // a_Http/a_Tls/a_Dns_freeall → drop des moteurs par-connexion.
+    history::history_freeall();
+    timeout::timeout_freeall();
+    // a_Prefs_freeall / Keys::free → drop de `prefs`/`chrome`.
+    paths::free();
+    // dw::core::freeall / dw::fltk::freeall → drop des layouts/vues.
+    if let Err(e) = ret {
+        eprintln!("dillo: event loop error: {e}");
+        return std::process::ExitCode::from(1);
+    }
+    println!("Dillo: normal exit!");
+    std::process::ExitCode::from(0)
 }
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        }
-        let attrs = Window::default_attributes()
-            .with_title("dillo — tranche verticale")
-            .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
-        let Ok(window) = event_loop.create_window(attrs) else {
-            event_loop.exit();
-            return;
-        };
-        let window = Arc::new(window);
-        let Ok(surface) = PlatformSurface::new(Arc::clone(&window)) else {
-            event_loop.exit();
-            return;
-        };
-        self.surface = Some(surface);
-        self.window = Some(window);
-        if let Some(w) = &self.window {
-            w.request_redraw();
-        }
-    }
-
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(_) => {
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x, position.y);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(href) = self.hit() {
-                    let url = resolve_href(&self.base, &href);
-                    self.load(&url);
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y * 30.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32,
-                };
-                self.scroll_y = (self.scroll_y - dy).clamp(0.0, self.page_height.max(0.0));
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                let Some((w, h)) = self.surface.as_ref().map(PlatformSurface::size) else {
-                    return;
-                };
-                if w == 0 || h == 0 {
-                    return;
-                }
-                let pm = self.render(w, h);
-                if let Some(surface) = &mut self.surface {
-                    let _ = surface.present(&pm);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Fl::add_idle équivalent : rien à faire → Wait (pas de
-        // spin). Le layout progressif en tranches viendra avec dw/.
-    }
-}
-
-fn main() {
-    let event_loop = EventLoop::new().unwrap_or_else(|e| {
-        eprintln!("event loop: {e}");
-        std::process::exit(1);
-    });
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new();
-    if let Some(arg) = std::env::args().nth(1) {
-        app.base.clone_from(&arg);
-        app.load(&arg);
-    }
-    let _ = event_loop.run_app(&mut app);
+/// `dLib_show_messages`/MSG → filtre `tracing` (AGENTS §4.10).
+fn tracing_subscriber_init() {
+    use tracing_subscriber::EnvFilter;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
+        .try_init();
 }

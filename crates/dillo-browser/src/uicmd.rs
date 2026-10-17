@@ -252,49 +252,49 @@ pub trait UiShell {
 /// Dispatch `nav.c` → `a_UIcmd_*` (verbatim : les `a_UIcmd_*` amont
 /// retrouvent `bw` et `UI*` globaux — ici [`NavSeams`] lie le registre
 /// et le shell pour la durée d'un appel [`crate::nav::Nav`]).
-struct NavSeams<'a> {
-    reg: &'a mut BwRegistry,
-    shell: &'a mut dyn UiShell,
-    prefs: &'a Prefs,
-    uicmd: &'a UiCmd,
+pub(crate) struct NavSeams<'a> {
+    pub reg: &'a BwRegistry,
+    pub shell: &'a mut dyn UiShell,
+    pub prefs: &'a Prefs,
+    pub uicmd: &'a UiCmd,
 }
 
 impl crate::nav::NavBw for NavSeams<'_> {
-    fn expecting(&mut self, bw: u32) -> bool {
+    fn expecting(&self, bw: u32) -> bool {
         self.reg.get(bw).is_some_and(|b| b.expecting())
     }
-    fn cancel_expect(&mut self, bw: u32) {
+    fn cancel_expect(&self, bw: u32) {
         if let Some(b) = self.reg.get(bw) {
             b.cancel_expect();
         }
     }
-    fn expected_url(&mut self, bw: u32) -> Option<DilloUrl> {
+    fn expected_url(&self, bw: u32) -> Option<DilloUrl> {
         self.reg.get(bw).and_then(|b| b.expected_url())
     }
-    fn expect(&mut self, bw: u32, url: &DilloUrl) {
+    fn expect(&self, bw: u32, url: &DilloUrl) {
         if let Some(b) = self.reg.get(bw) {
             b.expect(url);
         }
     }
-    fn stop_clients(&mut self, bw: u32, which: i32) {
+    fn stop_clients(&self, bw: u32, which: i32) {
         if let Some(b) = self.reg.get(bw) {
             b.stop_clients(which);
         }
     }
-    fn cleanup(&mut self, bw: u32) {
+    fn cleanup(&self, bw: u32) {
         if let Some(b) = self.reg.get(bw) {
             b.cleanup();
         }
     }
-    fn add_client(&mut self, bw: u32, key: i32, root: bool) {
+    fn add_client(&self, bw: u32, key: i32, root: bool) {
         crate::nav::NavBw::add_client(self.reg, bw, key, root);
     }
-    fn add_url(&mut self, bw: u32, url: &DilloUrl) {
+    fn add_url(&self, bw: u32, url: &DilloUrl) {
         if let Some(b) = self.reg.get(bw) {
             b.add_url(url);
         }
     }
-    fn bg_color(&mut self, bw: u32) -> i32 {
+    fn bg_color(&self, bw: u32) -> i32 {
         self.reg.get(bw).map_or(0x00ff_ffff, |b| b.bg_color.get())
     }
 }
@@ -306,8 +306,8 @@ impl NavUi for NavSeams<'_> {
     fn set_location_text(&mut self, bw: u32, text: &[u8]) {
         uicmd_set_location_text(self.reg, self.shell, bw, text);
     }
-    fn set_buttons_sens(&mut self, bw: u32, ptr: i32, size: i32) {
-        uicmd_set_buttons_sens_impl(self.reg, self.shell, bw, ptr, size);
+    fn set_buttons_sens(&mut self, bw: u32, ptr: i32, size: i32, top: Option<DilloUrl>) {
+        uicmd_set_buttons_sens_impl(self.reg, self.shell, bw, ptr, size, top);
     }
     fn get_scroll_xy(&mut self, bw: u32) -> (i32, i32) {
         uicmd_get_scroll_xy(self.reg, bw)
@@ -377,7 +377,7 @@ impl UiCmd {
     /// Retourne le `bw_id` créé.
     pub fn browser_window_new(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         mut ww: i32,
@@ -416,7 +416,7 @@ impl UiCmd {
     #[allow(clippy::unused_self)]
     fn tab_new(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         tabs: usize,
@@ -458,7 +458,7 @@ impl UiCmd {
 
     /// `a_UIcmd_close_bw` (verbatim) — stop clients, détruit le
     /// layout, retire l'onglet (+ fenêtre si dernier), `a_Bw_free`.
-    pub fn close_bw(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+    pub fn close_bw(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         b.stop_clients(BW_ROOT | BW_IMG | BW_FORCE);
         *b.layout.borrow_mut() = None; // ≙ delete(layout)
@@ -471,7 +471,7 @@ impl UiCmd {
     /// amont (jamais de dialogue).
     pub fn close_all_bw(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         force: bool,
@@ -519,7 +519,7 @@ impl UiCmd {
     /// strip délimiteurs, normalisation `file:`.
     pub fn open_urlstr(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -556,7 +556,7 @@ impl UiCmd {
     /// `NULL` (bw vierge → focus location + boutons).
     pub fn open_url(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -584,7 +584,7 @@ impl UiCmd {
     /// `UIcmd_open_url_nbw` (verbatim) — `new_tab_page` si pas d'URL.
     fn open_url_nbw(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         new_bw: u32,
@@ -625,7 +625,7 @@ impl UiCmd {
     /// même géométrie + même zoom.
     pub fn open_url_nw(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -647,7 +647,7 @@ impl UiCmd {
     /// (`back_nt` passe `-1`).
     pub fn open_url_nt(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -671,13 +671,7 @@ impl UiCmd {
 
     /// `a_Nav_expect_done` — appelé par capi quand la réponse racine
     /// arrive (verbatim — wrapper public ≙ l'entrée `nav.h`).
-    pub fn expect_done(
-        &self,
-        reg: &mut BwRegistry,
-        shell: &mut dyn UiShell,
-        prefs: &Prefs,
-        bw: u32,
-    ) {
+    pub fn expect_done(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         let mut seams = NavSeams {
             reg,
@@ -689,7 +683,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_back` — verbatim `a_Nav_back`.
-    pub fn back(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
+    pub fn back(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         let mut seams = NavSeams {
             reg,
@@ -701,7 +695,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_back_nt` — verbatim `a_Nav_back_nt`.
-    pub fn back_nt(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
+    pub fn back_nt(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         let mut seams = NavSeams {
             reg,
@@ -714,20 +708,13 @@ impl UiCmd {
 
     /// `a_UIcmd_back_popup` — verbatim (`dir = -1` ; `get_history`
     /// fait ici ≙ `a_Menu_history_popup` amont).
-    pub fn back_popup(
-        &self,
-        reg: &mut BwRegistry,
-        shell: &mut dyn UiShell,
-        bw: u32,
-        x: i32,
-        y: i32,
-    ) {
+    pub fn back_popup(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32, x: i32, y: i32) {
         let list = self.get_history(reg, bw, -1);
         shell.history_popup(bw, list, x, y, -1);
     }
 
     /// `a_UIcmd_forw` — verbatim `a_Nav_forw`.
-    pub fn forw(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
+    pub fn forw(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         let mut seams = NavSeams {
             reg,
@@ -739,7 +726,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_forw_nt` — verbatim `a_Nav_forw_nt`.
-    pub fn forw_nt(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
+    pub fn forw_nt(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         let mut seams = NavSeams {
             reg,
@@ -751,14 +738,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_forw_popup` — verbatim (`dir = +1`).
-    pub fn forw_popup(
-        &self,
-        reg: &mut BwRegistry,
-        shell: &mut dyn UiShell,
-        bw: u32,
-        x: i32,
-        y: i32,
-    ) {
+    pub fn forw_popup(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32, x: i32, y: i32) {
         let list = self.get_history(reg, bw, 1);
         shell.history_popup(bw, list, x, y, 1);
     }
@@ -766,7 +746,7 @@ impl UiCmd {
     /// `a_UIcmd_home` (verbatim — `nt` ≙ nouvel onglet).
     pub fn home(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -781,7 +761,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_reload` — verbatim `a_Nav_reload` (différé).
-    pub fn reload(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
+    pub fn reload(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         let mut seams = NavSeams {
             reg,
@@ -794,7 +774,7 @@ impl UiCmd {
 
     /// `a_UIcmd_get_first_active_bw` (verbatim) — premier `bw` de
     /// l'onglet actif de chaque `Tabgroup`.
-    pub fn first_active_bw(reg: &mut BwRegistry, shell: &mut dyn UiShell) -> Option<u32> {
+    pub fn first_active_bw(reg: &BwRegistry, shell: &mut dyn UiShell) -> Option<u32> {
         for ui in shell.active_ui_handles() {
             if let Some(bw) = Self::get_bw_by_widget(reg, shell, ui) {
                 return Some(bw);
@@ -804,7 +784,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_reload_all_active` (verbatim).
-    pub fn reload_all_active(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs) {
+    pub fn reload_all_active(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs) {
         for ui in shell.active_ui_handles() {
             if let Some(bw) = Self::get_bw_by_widget(reg, shell, ui) {
                 self.reload(reg, shell, prefs, bw);
@@ -813,7 +793,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_repush` — verbatim `a_Nav_repush` (différé).
-    pub fn repush(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
+    pub fn repush(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         let mut seams = NavSeams {
             reg,
@@ -827,7 +807,7 @@ impl UiCmd {
     /// `a_UIcmd_redirection0` — verbatim `a_Nav_redirection0`.
     pub fn redirection0(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -848,7 +828,7 @@ impl UiCmd {
     /// 0 expire (≙ `Nav_*_callback` amont).
     pub fn nav_op_now(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -877,7 +857,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_copy` — verbatim `layout->copyCurrentSelection(1)`.
-    pub fn copy(&self, reg: &mut BwRegistry, bw: u32) {
+    pub fn copy(&self, reg: &BwRegistry, bw: u32) {
         if let Some(b) = reg.get(bw) {
             if let Some(l) = b.layout.borrow().as_ref() {
                 l.borrow_mut().copy_current_selection(1);
@@ -886,7 +866,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_zoom_in` (verbatim — `+0.10`, borne 10.0, msg, repush).
-    pub fn zoom_in(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
+    pub fn zoom_in(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         let mut z = b.zoom.get() + 0.10;
         if z > 10.0 {
@@ -903,7 +883,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_zoom_out` (verbatim — `-0.10`, borne 0.10).
-    pub fn zoom_out(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
+    pub fn zoom_out(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         let mut z = b.zoom.get() - 0.10;
         if z < 0.10 {
@@ -920,13 +900,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_zoom_reset` (verbatim — `1.0`).
-    pub fn zoom_reset(
-        &self,
-        reg: &mut BwRegistry,
-        shell: &mut dyn UiShell,
-        prefs: &Prefs,
-        bw: u32,
-    ) {
+    pub fn zoom_reset(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         b.zoom.set(1.0);
         self.set_msg(reg, shell, bw, "Zoom set to 100%");
@@ -1015,7 +989,7 @@ impl UiCmd {
     /// Abort/Continue (Rename reprompte).
     fn save(
         &self,
-        _reg: &mut BwRegistry,
+        _reg: &BwRegistry,
         shell: &mut dyn UiShell,
         bw: u32,
         url: &DilloUrl,
@@ -1043,7 +1017,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_save` (verbatim) — sauve l'URL du haut de pile.
-    pub fn save_page(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+    pub fn save_page(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         let url = history::history_get_url(b.nav.borrow().get_top_uidx());
         if let Some(url) = url {
@@ -1054,7 +1028,7 @@ impl UiCmd {
     /// `a_UIcmd_save_link` (verbatim).
     pub fn save_link(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         bw: u32,
         url: &DilloUrl,
@@ -1070,7 +1044,7 @@ impl UiCmd {
 
     /// `a_UIcmd_stop` (verbatim) — annule l'expect + stop clients +
     /// boutons.
-    pub fn stop(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
+    pub fn stop(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         tracing::debug!("a_UIcmd_stop()");
         let Some(b) = reg.get(bw) else { return };
         {
@@ -1088,13 +1062,13 @@ impl UiCmd {
 
     /// `a_UIcmd_tools` (verbatim — `ui` ≙ `bw->ui`, lu par le shell
     /// pour l'état des toggles du menu).
-    pub fn tools(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32, x: i32, y: i32) {
+    pub fn tools(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32, x: i32, y: i32) {
         let ui = reg.get(bw).map_or(0, |b| b.ui.get());
         shell.tools_popup(bw, ui, x, y);
     }
 
     /// `a_UIcmd_open_file` (verbatim) — dialogue → `file:` URL.
-    pub fn open_file(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
+    pub fn open_file(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         if let Some(name) = shell.dialog_open_file("Dillo: Open File", None, "") {
             let url = url_new(name.as_bytes(), Some(b"file:"));
             self.open_url(reg, shell, prefs, bw, url.as_ref());
@@ -1141,13 +1115,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_search_dialog` (verbatim).
-    pub fn search_dialog(
-        &self,
-        reg: &mut BwRegistry,
-        shell: &mut dyn UiShell,
-        prefs: &Prefs,
-        bw: u32,
-    ) {
+    pub fn search_dialog(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
         if let Some(query) = shell.dialog_input("Dillo: Search", "Search the Web:") {
             let url_str = Self::make_search_str(prefs, query.as_bytes());
             self.open_urlstr(reg, shell, prefs, bw, &url_str);
@@ -1163,7 +1131,7 @@ impl UiCmd {
     /// `a_UIcmd_book` (verbatim — `dpi:/bm/`).
     pub fn book(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -1185,7 +1153,7 @@ impl UiCmd {
     /// `a_UIcmd_page_popup` (verbatim).
     pub fn page_popup(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         bw: u32,
         has_bugs: bool,
@@ -1242,7 +1210,7 @@ impl UiCmd {
 
     /// `a_UIcmd_copy_urlstr` (verbatim) — `destination` : 0 primary,
     /// 1 clipboard, 2 both.
-    pub fn copy_urlstr(&self, reg: &mut BwRegistry, bw: u32, urlstr: &[u8], destination: i32) {
+    pub fn copy_urlstr(&self, reg: &BwRegistry, bw: u32, urlstr: &[u8], destination: i32) {
         if let Some(b) = reg.get(bw) {
             if let Some(l) = b.layout.borrow().as_ref() {
                 l.borrow_mut().copy_selection(urlstr, destination);
@@ -1254,7 +1222,7 @@ impl UiCmd {
     /// suffixe `_NNNN` pour les URL POST (`post_id` static).
     pub fn view_page_source(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -1285,7 +1253,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_view_page_bugs` (verbatim).
-    pub fn view_page_bugs(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+    pub fn view_page_bugs(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
         let Some(b) = reg.get(bw) else { return };
         if b.num_page_bugs.get() > 0 {
             let bugs = b.page_bugs.borrow().clone();
@@ -1296,7 +1264,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_bugmeter_popup` (verbatim).
-    pub fn bugmeter_popup(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+    pub fn bugmeter_popup(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
         let url = reg
             .get(bw)
             .and_then(|b| history::history_get_url(b.nav.borrow().get_top_uidx()));
@@ -1306,7 +1274,7 @@ impl UiCmd {
     /// `a_UIcmd_get_history` (verbatim) — liste d'index historique
     /// terminée par `-1` (`direction` ±1).
     #[must_use]
-    pub fn get_history(&self, reg: &mut BwRegistry, bw: u32, direction: i32) -> Vec<i32> {
+    pub fn get_history(&self, reg: &BwRegistry, bw: u32, direction: i32) -> Vec<i32> {
         let Some(b) = reg.get(bw) else {
             return vec![-1];
         };
@@ -1334,7 +1302,7 @@ impl UiCmd {
     /// `a_UIcmd_nav_jump` — verbatim `a_Nav_jump`.
     pub fn nav_jump(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -1355,18 +1323,13 @@ impl UiCmd {
 
     /// `a_UIcmd_get_wh` (verbatim) — taille de la `UI` de `bw`.
     #[must_use]
-    pub fn get_wh(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) -> (i32, i32) {
+    pub fn get_wh(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) -> (i32, i32) {
         reg.get(bw).map_or((0, 0), |b| shell.ui_wh(b.ui.get()))
     }
 
     /// `a_UIcmd_get_location_text` (verbatim).
     #[must_use]
-    pub fn get_location_text(
-        &self,
-        reg: &mut BwRegistry,
-        shell: &mut dyn UiShell,
-        bw: u32,
-    ) -> String {
+    pub fn get_location_text(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) -> String {
         reg.get(bw)
             .map(|b| shell.get_location(b.ui.get()))
             .unwrap_or_default()
@@ -1375,7 +1338,7 @@ impl UiCmd {
     /// `a_UIcmd_set_location_text` (verbatim).
     pub fn set_location_text(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         bw: u32,
         text: &[u8],
@@ -1386,7 +1349,7 @@ impl UiCmd {
     /// `a_UIcmd_set_page_prog` (verbatim — cmd 0/1/2).
     pub fn set_page_prog(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         bw: u32,
         nbytes: usize,
@@ -1400,7 +1363,7 @@ impl UiCmd {
     /// `a_UIcmd_set_img_prog` (verbatim).
     pub fn set_img_prog(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         bw: u32,
         n_img: i32,
@@ -1413,7 +1376,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_set_bug_prog` (verbatim).
-    pub fn set_bug_prog(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32, n_bug: i32) {
+    pub fn set_bug_prog(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32, n_bug: i32) {
         if let Some(b) = reg.get(bw) {
             shell.set_bug_prog(b.ui.get(), n_bug);
         }
@@ -1424,7 +1387,7 @@ impl UiCmd {
     /// titre fenêtre si onglet actif.
     pub fn set_page_title(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         bw: u32,
         label: Option<&str>,
@@ -1453,7 +1416,7 @@ impl UiCmd {
     #[must_use]
     pub fn get_page_title(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         bw: u32,
     ) -> Option<String> {
@@ -1465,20 +1428,20 @@ impl UiCmd {
 
     /// `a_UIcmd_set_msg` (verbatim — message déjà formaté par
     /// l'appelant ≙ `dStr_vsprintf`).
-    pub fn set_msg(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32, msg: &str) {
+    pub fn set_msg(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32, msg: &str) {
         uicmd_set_msg(reg, shell, bw, msg);
     }
 
     /// `a_UIcmd_set_buttons_sens` (verbatim) — Stop actif si clients,
     /// Back si `stack_ptr > 0`, Forw si `stack_ptr < size-1` et pas
     /// d'expect.
-    pub fn set_buttons_sens(reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+    pub fn set_buttons_sens(reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
         uicmd_set_buttons_sens(reg, shell, bw);
     }
 
     /// `a_UIcmd_has_finished` (verbatim).
     #[must_use]
-    pub fn has_finished(reg: &mut BwRegistry, bw: u32) -> bool {
+    pub fn has_finished(reg: &BwRegistry, bw: u32) -> bool {
         let Some(b) = reg.get(bw) else { return true };
         if !b.image_clients.borrow().is_empty() || !b.root_clients.borrow().is_empty() {
             return false;
@@ -1489,12 +1452,12 @@ impl UiCmd {
     /// `a_UIcmd_finish_loading` (verbatim) — si un client dilloc
     /// attend et tout est fini : derniers passes de layout
     /// (`drain_idles` ≙ `generalIdle`), flush, notification.
-    pub fn finish_loading(reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+    pub fn finish_loading(reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
         uicmd_finish_loading(reg, shell, bw);
     }
 
     /// `a_UIcmd_panels_toggle` (verbatim).
-    pub fn panels_toggle(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+    pub fn panels_toggle(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
         if let Some(b) = reg.get(bw) {
             shell.panels_toggle(b.ui.get());
         }
@@ -1504,7 +1467,7 @@ impl UiCmd {
     /// message de statut, sinon efface.
     pub fn findtext_search(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         bw: u32,
         key: &[u8],
@@ -1541,7 +1504,7 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_findtext_reset` (verbatim).
-    pub fn findtext_reset(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+    pub fn findtext_reset(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
         if let Some(b) = reg.get(bw) {
             if let Some(l) = b.layout.borrow().as_ref() {
                 l.borrow_mut().reset_search();
@@ -1551,21 +1514,21 @@ impl UiCmd {
     }
 
     /// `a_UIcmd_findbar_toggle` (verbatim).
-    pub fn findbar_toggle(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32, on: bool) {
+    pub fn findbar_toggle(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32, on: bool) {
         if let Some(b) = reg.get(bw) {
             shell.findbar_toggle(b.ui.get(), on);
         }
     }
 
     /// `a_UIcmd_focus_main_area` (verbatim).
-    pub fn focus_main_area(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+    pub fn focus_main_area(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
         if let Some(b) = reg.get(bw) {
             shell.focus_main(b.ui.get());
         }
     }
 
     /// `a_UIcmd_focus_location` (verbatim).
-    pub fn focus_location(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+    pub fn focus_location(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
         if let Some(b) = reg.get(bw) {
             shell.focus_location(b.ui.get());
         }
@@ -1573,7 +1536,7 @@ impl UiCmd {
 
     /// `a_UIcmd_focus_tab` (verbatim) — focus l'onglet `index` de la
     /// fenêtre de `bw`.
-    pub fn focus_tab(&self, reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32, index: i32) {
+    pub fn focus_tab(&self, reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32, index: i32) {
         if let Some(b) = reg.get(bw) {
             if let Some(tabs) = shell.tabs_of(b.ui.get()) {
                 shell.switch_tab(tabs, index);
@@ -1583,7 +1546,7 @@ impl UiCmd {
 
     /// `a_UIcmd_scroll` (verbatim) — map `KeysCommand` →
     /// `ScrollCommand` puis `layout->scroll`.
-    pub fn scroll(&self, reg: &mut BwRegistry, bw: u32, cmd: KeysCommand) {
+    pub fn scroll(&self, reg: &BwRegistry, bw: u32, cmd: KeysCommand) {
         const MAP: &[(KeysCommand, ScrollCommand)] = &[
             (KeysCommand::ScreenUp, ScrollCommand::ScreenUp),
             (KeysCommand::ScreenDown, ScrollCommand::ScreenDown),
@@ -1610,11 +1573,7 @@ impl UiCmd {
     /// `a_UIcmd_get_bw_by_widget` (verbatim) — itère le registre et
     /// teste `ui->contains(wid)` (≙ handle : `wid` = un `ui` compte).
     #[must_use]
-    pub fn get_bw_by_widget(
-        reg: &mut BwRegistry,
-        shell: &mut dyn UiShell,
-        wid: usize,
-    ) -> Option<u32> {
+    pub fn get_bw_by_widget(reg: &BwRegistry, shell: &mut dyn UiShell, wid: usize) -> Option<u32> {
         for i in 0..reg.len() {
             let id = u32::try_from(i).unwrap_or(u32::MAX);
             if let Some(b) = reg.get(id) {
@@ -1632,7 +1591,7 @@ impl UiCmd {
     /// verbatim `Fl::event_key() == FL_Escape`).
     pub fn window_close(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         tabs: usize,
@@ -1664,7 +1623,7 @@ impl UiCmd {
     /// → close.
     pub fn tab_btn(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         ui: usize,
@@ -1685,7 +1644,7 @@ impl UiCmd {
     /// actif (bouton gauche seul).
     pub fn close_tab_btn(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         tabs: usize,
         button: i32,
@@ -1703,7 +1662,7 @@ impl UiCmd {
     /// par l'appelant ([`Keys::key_cmd`]). Retourne `ret` amont.
     pub fn tab_shortcut(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -1777,7 +1736,7 @@ impl UiCmd {
     /// (`Keys::getCmdCode`) ; `-1` si inconnue.
     pub fn by_name(
         &self,
-        reg: &mut BwRegistry,
+        reg: &BwRegistry,
         shell: &mut dyn UiShell,
         prefs: &Prefs,
         bw: u32,
@@ -1812,39 +1771,44 @@ impl UiCmd {
 // -- fonctions internes (leaves UiShell, partagées par NavSeams) -------
 
 /// `a_UIcmd_set_msg` — leaf `ui->set_status`.
-fn uicmd_set_msg(reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32, msg: &str) {
+fn uicmd_set_msg(reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32, msg: &str) {
     if let Some(b) = reg.get(bw) {
         shell.set_status(b.ui.get(), msg);
     }
 }
 
 /// `a_UIcmd_set_location_text` — leaf `ui->set_location`.
-fn uicmd_set_location_text(reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32, text: &[u8]) {
+fn uicmd_set_location_text(reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32, text: &[u8]) {
     if let Some(b) = reg.get(bw) {
         shell.set_location(b.ui.get(), &String::from_utf8_lossy(text));
     }
 }
 
 /// `a_UIcmd_set_buttons_sens` (verbatim corps).
-fn uicmd_set_buttons_sens(reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+fn uicmd_set_buttons_sens(reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
     let Some(b) = reg.get(bw) else { return };
-    let (ptr, size) = {
+    let (ptr, size, top) = {
         let nav = b.nav.borrow();
-        (nav.stack_ptr(), nav.stack_size())
+        (nav.stack_ptr(), nav.stack_size(), nav.top_url())
     };
-    uicmd_set_buttons_sens_impl(reg, shell, bw, ptr, size);
+    uicmd_set_buttons_sens_impl(reg, shell, bw, ptr, size, top);
 }
 
 /// Corps de `uicmd_set_buttons_sens` — `ptr`/`size` passés en snapshot
 /// pour être appelable depuis `Nav` (qui détient déjà l'emprunt).
 fn uicmd_set_buttons_sens_impl(
-    reg: &mut BwRegistry,
+    reg: &BwRegistry,
     shell: &mut dyn UiShell,
     bw: u32,
     ptr: i32,
     size: i32,
+    top: Option<DilloUrl>,
 ) {
     let Some(b) = reg.get(bw) else { return };
+    // Snapshots pour les seams capi (verbatim : lecture directe de
+    // `bw->nav` — impossible ici pendant `nav.borrow_mut()`).
+    b.nav_size_snap.set(size);
+    *b.nav_top_snap.borrow_mut() = top;
     let ui = b.ui.get();
     // Stop
     let sens = !b.image_clients.borrow().is_empty() || !b.root_clients.borrow().is_empty();
@@ -1857,7 +1821,7 @@ fn uicmd_set_buttons_sens_impl(
 }
 
 /// `a_UIcmd_get_scroll_xy` — leaf `layout->getScrollPos*`.
-fn uicmd_get_scroll_xy(reg: &mut BwRegistry, bw: u32) -> (i32, i32) {
+fn uicmd_get_scroll_xy(reg: &BwRegistry, bw: u32) -> (i32, i32) {
     reg.get(bw)
         .and_then(|b| {
             b.layout.borrow().as_ref().map(|l| {
@@ -1869,7 +1833,7 @@ fn uicmd_get_scroll_xy(reg: &mut BwRegistry, bw: u32) -> (i32, i32) {
 }
 
 /// `a_UIcmd_set_scroll_xy` — verbatim `scrollTo(HPOS_LEFT, VPOS_TOP)`.
-fn uicmd_set_scroll_xy(reg: &mut BwRegistry, bw: u32, x: i32, y: i32) {
+fn uicmd_set_scroll_xy(reg: &BwRegistry, bw: u32, x: i32, y: i32) {
     if let Some(b) = reg.get(bw) {
         if let Some(l) = b.layout.borrow().as_ref() {
             l.borrow_mut()
@@ -1879,7 +1843,7 @@ fn uicmd_set_scroll_xy(reg: &mut BwRegistry, bw: u32, x: i32, y: i32) {
 }
 
 /// `a_UIcmd_set_scroll_by_fragment` — verbatim `layout->setAnchor`.
-fn uicmd_set_scroll_by_fragment(reg: &mut BwRegistry, bw: u32, fragment: &[u8]) {
+fn uicmd_set_scroll_by_fragment(reg: &BwRegistry, bw: u32, fragment: &[u8]) {
     if let Some(b) = reg.get(bw) {
         if let Some(l) = b.layout.borrow().as_ref() {
             l.borrow_mut().set_anchor(Some(fragment));
@@ -1889,7 +1853,7 @@ fn uicmd_set_scroll_by_fragment(reg: &mut BwRegistry, bw: u32, fragment: &[u8]) 
 
 /// `a_UIcmd_finish_loading` (verbatim corps) — drain idles + flush +
 /// notify si un client dilloc attend.
-fn uicmd_finish_loading(reg: &mut BwRegistry, shell: &mut dyn UiShell, bw: u32) {
+fn uicmd_finish_loading(reg: &BwRegistry, shell: &mut dyn UiShell, bw: u32) {
     if shell.control_is_waiting() && UiCmd::has_finished(reg, bw) {
         /* perform any last layout passes (generalIdle) then flush */
         if let Some(b) = reg.get(bw) {
@@ -2187,10 +2151,10 @@ mod tests {
     }
 
     fn fixture() -> (BwRegistry, FakeShell, u32) {
-        let mut reg = BwRegistry::new();
+        let reg = BwRegistry::new();
         let mut shell = FakeShell::new();
         let uicmd = UiCmd::new(&Prefs::default());
-        let bw = uicmd.browser_window_new(&mut reg, &mut shell, &Prefs::default(), 0, 0, None);
+        let bw = uicmd.browser_window_new(&reg, &mut shell, &Prefs::default(), 0, 0, None);
         (reg, shell, bw)
     }
 
@@ -2209,9 +2173,9 @@ mod tests {
     /// `open_url` avec `None` ≙ NULL : focus location + sens boutons.
     #[test]
     fn open_url_none_focuses_location() {
-        let (mut reg, mut shell, bw) = fixture();
+        let (reg, mut shell, bw) = fixture();
         let uicmd = UiCmd::new(&Prefs::default());
-        uicmd.open_url(&mut reg, &mut shell, &Prefs::default(), bw, None);
+        uicmd.open_url(&reg, &mut shell, &Prefs::default(), bw, None);
         assert!(shell.focus.contains(&(1, "location")));
         assert!(shell.sens.iter().any(|(_, b, _)| *b == UiButton::Stop));
     }
@@ -2220,8 +2184,8 @@ mod tests {
     /// à `stack_ptr = -1`, Forw off.
     #[test]
     fn buttons_sens_empty() {
-        let (mut reg, mut shell, bw) = fixture();
-        UiCmd::set_buttons_sens(&mut reg, &mut shell, bw);
+        let (reg, mut shell, bw) = fixture();
+        UiCmd::set_buttons_sens(&reg, &mut shell, bw);
         assert_eq!(
             shell.sens,
             vec![
@@ -2236,20 +2200,20 @@ mod tests {
     /// repush différé).
     #[test]
     fn zoom_bounds() {
-        let (mut reg, mut shell, bw) = fixture();
+        let (reg, mut shell, bw) = fixture();
         let uicmd = UiCmd::new(&Prefs::default());
-        uicmd.zoom_in(&mut reg, &mut shell, &Prefs::default(), bw);
+        uicmd.zoom_in(&reg, &mut shell, &Prefs::default(), bw);
         assert_eq!(reg.get(bw).unwrap().zoom.get(), 1.1);
         assert!(shell.status.iter().any(|(_, m)| m == "Zoom set to 110%"));
         for _ in 0..200 {
-            uicmd.zoom_in(&mut reg, &mut shell, &Prefs::default(), bw);
+            uicmd.zoom_in(&reg, &mut shell, &Prefs::default(), bw);
         }
         assert_eq!(reg.get(bw).unwrap().zoom.get(), 10.0);
         for _ in 0..200 {
-            uicmd.zoom_out(&mut reg, &mut shell, &Prefs::default(), bw);
+            uicmd.zoom_out(&reg, &mut shell, &Prefs::default(), bw);
         }
         assert!((reg.get(bw).unwrap().zoom.get() - 0.10).abs() < 1e-5);
-        uicmd.zoom_reset(&mut reg, &mut shell, &Prefs::default(), bw);
+        uicmd.zoom_reset(&reg, &mut shell, &Prefs::default(), bw);
         assert_eq!(reg.get(bw).unwrap().zoom.get(), 1.0);
         // repush différé ≙ a_Timeout_add.
         assert!(shell
@@ -2321,14 +2285,14 @@ mod tests {
     /// `a_UIcmd_set_location_text` via `nav.push`).
     #[test]
     fn open_urlstr_search_prefix() {
-        let (mut reg, mut shell, bw) = fixture();
+        let (reg, mut shell, bw) = fixture();
         let uicmd = UiCmd::new(&Prefs::default());
         let prefs = Prefs {
             search_urls: vec![b"ddg https://duckduckgo.com/?q=%s".to_vec()],
             ..Default::default()
         };
-        uicmd.open_urlstr(&mut reg, &mut shell, &prefs, bw, b"   ");
-        uicmd.open_urlstr(&mut reg, &mut shell, &prefs, bw, b"ddg hello");
+        uicmd.open_urlstr(&reg, &mut shell, &prefs, bw, b"   ");
+        uicmd.open_urlstr(&reg, &mut shell, &prefs, bw, b"ddg hello");
         // nav.push a posé la location = URL de recherche (verbatim).
         assert_eq!(
             shell.location.last().map(|(_, s)| s.as_str()),
@@ -2340,15 +2304,15 @@ mod tests {
     /// label onglet (label brut) + titre fenêtre.
     #[test]
     fn page_title_truncation() {
-        let (mut reg, mut shell, bw) = fixture();
+        let (reg, mut shell, bw) = fixture();
         let uicmd = UiCmd::new(&Prefs::default());
-        uicmd.set_page_title(&mut reg, &mut shell, bw, Some("Titre"));
+        uicmd.set_page_title(&reg, &mut shell, bw, Some("Titre"));
         assert_eq!(shell.labels.last().unwrap(), "Dillo: Titre");
         assert_eq!(shell.tab_labels.last().unwrap().1, "Titre");
         assert_eq!(shell.win_titles.last().unwrap().1, "Dillo: Titre");
 
         let long = "x".repeat(300);
-        uicmd.set_page_title(&mut reg, &mut shell, bw, Some(&long));
+        uicmd.set_page_title(&reg, &mut shell, bw, Some(&long));
         let t = shell.labels.last().unwrap();
         assert!(t.len() <= 128);
         assert!(t.ends_with("..."));
@@ -2358,40 +2322,40 @@ mod tests {
     /// window.
     #[test]
     fn page_bugs_dialog() {
-        let (mut reg, mut shell, bw) = fixture();
+        let (reg, mut shell, bw) = fixture();
         let uicmd = UiCmd::new(&Prefs::default());
-        uicmd.view_page_bugs(&mut reg, &mut shell, bw);
+        uicmd.view_page_bugs(&reg, &mut shell, bw);
         assert_eq!(shell.dialogs.last().unwrap(), "Dillo: Good HTML!");
         reg.get(bw).unwrap().num_page_bugs.set(2);
         *reg.get(bw).unwrap().page_bugs.borrow_mut() = "bad tag".to_string();
-        uicmd.view_page_bugs(&mut reg, &mut shell, bw);
+        uicmd.view_page_bugs(&reg, &mut shell, bw);
         assert_eq!(shell.dialogs.last().unwrap(), "Dillo: Detected HTML errors");
     }
 
     /// `get_history` verbatim — pile vide → `[-1]`.
     #[test]
     fn history_empty() {
-        let (mut reg, _shell, bw) = fixture();
+        let (reg, _shell, bw) = fixture();
         let uicmd = UiCmd::new(&Prefs::default());
-        assert_eq!(uicmd.get_history(&mut reg, bw, -1), vec![-1]);
-        assert_eq!(uicmd.get_history(&mut reg, bw, 1), vec![-1]);
+        assert_eq!(uicmd.get_history(&reg, bw, -1), vec![-1]);
+        assert_eq!(uicmd.get_history(&reg, bw, 1), vec![-1]);
     }
 
     /// `by_name` verbatim — `-1` inconnu, dispatch LeftTab/RightTab.
     #[test]
     fn by_name_dispatch() {
-        let (mut reg, mut shell, bw) = fixture();
+        let (reg, mut shell, bw) = fixture();
         let uicmd = UiCmd::new(&Prefs::default());
         assert_eq!(
-            uicmd.by_name(&mut reg, &mut shell, &Prefs::default(), bw, "nosuch"),
+            uicmd.by_name(&reg, &mut shell, &Prefs::default(), bw, "nosuch"),
             -1
         );
         assert_eq!(
-            uicmd.by_name(&mut reg, &mut shell, &Prefs::default(), bw, "left-tab"),
+            uicmd.by_name(&reg, &mut shell, &Prefs::default(), bw, "left-tab"),
             0
         );
         assert_eq!(
-            uicmd.by_name(&mut reg, &mut shell, &Prefs::default(), bw, "stop"),
+            uicmd.by_name(&reg, &mut shell, &Prefs::default(), bw, "stop"),
             -1
         );
     }
@@ -2400,14 +2364,14 @@ mod tests {
     /// expect → false.
     #[test]
     fn has_finished_verbatim() {
-        let (mut reg, _s, bw) = fixture();
-        assert!(UiCmd::has_finished(&mut reg, bw));
+        let (reg, _s, bw) = fixture();
+        assert!(UiCmd::has_finished(&reg, bw));
         reg.get(bw).unwrap().root_clients.borrow_mut().push(3);
-        assert!(!UiCmd::has_finished(&mut reg, bw));
+        assert!(!UiCmd::has_finished(&reg, bw));
         reg.get(bw).unwrap().root_clients.borrow_mut().clear();
         reg.get(bw)
             .unwrap()
             .expect(&url_new(b"http://x/", None).unwrap());
-        assert!(!UiCmd::has_finished(&mut reg, bw));
+        assert!(!UiCmd::has_finished(&reg, bw));
     }
 }
