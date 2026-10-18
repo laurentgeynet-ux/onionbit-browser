@@ -1,10 +1,15 @@
-# Audit A11 (PARTIEL) — browser glue : cache / capi / web / timeout
+# Audit A11 — browser glue : cache / capi / web / timeout + complétion
 
-**Mode** : rapport (investigation seule, aucune modification).
-**Périmètre** : `src/cache.{c,h}`, `src/capi.{c,h}`, `src/web.{cc,hh}`,
-`src/timeout.{cc,hh}` ↔ `crates/dillo-net/src/{cache,capi,web,timeout}.rs`
-(+ seams `http.rs`/`chain.rs`/`io.rs`/`misc.rs`). Le reste d'A11 (nav, bw,
-uicmd, dicache…) n'est pas encore porté — reporté.
+**Mode** : rapport (investigation seule, aucune modification) puis
+apply (section « Apply — résolution »).
+**Périmètre complet du skill** désormais couvert :
+`src/cache.{c,h}`, `src/capi.{c,h}`, `src/web.{cc,hh}`,
+`src/timeout.{cc,hh}` ↔ `dillo-net` (partie initiale) ;
+`bw`/`nav`/`keys`/`uicmd` (addendum 1), `ui` (addendum 2),
+`menu`/`dialog`/`findbar`/`tipwin` (addendum 3),
+`paths`/`control`/`dillo.cc`/`dilloc.c` (addendum 4),
+`history`/`bookmark`/`prefs`/`prefsparser`/`actions`/`colors`/`misc`/
+`bitvec`/`klist`/`version`/`dpiapi` (addendum 5).
 
 **Specs consultées** : `devdoc/CCCwork.txt` (ordre de construction des
 deux branches, Answer avant Query, course DNS), `devdoc/Cache.txt`
@@ -534,3 +539,138 @@ Tests : +12 (`blocked_redirect…`, `…dequeued_sibling`,
 `datastr_truncates_at_nul_keeps_bytes`,
 `pending_abort_drains_after_op_start` + cas `IMAGE/PNG` web.rs).
 Changelog : `docs/audits/changelog/A11.md`.
+
+## Addendum 5 — complétion du périmètre : `history`, `bookmark`, `prefs`/`prefsparser`, `actions`, `colors`, `misc`, `bitvec`/`klist`, `version`, `dpiapi`
+
+**Périmètre ajouté** (reste de la checklist skill — cache/capi/web/
+timeout déjà audités et appliqués ; bw/nav/keys/uicmd/ui/menu/
+dialog/findbar/tipwin/paths/control/dillo/dilloc couverts par les
+addenda 1-4) :
+
+`src/history.c` ↔ `dillo-net/src/history.rs`,
+`src/bookmark.c` ↔ `dillo-browser/src/bookmark.rs`,
+`src/{prefs.c,prefsparser.cc}` ↔ `dillo-browser/src/prefs.rs`,
+`src/actions.c` ↔ `dillo-browser/src/actions.rs`,
+`src/colors.c` ↔ `dillo-common/src/colors.rs`,
+`src/misc.c` ↔ `dillo-common/src/misc.rs`,
+`src/{bitvec,klist}.c` ↔ `dillo-common/src/{bitvec,klist}.rs`,
+`src/version.cc` ↔ version dans `dillo`,
+`src/dpiapi.c` ↔ `dillo-browser/src/dpiapi.rs`.
+
+### Verdicts
+
+| Module | Verdict |
+|---|---|
+| `history.c` → `history.rs` | **Conforme** — dedup URL+fragment (`NPTR2STR` NULL≡"" verbatim), update de titre en scan inverse, idx ≙ liste |
+| `bookmark.c` → `bookmark.rs` | **Conforme** — machine de chat DPI verbatim (`cmd1` « Hi server » → `cmd4` `add_bookmark`) ; **le format `bm.txt` vit dans `dpi/bookmarks.c` → périmètre A12** |
+| `prefs.c` + `prefsparser.cc` → `prefs.rs` | **Conforme** — 90/90 clés verbatim, défauts identiques, override `PREFS_STRINGS` verbatim |
+| `actions.c` → `actions.rs` | **Conforme** — `strtok(":")` + `strtok(NULL,"")` verbatim ; `fork`+`system` → `Command` détaché + `DILLO_PID` (Windows `cmd /C` documenté) |
+| `colors.c` → `colors.rs` | **Conforme** — table 147 noms identique (`EXTENDED_COLOR` activé amont), `a_Color_parse` verbatim |
+| `misc.c` → `misc.rs` | **Conforme** — tous les `a_Misc_*` mappés, sémantiques lenient préservées |
+| `bitvec.c` → `bitvec.rs` | **Conforme** |
+| `klist.c` → `klist.rs` | **Conforme** — wrap de compteur `INT_MAX`→1 + flag `Clean`, insert trié |
+| `version.cc` | **Conforme** — chaîne + features (`±CTL`) |
+| `dpiapi.c` → `dpiapi.rs` | **Conforme** — seam `DialogChoice` ≙ `a_Dialog_choice` modal, tag `answer` dpip verbatim |
+| `bw.c` → `bw.rs` (rappel Add.1) | **1 déviation mineure** trouvée en relecture — D15 (`stop_clients` : drain-avant vs entrelacé amont) |
+
+### Vérifications verbatim effectuées
+
+- **`prefsparser.cc`** : table de symboles comparée intégralement —
+  **90/90 clés identiques** (y compris multi-lignes
+  `font_serif`/`font_cursive`/`font_fantasy` et `http_language`).
+  Types `PREFS_*` (int/double/bool/color/geometry/url/strings/
+  strings-CI/font) traités avec la même sémantique ; clé inconnue →
+  warn + skip amont ≙ warn + skip Rust ; ligne malformée tolérée.
+- **Défauts `prefs.c`** : `width 780`, `height 580`, `xpos/ypos -9999`,
+  `font_factor 1.0`, `zoom_factor 1.0`, `font_max_size 100`,
+  `font_min_size 6`, `http_max_conns 6`, `http_persistent_conns` on,
+  `home https://dillo-browser.org/`, `start_page about:splash`,
+  `new_tab about:blank`, fontes `DejaVu Serif/Sans/Sans Mono`,
+  `no_proxy localhost 127.0.0.1`, `save_dir /tmp/`, `theme none` —
+  tous verbatim. **Pas de hot-reload** : `a_Prefs_init` appelé une
+  fois dans `main` (`dillo.cc:475`) ≙ `Prefs::init` au démarrage.
+- **`PREFS_SEARCH_URL`** — suspicion levée : `prefs.c:96-97` amont
+  **ensemence** `search_urls` avec
+  `"dd http://duckduckgo.com/lite/?kp=-1&kd=-1&q=%s"` (et
+  `search_url_idx = 0`). Notre défaut `PREFS_SEARCH_URL` +
+  `search_url_idx: Cell<bool>` (quirk `bool_t` ≙ index 0/1) est
+  **verbatim** — non-bug.
+- **`PREFS_STRINGS` override** : `node->count == 0` → vidage de la
+  liste par défaut à la 1re occurrence (`prefsparser.cc:88-100`) ≙
+  `strings_seen.insert(...)` + `clear()` (`prefs.rs:452-456,505-511`)
+  pour `search_url`/`link_action`/`page_action`.
+- **`a_Misc_parse_geometry`** (`misc.c:361`) : `strtol` préfixe,
+  `t1!=str && t2!=p` requis pour w×h, x/y optionnels ≙
+  `strtol_prefix` + `Option`s (`misc.rs:375`).
+- **`a_Misc_parse_search_url`** : label ≤31 chars, `rposition(' ')`,
+  check `//x/` dans l'URL, label auto-dérivé du host si absent —
+  verbatim (`misc.rs:401`).
+- **`a_Color_parse`** (`colors.c:138`) : skip ws, `#RRGGBB`/`#RGB`
+  (expansion `0xRGB`→`0xRRGGBB`), `0x`→err 2, `dStrAsciiCasecmp` sur
+  table triée (bsearch ≙ `binary_search_by`), hex nu → err 1 même si
+  parsé, `default_color` sinon — verbatim (`colors.rs:198`).
+- **`a_Bitvec_*`/`a_Klist_*`** : bornes `dReturn_if_fail` ≙ retours
+  `Option`/debug ; `insert` : `++Counter`, wrap à `INT_MAX` →
+  `Counter=1, Clean=0`, skip clés vivantes tant que `!Clean` —
+  verbatim (`klist.rs:70-90`).
+- **`a_Dpiapi_dialog`** : `dialog_server` module-scope ≙ champ,
+  attrs `title/msg/alt1..5`, `a_Dialog_choice` modal →
+  `Dpiapi_dialog_answer_cb` envoie `cmd=answer to_cmd=dialog
+  msg=<n>` — verbatim (`dpiapi.rs:43-75`).
+- **`nav.rs` meta_refresh** (complément Add.1) : `status==2` →
+  `stack_move_ptr(-1)` + `push` différé `timeout(0)` + flags
+  `E2EQuery|IgnoreScroll` ≙ `nav.c:405-432` — verbatim.
+
+### Déviation nouvelle
+
+| # | Sévérité | Description | Amont | Rust | Fix suggéré |
+|---|---|---|---|---|---|
+| D15 | mineure (log + état transitoire) | `stop_clients` : Rust `drain(..).collect()` **puis** `capi_stop_client` par clé ; amont `while (nth(0)) { capi_stop_client; remove_fast }` — le retrait est **entrelacé** avec l'appel. La réentrance existe des deux côtés (conn-abort → entry-remove → `bw.remove_client` pour les clients co-entrée, `cache.c:1125,1429`) mais chez nous la liste est déjà vide : `NumImagesGot++` sauté (transitoire — `cleanup` le zeroe, aucune lecture UI entre-temps) et les clés déjà dépilées par l'abort du 1er client reçoivent un `capi_stop_client` supplémentaire → warn « nonexistent client » qu'amont n'émet jamais. État final identique. | `bw.c:184-203` | `bw.rs` `stop_clients` | Boucle `while let Some(&k) = list.first() { capi_stop_client(k); position-remove k }` ≙ `nth(0)` + `remove_fast`. |
+
+### Non-bugs complémentaires
+
+- **NB-14** — `bookmark.rs` n'implémente pas le format `bm.txt` :
+  amont non plus — `bookmark.c` est le client DPI (chat
+  `cmd1..cmd4`) ; le parseur de fichier est `dpi/bookmarks.c` →
+  périmètre A12, testé là.
+- **NB-15** — `get_home_dir` : amont `dGethomedir()` ≙ `HOME` /
+  `USERPROFILE` + `getpwuid` POSIX ; Windows = `USERPROFILE` des
+  deux côtés (documenté Ajout 4).
+- **NB-16** — `klist`/`bitvec` en `common` (pas `browser`) :
+  consommés par `dillo-net` — placement dicté par la direction des
+  deps, API équivalente.
+- **NB-17** — `dpiapi` : `dialog_server` pris par `mem::take` vs
+  pointeur statique amont — même cycle de vie (set par `dialog`,
+  consommé par `answer_cb`).
+
+### Lentilles (rappel)
+
+- **L1 bornes/entrées corrompues** : dillorc tolérant (clé inconnue
+  → warn+skip, ligne sans `=` ignorée) ; couleurs malformées →
+  `default_color` + err ; géométrie partielle → `None`/positions
+  seules ; `bm.txt` corrompu → A12. **Gap** : `fuzz_files` couvre
+  cookiesrc/hsts/domainrc mais **pas dillorc/keysrc** — à ajouter
+  à la campagne fuzz.
+- **L2 tolérance** : verbatim partout (strtol/parse partiels,
+  strip ASCII `isspace` C).
+- **L3 lifecycle/abort** : D15 ci-dessus ; sinon verbatim
+  (`cleanup`, expect, meta_refresh status).
+- **L4 event-loop** : meta_refresh via `timeout(0)` ≙
+  `a_Timeout_add(0.0,…)` ; dialog dpiapi modal amont → seam
+  synchrone.
+- **L5 parité observable** : défauts dillorc 90/90, table couleurs
+  exhaustive, formats de chemins `~/.dillo/*` partagés avec C Dillo.
+
+### Test gap analysis (addendum 5)
+
+25. **Fuzz dillorc/keysrc** : ajouter les deux parseurs au corpus
+    `files` du harness (lignes longues > `LINE_MAXLEN`, clés
+    inconnues, `search_url` malformé, couleurs non-hex).
+26. **`actions_parse` edge cases** : couverts (`parse_label_cmd`
+    — `:cmd`, `label:`, sans `:`).
+27. **Chat bookmark dpi** : commandes/serveur mock → couvert par
+    les seams dpi de A12 si testé là ; sinon e2e plugin.
+
+**Verdict addendum 5** : le reste du périmètre A11 est **fidèle** ;
+une déviation mineure (D15) et un gap fuzz dillorc/keysrc à noter.
+Périmètre skill désormais couvert en entier.
