@@ -10,7 +10,7 @@
 
 #[cfg(unix)]
 fn main() -> std::process::ExitCode {
-    std::process::ExitCode::from(dilloc::run() as u8)
+    std::process::ExitCode::from(u8::try_from(dilloc::run()).unwrap_or(1))
 }
 
 #[cfg(not(unix))]
