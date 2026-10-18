@@ -7,6 +7,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`no_dpi`** (extension OnionBit) : pref `dillorc` coupant tout accès
+  dpi — `blocking_start_dpid` échoue immédiatement : aucun `dpid`
+  spawné (même via `PATH`), aucune socket dpip, `send_blocking_cmd`/
+  `dpi_ccc` rendent `None`/`DpidERROR` instantanément. Motivation :
+  profil `.onion` confiné — `ftp.dpi` délègue à `wget` (connexion
+  directe hors proxy), et sans court-circuit l'absence de dpid coûte
+  3 s (12×250 ms) **par requête** via la requête cookies.
 - **`http_proxypass`** (extension OnionBit) : pref `dillorc` donnant le
   mot de passe proxy — amont n'expose que `http_proxyuser` et lit le
   passwd via un dialog (`a_UIcmd_get_passwd`), impossible en spawn
