@@ -144,3 +144,67 @@ phase `test/html/render`).
   multi-onglets/fenêtres est une extension `ApplicationHandler`
   (map `WindowId→(surface,view,layout)`) à faire avec les tabs
   amont (`CustTabs`).
+
+---
+
+# Passe 2 (chrome maintenant porté — 11k lignes devenus auditables)
+
+## Nouveau périmètre relu
+
+`dillo-browser/src/{ui,uicmd,keys,menu,dialog,findbar,tipwin}.rs`
++ `timeout` (dans `dillo-net`) + glue `ShellGlue`/`DwApp` :
+
+- **`keys.rs`** : `DEFAULT_KEYS` = **les 53 entrées verbatim** de
+  `default_keys[]` amont (`keys.cc:101-160`) — mêmes mods/keysyms
+  (`FL_*` conservés bruts pour compat `keysrc` `0x…`), même
+  parsing (`key_cmd`/`key_code`/`cmd_code`/`modifier`/`gen_about_keys`),
+  même `dList` triée. Test `default_lookup`/`shifted_char_drops_mods`.
+- **Dispatch clavier** (`glue.rs:773-889`) : verbatim
+  `FL_KEYBOARD` → widget focalisé d'abord (findbar `MyInput` ≙
+  `input_key`, location `CustInput` ≙ `cust_input_key`), puis
+  `Keys::getKeyCmd`, puis `CustTabs` shortcuts avant `UI::handle`
+  — ordre amont reproduit (`fltkviewbase` remonte au parent).
+- **`findbar.rs`** : géométrie verbatim (`[hide 16][input][Next 70]
+  [Prev 70][Case 140]`, border/gap 2), `show`=select-all+curseur
+  fin, incrémental via `findtext` — verbatim `findbar.cc`.
+- **`tipwin.rs`** : délais 0.8 s / 0.2 s verbatim, buffer 256
+  troncation-safe, `#ffffbf`, horloge externe `tick` ≙
+  `Fl::add_timeout` mono-thread.
+- **`menu.rs`** : `Fl_Menu_Item` verbatim, popups différés ≙
+  `a_Timeout_add(0, Menu_popup_cb)`, globaux `popup_*` →
+  `MenuCtx`.
+- **`dialog.rs`** : modalité `while(shown()) Fl::wait()` → seam
+  `DialogRunner` (architecture nécessairement différente —
+  documentée) ; géométrie/défauts verbatim.
+- **`uicmd.rs`** : 2 377 lignes — `win_cb`, `repush`, timeouts
+  `poll_timeouts` pompés à chaque tick (`glue.rs:1098`).
+- **Multi-onglets** : `tabs_of_win`, `prev/next_tab`,
+  `focus-tab*` — `CustTabs` fonctionnel ; multi-*fenêtres* via
+  `DwApp.win[]` map `WindowId→(view,layout,surface)`.
+
+## Statut des déviations passé 1
+
+- **D1 clipboard** : **résolu** (`0b9756d`) — OS via `arboard` +
+  fallback in-process ; middle-click paste ≙ PRIMARY X11
+  (`glue.rs:561`, `ui.rs:3110`).
+- **D2 contrôles natifs** : **partiellement résolu** —
+  popups `OptionMenu`/`List` = overlay natif Chrome-owned
+  (draw au-dessus du layout, hit-test modal, Échap/hors-zone,
+  sous-menus) ; saisie chrome complète (caret cosmic-text,
+  sélection, clipboard). **Reste ouvert** : saisie clavier des
+  contrôles *in-page* (`<input>`/`<textarea>` — le trait
+  `Resource` n'a aucun chemin `key` ; amont = `Fl_Input` natif
+  focalisé). Combiné au panic A03-D7, les formulaires restent le
+  maillon faible.
+- **D3 scrollbars** : reconduit (track+pouce, pas de flèches —
+  cosmétique).
+- **D6 métriques** : `f9aa4c8` raffine — métriques lues sur la
+  face choisie par le fallback shaping cosmic (≙ fontconfig→face
+  effective), poids quantifiés FLTK verbatim (≥500→bold). La
+  golden suite 38/38 fige la calibration.
+
+## Verdict passe 2
+
+Fonctionnel et verbatim sur tout le chrome relu. Déviations
+vivantes : **D2-form-entry** (saisie in-page non câblée — à
+consolider avec le fix A03-D7 dans l'apply), D3 cosmétique.
