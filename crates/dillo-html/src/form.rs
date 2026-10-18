@@ -524,13 +524,20 @@ pub struct FormReceiver {
 
 impl FormReceiver {
     /// `getInput` helper — résout `input` depuis `resource`.
+    ///
+    /// La comparaison porte sur l'**adresse données** seule
+    /// (`*const ()`) : `ptr::eq` sur `&dyn` compare aussi la vtable,
+    /// qui n'est pas garantie unique entre codegen units — le même
+    /// objet coercé à deux endroits peut porter des métadonnées
+    /// différentes (amont compare le `Resource*` fin).
     fn find_input(form: &HtmlForm, resource: &dyn Resource) -> Option<Rc<RefCell<HtmlInput>>> {
+        let needle = std::ptr::from_ref(resource).cast::<()>();
         form.inputs
             .iter()
             .find(|i| {
                 i.borrow()
                     .get_resource()
-                    .is_some_and(|r| std::ptr::eq(r.as_ref(), resource))
+                    .is_some_and(|r| std::ptr::from_ref(r.as_ref()).cast::<()>() == needle)
             })
             .cloned()
     }

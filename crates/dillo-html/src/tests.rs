@@ -420,6 +420,58 @@ fn form_input_get_resource_under_layout_borrow_mut() {
     assert!(input.borrow().get_resource().is_some());
 }
 
+/// Régression live-test — clic release sur le bouton submit ≙
+/// `FL_WHEN_RELEASE` → `emitClicked` → `FormReceiver::clicked` →
+/// `eventHandler` → `submit` → `sink.open_url`. Couvre la chaîne
+/// receivers (`connect_to` → emitter → `find_input` → activate).
+#[test]
+fn submit_release_opens_action() {
+    let (sink, mut h) = make_html();
+    let action = url::url_new(b"http://example.org/search", None).expect("action url");
+    h.form_new(
+        Method::Get,
+        action.clone(),
+        crate::form::Enc::Urlencoded,
+        None,
+    );
+    h.core.in_flags |= in_flags::FORM;
+    let res: Rc<dyn Resource> = Rc::new(MockRes::new());
+    let embed = h
+        .core
+        .shared
+        .borrow()
+        .layout
+        .borrow_mut()
+        .add_embed_widget(&res);
+    crate::form::add_input(
+        &mut h,
+        crate::form::InputType::Submit,
+        Some(embed),
+        Some(b"btn".to_vec()),
+        Some(b"Go".to_vec()),
+        false,
+        true,
+    );
+    // Release gauche sur le contrôle ≙ `FL_WHEN_RELEASE`.
+    let ev = dillo_dw::events::EventButton {
+        state: 0,
+        x_canvas: 0,
+        y_canvas: 0,
+        x_widget: 0,
+        y_widget: 0,
+        num_pressed: 1,
+        button: 1,
+    };
+    res.emit_clicked(&ev);
+    let opened = sink.borrow().opened.clone();
+    assert_eq!(opened.len(), 1, "submit doit ouvrir l'action");
+    let mut u = opened[0].clone();
+    assert!(
+        u.str_().starts_with(b"http://example.org/search"),
+        "action inattendue"
+    );
+}
+
 fn with_ctx<R>(bugs: &mut Vec<String>, f: impl FnOnce(&mut EntityCtx) -> R) -> R {
     let mut report = |m: &str| bugs.push(m.to_owned());
     let mut ctx = EntityCtx {

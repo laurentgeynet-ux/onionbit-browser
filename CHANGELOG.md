@@ -77,6 +77,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   d'adresse/findbar reprennent le clavier, caret in-page retiré ;
   clic consommé dans la page ≙ `Fl::focus(this)` rend le focus au
   contenu — `fltkviewbase.cc:307`).
+- **boutons de formulaire inertes au clic** (`form.rs`
+  `find_input`) : `ptr::eq` sur `&dyn Resource` comparait le fat
+  pointer (donnée + vtable) — or la vtable d'un même type n'est pas
+  garantie unique entre codegen units ; la ressource cliquée
+  (créée dans `dillo-platform`, comparée dans `dillo-html`)
+  échouait le match → `eventHandler: input not found` → pas de
+  submit. Comparaison ramenée à l'**adresse données** (`*const ()`)
+  ≙ le `Resource*` fin amont.
 - **vestiges de page / zones non repeintes (damage model)** :
   - `pending_draws` stocke les coords **canvas figées à
     l'émission** (≙ `queueDraw` immédiat amont) au lieu de les
