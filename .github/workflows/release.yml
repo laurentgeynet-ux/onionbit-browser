@@ -51,6 +51,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # checkout requis : `gh release create --generate-notes` invoque
+      # git pour les notes — sans .git le step echoue sur
+      # "not a git repository" meme avec les artefacts prets.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
