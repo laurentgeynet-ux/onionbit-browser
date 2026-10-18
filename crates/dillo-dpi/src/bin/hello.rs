@@ -127,8 +127,7 @@ fn main() {
             "<hr>\n\
              <table width='100%' border='1' bgcolor='burlywood'><tr><td>\n\
              <big><em>Dialog question:</em> Do you want to see the hello page?<br>\n\
-             <em>Answer received:</em> <b>{}</b></big> </table>\n<hr>\n",
-            answer
+             <em>Answer received:</em> <b>{answer}</b></big> </table>\n<hr>\n"
         )
         .as_bytes(),
     );
@@ -142,17 +141,17 @@ fn main() {
 
     // verbatim : `popen("date -R")` — flux d'un programme externe.
     if !cmd.is_empty() && !url.is_empty() {
-        if let Ok(mut out) = std::process::Command::new("date")
+        if let Ok(out) = std::process::Command::new("date")
             .arg("-R")
             .stdout(std::process::Stdio::piped())
             .spawn()
-            .and_then(|mut c| {
+            .map(|mut c| {
                 let mut buf = Vec::new();
                 if let Some(mut so) = c.stdout.take() {
                     let _ = so.read_to_end(&mut buf);
                 }
                 let _ = c.wait();
-                Ok(buf)
+                buf
             })
         {
             let _ = sh.write_str(false, "<h3>date:</h3>\n<pre>\n");
