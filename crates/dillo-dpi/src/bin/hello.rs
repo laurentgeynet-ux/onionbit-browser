@@ -48,8 +48,7 @@ fn main() {
     let tag = sh.read_token(true);
     let ok = tag
         .as_deref()
-        .map(|t| check_auth(&String::from_utf8_lossy(t)))
-        .unwrap_or(false);
+        .is_some_and(|t| check_auth(&String::from_utf8_lossy(t)));
     if !ok {
         eprintln!("[hello dpi]: can't authenticate request");
         sh.close();

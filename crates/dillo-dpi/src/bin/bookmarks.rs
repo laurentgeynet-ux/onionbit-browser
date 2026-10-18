@@ -281,8 +281,7 @@ fn run() -> i32 {
         // verbatim : auth obligatoire — échec → exit(1).
         let ok = sh
             .read_token(true)
-            .map(|t| check_auth(&String::from_utf8_lossy(&t)))
-            .unwrap_or(false);
+            .is_some_and(|t| check_auth(&String::from_utf8_lossy(&t)));
         if !ok {
             eprintln!("[bookmarks dpi]: can't authenticate request");
             sh.close();
