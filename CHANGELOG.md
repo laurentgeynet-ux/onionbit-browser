@@ -7,6 +7,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`about:onionbit`** (extension OnionBit) : page d'accueil locale du
+  profil confiné — HTML compilé dans le binaire, injectée dans le
+  cache interne au `cache_init()` avec `INTERNAL_URL` comme
+  `about:splash`. Zéro ressource externe : ouvrir le navigateur sans
+  argument ne crée aucune connexion (les liens partent au clic, via
+  le proxy loopback). Sert de `start_page`/`home` au dillorc généré
+  par le daemon OnionBit.
 - **`no_dpi`** (extension OnionBit) : pref `dillorc` coupant tout accès
   dpi — `blocking_start_dpid` échoue immédiatement : aucun `dpid`
   spawné (même via `PATH`), aucune socket dpip, `send_blocking_cmd`/

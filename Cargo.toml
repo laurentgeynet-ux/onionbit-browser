@@ -20,7 +20,7 @@ edition = "2021"
 # ≙ héritage C++ `Resource*` amont — form.cc/dillo-html).
 rust-version = "1.86"
 license = "GPL-3.0-or-later"
-repository = "local://dillorust"
+repository = "https://github.com/laurentgeynet-ux/onionbit-browser"
 
 [workspace.dependencies]
 # Crates internes

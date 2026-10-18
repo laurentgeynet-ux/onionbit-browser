@@ -49,9 +49,68 @@ graphical web browser. To access the help click the question mark button\n\
 </body>\n\
 </html>\n";
 
+/// `about:onionbit` — extension `OnionBit` (absente amont) : page
+/// d'accueil locale du profil confiné. **Zéro ressource externe** —
+/// aucune connexion à l'ouverture ; les liens ne partent que sur
+/// clic et passent par le proxy loopback du daemon (politique
+/// `.onion`-only par défaut). Servie depuis le cache interne comme
+/// `about:splash`.
+pub const ABOUT_ONIONBIT: &str = "<!DOCTYPE HTML>\n\
+<html>\n\
+<head>\n\
+  <title>OnionBit</title>\n\
+  <style>\n\
+    body {\n\
+      background: white;\n\
+      margin: 3em;\n\
+      font-size: 16px;\n\
+      font-family: sans-serif;\n\
+      line-height: 1.4em;\n\
+    }\n\
+    .main { max-width: 40em; }\n\
+    p { margin-top: 1em; }\n\
+    li { margin-top: 0.5em; }\n\
+    .muted { color: #666; }\n\
+  </style>\n\
+</head>\n\
+<body>\n\
+<div class=\"main\">\n\
+\n\
+<h1>OnionBit</h1>\n\
+\n\
+<p><strong>No connection has been made.</strong> This page is embedded\n\
+in the browser — type a <code>.onion</code> address above to start\n\
+browsing.</p>\n\
+<p class=\"muted\"><em>Aucune connexion n'a &eacute;t&eacute; &eacute;tablie.</em>\n\
+Cette page est embarqu&eacute;e dans le navigateur — saisissez une adresse\n\
+<code>.onion</code> ci-dessus pour naviguer.</p>\n\
+\n\
+<ul>\n\
+  <li><a href=\"http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/\">DuckDuckGo (.onion)</a></li>\n\
+  <li><a href=\"about:keys\">Keyboard shortcuts</a></li>\n\
+</ul>\n\
+\n\
+<p class=\"muted\">Traffic exits only through the OnionBit Tor proxy —\n\
+.onion services by default.</p>\n\
+\n\
+</div>\n\
+</body>\n\
+</html>\n";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn onionbit_page_is_self_contained() {
+        // Aucune ressource externe : la page ne doit jamais
+        // déclencher de fetch (img/css/script/link externe).
+        assert!(!ABOUT_ONIONBIT.contains("<img"));
+        assert!(!ABOUT_ONIONBIT.contains("<script"));
+        assert!(!ABOUT_ONIONBIT.contains("<link"));
+        assert!(ABOUT_ONIONBIT.contains(".onion"));
+        assert!(ABOUT_ONIONBIT.ends_with("</body>\n</html>\n"));
+    }
 
     #[test]
     fn splash_is_verbatim() {

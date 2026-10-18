@@ -1009,6 +1009,15 @@ pub fn cache_init() {
             ca::GOT_HEADER | ca::GOT_LENGTH | ca::INTERNAL_URL,
         );
     }
+    // `about:onionbit` (extension OnionBit) : page d'accueil locale du
+    // profil confiné — injectée comme splash, servie sans réseau.
+    if let Some(u) = url_new(b"about:onionbit", None) {
+        cache_entry_inject(
+            &u,
+            about::ABOUT_ONIONBIT.as_bytes(),
+            ca::GOT_HEADER | ca::GOT_LENGTH | ca::INTERNAL_URL,
+        );
+    }
 }
 
 /// Injecte les seams navigateur (appelé par `dillo-browser` au boot).
