@@ -187,18 +187,31 @@ impl BrowserWindow {
     /// `a_Bw_stop_clients` — `a_Capi_stop_client` par client,
     /// listes vidées (verbatim bw.c:184-203). `flags` =
     /// `BW_ROOT|BW_IMG` `|BW_FORCE`.
+    ///
+    /// Entrelacé verbatim : `nth(0)` → stop → `remove_fast` — le
+    /// callback d'abort peut retirer le client (et des co-entrée)
+    /// via `remove_client` ; le remove final est alors un no-op et
+    /// les clés déjà dépilées ne sont **pas** rappelées (A11-D15).
     pub fn stop_clients(&self, flags: i32) {
-        if flags & BW_ROOT != 0 {
-            let keys: Vec<i32> = self.root_clients.borrow_mut().drain(..).collect();
-            for k in keys {
-                capi_stop_client(k, flags & BW_FORCE != 0);
+        fn drain_interleaved(list: &std::cell::RefCell<Vec<i32>>, force: bool) {
+            loop {
+                let Some(&key) = list.borrow().first() else {
+                    break;
+                };
+                capi_stop_client(key, force);
+                let mut l = list.borrow_mut();
+                if let Some(i) = l.iter().position(|&k| k == key) {
+                    l.swap_remove(i);
+                }
             }
         }
+
+        let force = flags & BW_FORCE != 0;
+        if flags & BW_ROOT != 0 {
+            drain_interleaved(&self.root_clients, force);
+        }
         if flags & BW_IMG != 0 {
-            let keys: Vec<i32> = self.image_clients.borrow_mut().drain(..).collect();
-            for k in keys {
-                capi_stop_client(k, flags & BW_FORCE != 0);
-            }
+            drain_interleaved(&self.image_clients, force);
         }
     }
 

@@ -674,3 +674,12 @@ addenda 1-4) :
 **Verdict addendum 5** : le reste du périmètre A11 est **fidèle** ;
 une déviation mineure (D15) et un gap fuzz dillorc/keysrc à noter.
 Périmètre skill désormais couvert en entier.
+
+### Apply — D15 (complétion)
+
+- **D15** corrigé — `bw.rs` `stop_clients` : boucle entrelacée
+  `first()` → `capi_stop_client` → remove par valeur ≙
+  `nth(0)`/`remove_fast` amont ; les clés retirées par le callback
+  d'abort (co-entrée) ne sont plus rappelées → plus de warn
+  « nonexistent client » ; `NumImagesGot` bumpé par la réentrance
+  comme amont.
