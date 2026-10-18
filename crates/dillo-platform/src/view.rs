@@ -48,6 +48,7 @@ use std::rc::{Rc, Weak};
 
 use dillo_common::utf8;
 use dillo_dw::imgbuf::Imgbuf;
+use dillo_dw::platform::Platform as _;
 use dillo_dw::style::{Color, Cursor, Font, FontVariant, LineType, Shading};
 use dillo_dw::types::{Point, Rectangle, ScrollCommand};
 use dillo_dw::view::View;
@@ -126,6 +127,11 @@ pub(crate) struct Canvas {
     /// `cursor` demandé par le contenu (≙ `Fl::cursor` — sur le
     /// Canvas pour que `SharedView` y accède comme amont).
     cursor: Cursor,
+    /// Ressource de formulaire focusée (≙ `Fl::focus()` — le
+    /// widget enfant FLTK qui reçoit les touches). `Weak` : la
+    /// ressource meurt avec sa page. Sur le Canvas pour être
+    /// accessible via `SharedView` sans emprunter `SkiaView`.
+    focused: Option<Weak<dyn dillo_dw::ui::Resource>>,
     /// Taille viewport widget (`w`/`h`).
     view_w: i32,
     view_h: i32,
@@ -167,6 +173,7 @@ impl Canvas {
             mouse_x: -1,
             mouse_y: -1,
             cursor: Cursor::Default,
+            focused: None,
             view_w: width.max(1) as i32,
             view_h: height.max(1) as i32,
         }
@@ -1062,6 +1069,50 @@ macro_rules! canvas_view_impl {
             }
         }
 
+        /// `setFocusedResource` — adaptation : ≙ `Fl::focus(res)` /
+        /// perte de focus du widget enfant. Pose `set_focused` sur
+        /// la ressource (caret au draw) + damage de sa zone. La
+        /// rect d'allocation (coords canvas du layout possesseur)
+        /// est traduite par l'origine de la vue ≙ les autres draws.
+        fn set_focused_resource(&mut self, res: Option<Rc<dyn dillo_dw::ui::Resource>>) {
+            let Some(c) = self.shared_canvas() else {
+                return;
+            };
+            let mut c = c.borrow_mut();
+            let old = c.focused.as_ref().and_then(Weak::upgrade);
+            let same = match (&old, &res) {
+                (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            };
+            if same {
+                return;
+            }
+            let o = self.view_origin();
+            for (r, f) in [(&old, false), (&res, true)].into_iter() {
+                let Some(r) = r else { continue };
+                if let Some(t) = r.as_text_resource() {
+                    t.set_focused(f);
+                }
+                if let Some(a) = r.allocation() {
+                    c.damage.push(Rectangle {
+                        x: a.x + o.0,
+                        y: a.y + o.1,
+                        width: a.width,
+                        height: a.ascent + a.descent,
+                    });
+                }
+            }
+            c.focused = res.as_ref().map(Rc::downgrade);
+        }
+
+        /// `text_width` — mesure via la fonte plateforme (caret).
+        fn text_width(&mut self, font: &Font, text: &[u8]) -> i32 {
+            self.shared_canvas()
+                .and_then(|c| c.borrow().platform.upgrade())
+                .map_or(0, |p| p.borrow_mut().text_width(font, text))
+        }
+
         /// `cancelQueueDraw` — verbatim no-op amont ; on vide
         /// (notre boucle est explicite — doc A10).
         fn cancel_queue_draw(&mut self) {
@@ -1307,6 +1358,17 @@ impl SkiaView {
     #[must_use]
     pub fn pixmap(&self) -> Option<Ref<'_, Pixmap>> {
         Ref::filter_map(self.canvas.borrow(), |c| c.pixmap.as_ref()).ok()
+    }
+
+    /// Ressource de formulaire focusée (≙ `Fl::focus()`) — lue
+    /// par `app.rs` pour router les touches. `None` si le `Weak`
+    /// est mort (page naviguée — la ressource est tombée).
+    pub(crate) fn focused_resource(&self) -> Option<Rc<dyn dillo_dw::ui::Resource>> {
+        self.canvas
+            .borrow()
+            .focused
+            .as_ref()
+            .and_then(Weak::upgrade)
     }
 
     /// Préférences de scroll (verbatim setters `FltkViewport` :
@@ -2142,6 +2204,53 @@ mod tests {
         // Tout identique → pas de damage parasite.
         v.set_viewport_size(80, 90, 0, 0);
         assert!(!v.has_damage());
+    }
+
+    /// `setFocusedResource` ≙ `Fl::focus(widget)` : flag focus de
+    /// la ressource + damage de sa zone (caret) ; `None` ≙ clic
+    /// ailleurs (caret retiré + damage). `Weak` mort ≙ resource
+    /// détruite (navigation).
+    #[test]
+    fn focused_resource_flags_and_damages() {
+        use dillo_dw::ui::{Resource as _, TextResource as _};
+        let (_p, mut v) = mk_view(100, 100);
+        let _ = v.take_damage();
+        let res: Rc<crate::ui::SkiaEntryResource> =
+            Rc::new(crate::ui::SkiaEntryResource::new(10, false, "", ""));
+        let res_dyn: Rc<dyn dillo_dw::ui::Resource> = res.clone();
+        let mut layout = dillo_dw::layout::Layout::new(
+            Rc::new(RefCell::new(crate::platform::SkiaPlatform::new()))
+                as Rc<RefCell<dyn dillo_dw::platform::Platform>>,
+            false,
+        );
+        res.size_allocate(
+            &mut layout,
+            &dillo_dw::types::Allocation {
+                x: 5,
+                y: 7,
+                width: 40,
+                ascent: 12,
+                descent: 4,
+            },
+        );
+        assert!(v.focused_resource().is_none());
+        v.set_focused_resource(Some(res_dyn.clone()));
+        assert!(Rc::ptr_eq(&v.focused_resource().expect("focus"), &res_dyn));
+        assert!(res.is_focused());
+        let (full, rects) = v.take_damage();
+        assert!(!full);
+        assert!(
+            rects.iter().any(|r| r.x == 5 && r.y == 7 && r.width == 40),
+            "damage attendu sur l'allocation: {rects:?}"
+        );
+        // Re-focus identique → pas de damage parasite.
+        v.set_focused_resource(Some(res_dyn.clone()));
+        assert!(!v.has_damage());
+        // Perte de focus → flag retiré + damage.
+        v.set_focused_resource(None);
+        assert!(!res.is_focused());
+        let (_, rects) = v.take_damage();
+        assert_ne!(rects.len(), 0);
     }
 
     /// `drawRectangle(filled)` écrit réellement dans le back-buffer.

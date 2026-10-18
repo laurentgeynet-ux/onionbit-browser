@@ -39,6 +39,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **saisie dans les formulaires in-page** (barre de recherche
+  Google, etc.) — les contrôles dessinés par tiny-skia émulent
+  désormais les widgets FLTK enfants de l'amont : clic sur une
+  entrée/textarea éditable → focus (caret affiché), clavier routé
+  vers la ressource focusée avant les raccourcis du shell,
+  insertion/suppression/déplacement au caret (UTF-8), Enter →
+  activation du formulaire (≙ `FL_WHEN_ENTER_KEY_ALWAYS` →
+  submit), Ctrl+V ≙ `Fl::paste`, clic hors contrôle → défocus,
+  boutons/check/radio déclenchés au release ≙ `FL_WHEN_RELEASE`
+  (toggle + exclusion de groupe radio + `emitClicked`).
 - **vestiges de page / zones non repeintes (damage model)** :
   - `pending_draws` stocke les coords **canvas figées à
     l'émission** (≙ `queueDraw` immédiat amont) au lieu de les

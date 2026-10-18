@@ -209,6 +209,16 @@ Fonctionnel et verbatim sur tout le chrome relu. Déviations
 vivantes : **D2-form-entry** (saisie in-page non câblée — à
 consolider avec le fix A03-D7 dans l'apply), D3 cosmétique.
 
+**D2 résolu** (correctif post-passe 2, retour utilisateur) :
+sous-système focus/clavier des contrôles de formulaire implémenté
+— `Canvas.focused` (`Weak`) + `View::set_focused_resource` ≙
+`Fl::focus`, press `Embed` ≙ `take_focus` du `Fl_Input` enfant,
+release ≙ `FL_WHEN_RELEASE` → `ui_button`, routage
+`KeyboardInput` → ressource focusée puis shell, Ctrl+V ≙
+`Fl::paste`. Entry : saisie au caret, navigation, Enter →
+`emitActivate` ≙ `FL_WHEN_ENTER_KEY_ALWAYS` ; multiline : Enter →
+`\n`. Voir `docs/audits/changelog/A10.md`.
+
 ## Addendum post-passe 2 (retour utilisateur)
 
 - **`set_viewport_size` sans damage** — changements de viewport /

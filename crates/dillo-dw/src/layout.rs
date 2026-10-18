@@ -510,6 +510,11 @@ impl Layout {
     /// `Layout::attachView` — verbatim : `platform->attachView`,
     /// projection de l'état (bg, curseur, canvas), initialisation
     /// du viewport et `view->setLayout(this)` en dernier.
+    /// Vue attachée — seam interne (focus contrôle ≙ `Fl::focus`).
+    pub(crate) fn view_mut(&mut self) -> Option<&mut (dyn View + '_)> {
+        self.view.as_deref_mut().map(|v| v as &mut (dyn View + '_))
+    }
+
     pub fn attach_view(&mut self, mut view: std::boxed::Box<dyn View>) {
         self.platform.borrow_mut().attach_view(view.as_mut());
         if let Some(c) = &self.bg_color {
@@ -1370,6 +1375,15 @@ impl Layout {
         state: i32,
         button: i32,
     ) -> bool {
+        // Adaptation focus : amont le clic retire le focus clavier
+        // du widget FLTK enfant précédent (focus → widget cliqué).
+        // Le dispatch ci-dessous re-posera le focus si le clic
+        // tombe sur une entrée texte éditable.
+        if r#type == ButtonEventType::ButtonPress {
+            if let Some(v) = self.view.as_mut() {
+                v.set_focused_resource(None);
+            }
+        }
         self.move_to_widget_at_point(x, y, state);
         let mut event = EventButton {
             x_canvas: x,
@@ -2048,6 +2062,8 @@ mod tests {
         ops: usize,
         /// Textes dessinés.
         texts: Vec<String>,
+        /// `setFocusedResource` capturé (adaptation focus).
+        focused: Option<Rc<dyn crate::ui::Resource>>,
     }
 
     impl RecView {
@@ -2175,8 +2191,92 @@ mod tests {
             RecView::viewport()
         }
         fn merge_clipping_view(&mut self, _cv: std::boxed::Box<dyn View>) {}
+        fn set_focused_resource(&mut self, res: Option<Rc<dyn crate::ui::Resource>>) {
+            self.focused = res;
+        }
         fn as_any(&self) -> Option<&dyn std::any::Any> {
             Some(self)
+        }
+    }
+
+    /// Ressource texte minimal — ≙ `Fl_Input` enfant pour tester
+    /// le routage focus/`ui_button` via `Embed`.
+    struct MockText {
+        /// Émetteurs verbatim.
+        emitters: crate::ui::ResourceEmitters,
+        /// `editable`.
+        editable: bool,
+        /// `set_focused` capturé.
+        focused: std::cell::Cell<bool>,
+        /// `ui_button` capturé `(press)`.
+        clicks: std::cell::RefCell<Vec<bool>>,
+    }
+
+    impl MockText {
+        /// Ctor.
+        fn new(editable: bool) -> Self {
+            Self {
+                emitters: crate::ui::ResourceEmitters::new(),
+                editable,
+                focused: std::cell::Cell::new(false),
+                clicks: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl crate::ui::Resource for MockText {
+        fn as_resource(&self) -> &dyn crate::ui::Resource {
+            self
+        }
+        fn embed(&self) -> Option<WidgetId> {
+            None
+        }
+        fn set_embed(&self, _e: Option<WidgetId>) {}
+        fn emitters(&self) -> &crate::ui::ResourceEmitters {
+            &self.emitters
+        }
+        fn size_request(&self, _l: &mut Layout, r: &mut crate::types::Requisition) {
+            *r = crate::types::Requisition::default();
+        }
+        fn iterator(
+            &self,
+            mask: i16,
+            at_end: bool,
+        ) -> std::boxed::Box<dyn crate::iterator::DwIterator> {
+            std::boxed::Box::new(crate::iterator::EmptyIterator::new(
+                usize::MAX,
+                mask,
+                at_end,
+            ))
+        }
+        fn is_enabled(&self) -> bool {
+            true
+        }
+        fn set_enabled(&self, _e: bool) {}
+        /// Consommé — ≙ le widget enfant prend le clic.
+        fn ui_button(&self, _e: &crate::events::EventButton, press: bool) -> bool {
+            self.clicks.borrow_mut().push(press);
+            true
+        }
+        fn as_text_resource(&self) -> Option<&dyn crate::ui::TextResource> {
+            Some(self)
+        }
+    }
+
+    impl crate::ui::TextResource for MockText {
+        fn get_text(&self) -> String {
+            String::new()
+        }
+        fn set_text(&self, _t: &str) {}
+        fn is_editable(&self) -> bool {
+            self.editable
+        }
+        fn set_editable(&self, _e: bool) {}
+        fn set_focused(&self, f: bool) {
+            self.focused.set(f);
+        }
+        fn is_focused(&self) -> bool {
+            self.focused.get()
         }
     }
 
@@ -2620,6 +2720,92 @@ mod tests {
             "damage déplacé (alloc du flush) = bug vestige: {:?}",
             rv.draws
         );
+    }
+
+    /// Press sur `Embed` d'entrée texte éditable ≙ `take_focus`
+    /// du `Fl_Input` enfant : `setFocusedResource` + consommé
+    /// (sinon la presse démarre une sélection textblock). Release
+    /// ≙ `FL_WHEN_RELEASE` → `ui_button` → `queueDraw`.
+    #[test]
+    fn embed_press_focuses_text_resource() {
+        let mut l = make_layout();
+        l.attach_view(RecView::viewport());
+        let res = Rc::new(MockText::new(true));
+        let res_dyn: Rc<dyn crate::ui::Resource> = res.clone();
+        let w = l.add_embed_widget(&res_dyn);
+        let ev = crate::events::EventButton {
+            state: 0,
+            x_canvas: 0,
+            y_canvas: 0,
+            x_widget: 0,
+            y_widget: 0,
+            num_pressed: 1,
+            button: 1,
+        };
+
+        assert!(l.w_button_press_impl(w, &ev));
+        {
+            let rv = l
+                .view_mut()
+                .and_then(|v| v.as_any())
+                .and_then(|a| a.downcast_ref::<RecView>())
+                .expect("recview");
+            assert!(
+                rv.focused.as_ref().is_some_and(|r| Rc::ptr_eq(r, &res_dyn)),
+                "focus attendu sur la ressource"
+            );
+        }
+        // Release → ui_button(false) consommé.
+        assert!(l.w_button_release_impl(w, &ev));
+        assert_eq!(res.clicks.borrow().as_slice(), &[false]);
+
+        // Entrée non éditable : consommé mais PAS de focus
+        // (≙ read-only : le widget enfant prend l'event, le focus
+        // resterait chez lui — ici pas de take_focus).
+        let res_ro = Rc::new(MockText::new(false));
+        let res_ro_dyn: Rc<dyn crate::ui::Resource> = res_ro.clone();
+        let w2 = l.add_embed_widget(&res_ro_dyn);
+        assert!(l.w_button_press_impl(w2, &ev));
+        let rv = l
+            .view_mut()
+            .and_then(|v| v.as_any())
+            .and_then(|a| a.downcast_ref::<RecView>())
+            .expect("recview");
+        assert!(
+            rv.focused.as_ref().is_some_and(|r| Rc::ptr_eq(r, &res_dyn)),
+            "focus inchangé (pas de re-focus sur non-éditable)"
+        );
+    }
+
+    /// `Layout::buttonEvent` (`BUTTON_PRESS`) ≙ clic dans la page :
+    /// le focus d'un contrôle précédent est retiré avant dispatch
+    /// (≙ `Fl::focus` vers le widget cliqué).
+    #[test]
+    fn button_press_clears_focus() {
+        let mut l = make_layout();
+        l.attach_view(RecView::viewport());
+        let res = Rc::new(MockText::new(true));
+        let res_dyn: Rc<dyn crate::ui::Resource> = res.clone();
+        let w = l.add_embed_widget(&res_dyn);
+        let ev = crate::events::EventButton {
+            state: 0,
+            x_canvas: 0,
+            y_canvas: 0,
+            x_widget: 0,
+            y_widget: 0,
+            num_pressed: 1,
+            button: 1,
+        };
+        l.w_button_press_impl(w, &ev);
+
+        // Press hors de tout widget (pas de toplevel) → focus effacé.
+        let _ = l.button_event(crate::events::ButtonEventType::ButtonPress, 1, 5, 5, 0, 1);
+        let rv = l
+            .view_mut()
+            .and_then(|v| v.as_any())
+            .and_then(|a| a.downcast_ref::<RecView>())
+            .expect("recview");
+        assert!(rv.focused.is_none(), "clic hors contrôle → défocus");
     }
 
     #[test]

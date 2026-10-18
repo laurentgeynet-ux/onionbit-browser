@@ -61,12 +61,14 @@ use std::time::{Duration, Instant};
 use dillo_dw::events::{button_state, ButtonEventType};
 use dillo_dw::layout::Layout;
 use dillo_dw::types::{Rectangle, ScrollCommand};
+use dillo_dw::ui::{Resource, TextKey};
 use dillo_dw::view::View;
 use tiny_skia::{FillRule, Paint, PathBuilder, Rect, Transform};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::platform::SkiaPlatform;
@@ -1191,20 +1193,27 @@ impl ApplicationHandler for DwApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                // ≙ `FL_KEYBOARD` → `return 0` (remonte au parent)
-                // — le shell (ou key_handler standalone) consomme.
+                // ≙ FLTK : la touche va d'abord au widget enfant
+                // focusé (`Fl::focus()` ≙ contrôle de formulaire
+                // in-page) puis remonte au parent si non consommée.
                 // `state` = masque FLTK brut (verbatim `keys.cc` lit
                 // `Fl::event_state()`).
-                let st = self.wins[wi].fl_state();
-                let consumed = self.shell_event(&ShellEv::Key {
-                    win: wi,
-                    event: &event,
-                    state: st,
-                });
+                let focused = self.wins[wi].view.borrow().focused_resource();
+                let consumed = focused
+                    .as_ref()
+                    .is_some_and(|r| self.dispatch_text_key(wi, r, &event));
                 if !consumed {
-                    let h = self.wins[wi].key_handler.borrow().clone();
-                    if let Some(h) = h {
-                        h.borrow_mut()(&event);
+                    let st = self.wins[wi].fl_state();
+                    let consumed = self.shell_event(&ShellEv::Key {
+                        win: wi,
+                        event: &event,
+                        state: st,
+                    });
+                    if !consumed {
+                        let h = self.wins[wi].key_handler.borrow().clone();
+                        if let Some(h) = h {
+                            h.borrow_mut()(&event);
+                        }
                     }
                 }
             }
@@ -1255,6 +1264,72 @@ impl ApplicationHandler for DwApp {
 }
 
 impl DwApp {
+    /// Délivre une touche au contrôle de formulaire focusé —
+    /// adaptation : amont le widget FLTK enfant la reçoit de
+    /// `Fl::handle` (`Fl_Input`/`Fl_Text_Editor`). `true` =
+    /// consommé (≙ `handle` retourne 1, pas de remontée au shell).
+    fn dispatch_text_key(&mut self, wi: usize, res: &Rc<dyn Resource>, event: &KeyEvent) -> bool {
+        let Some(tr) = res.as_text_resource() else {
+            return false;
+        };
+        if event.state != ElementState::Pressed {
+            // Key-up : non géré par le contrôle mais consommé
+            // (le widget enfant l'aurait reçu, pas le shell).
+            return true;
+        }
+        let consumed = match &event.logical_key {
+            Key::Named(NamedKey::Backspace) => tr.key_event(TextKey::Backspace),
+            Key::Named(NamedKey::Delete) => tr.key_event(TextKey::Delete),
+            Key::Named(NamedKey::ArrowLeft) => tr.key_event(TextKey::Left),
+            Key::Named(NamedKey::ArrowRight) => tr.key_event(TextKey::Right),
+            Key::Named(NamedKey::Home) => tr.key_event(TextKey::Home),
+            Key::Named(NamedKey::End) => tr.key_event(TextKey::End),
+            Key::Named(NamedKey::Enter) => tr.key_event(TextKey::Enter),
+            Key::Named(NamedKey::Space) => {
+                tr.insert_text(" ");
+                true
+            }
+            Key::Named(_) => false, // Tab/Escape/F* → shell.
+            _ => {
+                let ctrl = self.wins[wi].fl_mods & button_state::CONTROL_MASK != 0;
+                if ctrl {
+                    // Ctrl+V ≙ `Fl::paste` dans le contrôle focusé
+                    // (les autres combinaisons remontent au shell).
+                    if event
+                        .logical_key
+                        .to_text()
+                        .is_some_and(|t| t.eq_ignore_ascii_case("v"))
+                    {
+                        let text = self.platform.borrow().clipboard_text();
+                        tr.insert_text(&String::from_utf8_lossy(&text));
+                        true
+                    } else {
+                        false
+                    }
+                } else if let Some(t) = &event.text {
+                    tr.insert_text(t);
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        if consumed {
+            // Damage de la zone du contrôle (≙ redraw() du widget
+            // enfant après édition/déplacement du caret).
+            if let Some(a) = res.allocation() {
+                self.wins[wi].view.borrow_mut().queue_draw(&Rectangle {
+                    x: a.x,
+                    y: a.y,
+                    width: a.width,
+                    height: a.ascent + a.descent,
+                });
+            }
+            self.wins[wi].request_redraw();
+        }
+        consumed
+    }
+
     /// Offre un event au shell — `true` si consommé (≙
     /// `UI::handle` retourne non-0).
     fn shell_event(&mut self, ev: &ShellEv<'_>) -> bool {

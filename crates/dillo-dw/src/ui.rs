@@ -167,6 +167,23 @@ pub trait Resource {
     /// `setEnabled` — pure virtual.
     fn set_enabled(&self, enabled: bool);
 
+    /// Allocation courante de la ressource (≙ `FltkResource::
+    /// allocation`, posée par `sizeAllocate`) — seam pour le damage
+    /// du contrôle (caret, édition). `None` ≙ non allouée.
+    fn allocation(&self) -> Option<Allocation> {
+        None
+    }
+
+    /// `uiButton` — **adaptation** : amont les contrôles sont de
+    /// vrais widgets FLTK enfants du viewport qui reçoivent
+    /// `FL_PUSH`/`FL_RELEASE` nativement (`FL_WHEN_RELEASE` →
+    /// `emitClicked`, toggle des check/radio, focus du `Fl_Input`…).
+    /// Chez nous le contrôle est dessiné : `Embed` y délègue le
+    /// clic. Retourne `true` = consommé (≙ l'enfant l'aurait pris).
+    fn ui_button(&self, _event: &EventButton, _press: bool) -> bool {
+        false
+    }
+
     /// `connectActivate` — verbatim.
     fn connect_activate(&self, receiver: &Rc<RefCell<dyn ActivateReceiver>>) {
         self.emitters().activate.borrow_mut().connect(receiver);
@@ -356,6 +373,27 @@ pub enum SelectionMode {
 /// `OptionMenuResource` (ui.hh:487) — marker.
 pub trait OptionMenuResource: SelectionResource {}
 
+/// Touche d'édition abstraite ≙ `Fl::event_key()` vu par un
+/// contrôle texte enfant — la plateforme convertit son événement
+/// natif (adaptation : amont c'est FLTK qui dispatche au widget).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextKey {
+    /// `FL_BackSpace`.
+    Backspace,
+    /// `FL_Delete`.
+    Delete,
+    /// `FL_Left`.
+    Left,
+    /// `FL_Right`.
+    Right,
+    /// `FL_Home`.
+    Home,
+    /// `FL_End`.
+    End,
+    /// `FL_Enter` (`FL_WHEN_ENTER_KEY_ALWAYS` → `emitActivate`).
+    Enter,
+}
+
 /// `TextResource` (ui.hh:491) — `iterator` ≙ `EmptyIterator`
 /// verbatim (`\bug Not implemented`).
 pub trait TextResource: Resource {
@@ -371,6 +409,22 @@ pub trait TextResource: Resource {
     fn iterator(&self, mask: i16, at_end: bool) -> Box<dyn DwIterator> {
         empty_iterator(self.embed(), mask, at_end)
     }
+
+    /// `setFocused` — **adaptation** : ≙ `Fl_Input::take_focus` /
+    /// perte de focus du widget enfant. Pilote l'affichage du
+    /// caret au `draw`.
+    fn set_focused(&self, _focused: bool) {}
+    /// `isFocused` — ≙ `Fl::focus() == widget`.
+    fn is_focused(&self) -> bool {
+        false
+    }
+    /// Touche d'édition ≙ `Fl_Input::handle(FL_KEYBOARD)` — `true`
+    /// = consommé (caret déplacé, texte modifié, `activate` émis).
+    fn key_event(&self, _key: TextKey) -> bool {
+        false
+    }
+    /// Insertion de texte ≙ saisie/paste dans le widget enfant.
+    fn insert_text(&self, _text: &str) {}
 }
 
 /// `EntryResource` (ui.hh:502) — `UNLIMITED_SIZE = -1` verbatim.
@@ -502,6 +556,15 @@ pub trait ComplexButtonOps {
     /// `sizeAllocate` — verbatim `FltkComplexButtonResource::
     /// sizeAllocate` (positionne la flat view interne).
     fn size_allocate(&mut self, _allocation: &Allocation) {}
+    /// `widgetCallback` (fltkui.cc:763) — **adaptation** : le clic
+    /// est routé par `Embed` au lieu du widget enfant. `press` ≙
+    /// `FL_PUSH` (état `pushed`) ; release ≙ `FL_RELEASE` hors
+    /// bouton droit → `Some((click_x, click_y, inside))` en coords
+    /// ajustées des box-offsets du style (`inside` ≙ le test
+    /// `click_x < w` amont). `None` = ignoré.
+    fn ui_button(&mut self, _event: &EventButton, _press: bool) -> Option<(i32, i32, bool)> {
+        None
+    }
 }
 
 /// `ComplexButtonResource::LayoutReceiver` — verbatim : relay de
@@ -693,6 +756,21 @@ impl Resource for ComplexButtonResource {
     /// qui redimensionne la flat view — fltkui.cc).
     fn size_allocate(&self, _l: &mut Layout, allocation: &Allocation) {
         self.ops.borrow_mut().size_allocate(allocation);
+    }
+
+    /// `uiButton` — ≙ `FltkComplexButtonResource::widgetCallback`
+    /// (fltkui.cc:767) : `click_x`/`click_y` ajustés posés en tout
+    /// cas, `emitClicked` seulement si le point tombe dans la
+    /// boîte (verbatim).
+    fn ui_button(&self, event: &EventButton, press: bool) -> bool {
+        if let Some((cx, cy, inside)) = self.ops.borrow_mut().ui_button(event, press) {
+            self.click_x.set(cx);
+            self.click_y.set(cy);
+            if inside {
+                self.emit_clicked(event);
+            }
+        }
+        true
     }
 
     /// `getAvailWidthOfChild` — verbatim ui.cc:407 :

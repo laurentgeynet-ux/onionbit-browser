@@ -202,6 +202,18 @@ pub trait View {
     /// `mergeClippingView` — réinjecte la sous-vue dans le parent.
     fn merge_clipping_view(&mut self, clipping_view: Box<dyn View>);
 
+    /// Focus clavier d'un contrôle de formulaire — **adaptation** :
+    /// amont c'est un vrai widget FLTK enfant (`Fl::focus`). La vue
+    /// retient la ressource focusée (damage + caret) ; le routage
+    /// des touches est côté plateforme/app. Défaut : no-op.
+    fn set_focused_resource(&mut self, _res: Option<Rc<dyn crate::ui::Resource>>) {}
+
+    /// `fl_width` — mesure de texte (caret des contrôles).
+    /// Défaut `0` (vues de test).
+    fn text_width(&mut self, _font: &Font, _text: &[u8]) -> i32 {
+        0
+    }
+
     /// Downcast plateforme — ≙ les casts `FltkView*` amont
     /// (`FltkResource::draw` caste `View*` → `FltkView*`). Les
     /// impls concrètes retournent `Some(self)` ; `None` défaut.

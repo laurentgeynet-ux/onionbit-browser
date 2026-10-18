@@ -29,6 +29,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use dillo_dw::events::EventButton;
 use dillo_dw::iterator::DwIterator;
 use dillo_dw::layout::Layout;
 use dillo_dw::platform::Platform;
@@ -38,7 +39,8 @@ use dillo_dw::ui::{
     ButtonResource, CheckButtonResource, ComplexButtonOps, ComplexButtonResource, EntryResource,
     LabelButtonResource, ListResource, MultiLineTextResource, OptionMenuResource,
     RadioButtonResource, RadioGroupIterator, Resource, ResourceEmitters, ResourceFactory,
-    SelectionMode, SelectionResource, TextResource, ToggleButtonResource, ENTRY_UNLIMITED_SIZE,
+    SelectionMode, SelectionResource, TextKey, TextResource, ToggleButtonResource,
+    ENTRY_UNLIMITED_SIZE,
 };
 use dillo_dw::view::View;
 use dillo_dw::WidgetId;
@@ -73,6 +75,10 @@ struct SkiaCore {
     /// `allocation` — ≙ `FltkResource::allocation` (posé par
     /// `sizeAllocate` — verbatim fltkresource.cc).
     allocation: Cell<Allocation>,
+    /// `pressed` — ≙ état `pushed` du widget enfant FLTK : un
+    /// release ne « clique » que si le press a eu lieu sur le
+    /// contrôle (un drag se terminant dessus ne déclenche pas).
+    pressed: Cell<bool>,
 }
 
 impl SkiaCore {
@@ -84,6 +90,7 @@ impl SkiaCore {
             displayed: Cell::new(true),
             enabled: Cell::new(true),
             style: RefCell::new(None),
+            pressed: Cell::new(false),
             allocation: Cell::new(Allocation {
                 x: 0,
                 y: 0,
@@ -135,6 +142,11 @@ macro_rules! resource_common_impl {
         /// (allocation mémorisée pour `draw`).
         fn size_allocate(&self, _l: &mut Layout, allocation: &Allocation) {
             self.core.allocation.set(*allocation);
+        }
+
+        /// `allocation` — seam damage/caret.
+        fn allocation(&self) -> Option<Allocation> {
+            Some(self.core.allocation.get())
         }
 
         /// `isEnabled` — ≙ `widget->active()`.
@@ -332,6 +344,18 @@ impl Resource for SkiaLabelButtonResource {
         Some(self)
     }
 
+    /// `uiButton` — ≙ `EnterButton` enfant : press consommé
+    /// (`pushed`), release hors bouton 3 → `widgetCallback`
+    /// → `emitClicked` (`FL_WHEN_RELEASE`, fltkui.cc:724).
+    fn ui_button(&self, event: &EventButton, press: bool) -> bool {
+        if press {
+            self.core.pressed.set(true);
+        } else if self.core.pressed.replace(false) && event.button != 3 {
+            self.emit_clicked(event);
+        }
+        true
+    }
+
     resource_common_impl!();
 }
 
@@ -377,11 +401,16 @@ pub struct SkiaEntryResource {
     placeholder: Option<String>,
     /// `editable` — verbatim flag (init `false`).
     editable: Cell<bool>,
+    /// `focused` — ≙ `Fl::focus() == input` (caret affiché).
+    focused: Cell<bool>,
+    /// Position du caret — index octet (frontière UTF-8) ≙
+    /// `input->position()`.
+    cursor: Cell<usize>,
 }
 
 impl SkiaEntryResource {
     /// Ctor verbatim (fltkui.cc:890) : `editable = false`.
-    fn new(size: i32, password: bool, label: &str, placeholder: &str) -> Self {
+    pub(crate) fn new(size: i32, password: bool, label: &str, placeholder: &str) -> Self {
         Self {
             core: SkiaCore::new(),
             text: RefCell::new(String::new()),
@@ -392,8 +421,19 @@ impl SkiaEntryResource {
             label_w: Cell::new(0),
             placeholder: (!placeholder.is_empty()).then(|| placeholder.to_string()),
             editable: Cell::new(false),
+            focused: Cell::new(false),
+            cursor: Cell::new(0),
         }
     }
+}
+
+/// Clamp d'un index octet sur une frontière de char UTF-8.
+fn clamp_boundary(s: &str, mut i: usize) -> usize {
+    i = i.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 impl Resource for SkiaEntryResource {
@@ -431,7 +471,8 @@ impl Resource for SkiaEntryResource {
     }
 
     /// `draw` — `FL_DOWN_BOX` + label + texte (ou placeholder ;
-    /// `*` masqués si password — ≙ `FL_SECRET_INPUT`).
+    /// `*` masqués si password — ≙ `FL_SECRET_INPUT`) + caret si
+    /// focus (≙ `Fl_Input::draw` du widget focusé).
     fn draw(&self, view: &mut dyn View, _area: &Rectangle, _ctx: &mut DrawingContext) {
         let a = self.core.allocation.get();
         draw_field_box(view, &a);
@@ -471,6 +512,30 @@ impl Resource for SkiaEntryResource {
             baseline,
             shown.as_bytes(),
         );
+        // Caret ≙ `input->position()` du widget enfant focusé.
+        if self.focused.get() && self.editable.get() {
+            let cur = clamp_boundary(&text, self.cursor.get());
+            let prefix: String = if self.password {
+                "*".repeat(text[..cur].chars().count())
+            } else {
+                text[..cur].to_string()
+            };
+            let cx = tx + view.text_width(&font, prefix.as_bytes());
+            view.draw_line(
+                &self.core.fg(),
+                dillo_dw::style::Shading::Normal,
+                cx,
+                baseline - font.ascent,
+                cx,
+                baseline + font.descent,
+            );
+        }
+    }
+
+    /// `uiButton` — ≙ press/release sur le `Fl_Input` enfant :
+    /// consommé dans tous les cas (le focus est posé par `Embed`).
+    fn ui_button(&self, _event: &EventButton, _press: bool) -> bool {
+        true
     }
 
     /// `iterator` — `EmptyIterator` verbatim.
@@ -512,6 +577,88 @@ impl TextResource for SkiaEntryResource {
     fn set_editable(&self, editable: bool) {
         self.editable.set(editable);
     }
+
+    /// `setFocused` — ≙ `take_focus` : caret en fin de texte.
+    fn set_focused(&self, focused: bool) {
+        self.focused.set(focused);
+        if focused {
+            self.cursor.set(self.text.borrow().len());
+        }
+    }
+
+    /// `isFocused`.
+    fn is_focused(&self) -> bool {
+        self.focused.get()
+    }
+
+    /// `keyEvent` ≙ `Fl_Input::handle(FL_KEYBOARD)` : déplacement
+    /// toujours, édition si `editable` (input read-only amont
+    /// garde navigation/sélection), Enter → `emitActivate`
+    /// (`FL_WHEN_ENTER_KEY_ALWAYS`).
+    fn key_event(&self, key: TextKey) -> bool {
+        if key == TextKey::Enter {
+            self.emit_activate();
+            return true;
+        }
+        let mut t = self.text.borrow_mut();
+        let mut cur = clamp_boundary(&t, self.cursor.get());
+        match key {
+            TextKey::Backspace => {
+                if self.editable.get() && cur > 0 {
+                    let prev = t[..cur].char_indices().next_back().map_or(0, |(i, _)| i);
+                    t.drain(prev..cur);
+                    cur = prev;
+                }
+            }
+            TextKey::Delete => {
+                if self.editable.get() && cur < t.len() {
+                    let next = cur + t[cur..].chars().next().map_or(1, char::len_utf8);
+                    t.drain(cur..next);
+                }
+            }
+            TextKey::Left => {
+                if cur > 0 {
+                    cur = t[..cur].char_indices().next_back().map_or(0, |(i, _)| i);
+                }
+            }
+            TextKey::Right => {
+                if cur < t.len() {
+                    cur += t[cur..].chars().next().map_or(1, char::len_utf8);
+                }
+            }
+            TextKey::Home => cur = 0,
+            TextKey::End => cur = t.len(),
+            TextKey::Enter => {}
+        }
+        self.cursor.set(cur);
+        true
+    }
+
+    /// `insertText` ≙ saisie/paste — mono-ligne : `\r`/`\n`
+    /// ignorés (≙ `Fl_Input`), `maxLength` borné en chars.
+    fn insert_text(&self, s: &str) {
+        if !self.editable.get() {
+            return;
+        }
+        let mut t = self.text.borrow_mut();
+        let cur = clamp_boundary(&t, self.cursor.get());
+        let max = self.max_length.get();
+        let room = if max >= 0 {
+            (max as usize).saturating_sub(t.chars().count())
+        } else {
+            usize::MAX
+        };
+        let ins: String = s
+            .chars()
+            .filter(|c| *c != '\r' && *c != '\n')
+            .take(room)
+            .collect();
+        if ins.is_empty() {
+            return;
+        }
+        t.insert_str(cur, &ins);
+        self.cursor.set(cur + ins.len());
+    }
 }
 
 impl EntryResource for SkiaEntryResource {
@@ -540,6 +687,11 @@ pub struct SkiaMultiLineTextResource {
     placeholder: Option<String>,
     /// `editable` — verbatim (init `false`).
     editable: Cell<bool>,
+    /// `focused` — ≙ `Fl::focus() == editor` (caret affiché).
+    focused: Cell<bool>,
+    /// Position du caret — index octet (frontière UTF-8) ≙
+    /// `editor->insert_position()`.
+    cursor: Cell<usize>,
 }
 
 impl SkiaMultiLineTextResource {
@@ -552,6 +704,8 @@ impl SkiaMultiLineTextResource {
             num_rows: rows,
             placeholder: (!placeholder.is_empty()).then(|| placeholder.to_string()),
             editable: Cell::new(false),
+            focused: Cell::new(false),
+            cursor: Cell::new(0),
         }
     }
 }
@@ -605,6 +759,32 @@ impl Resource for SkiaMultiLineTextResource {
             (a.ascent + a.descent - 2 * RELIEF_Y_THICKNESS).max(1),
             shown.as_bytes(),
         );
+        // Caret ≙ `editor->insert_position()` (ligne/colonne sur
+        // les `\n` — le wrap visuel n'est pas pris en compte,
+        // approximation documentée).
+        if self.focused.get() && self.editable.get() {
+            let cur = clamp_boundary(&text, self.cursor.get());
+            let before = &text[..cur];
+            let line = before.matches('\n').count() as i32;
+            let col = before.rsplit('\n').next().unwrap_or(before);
+            let cx = a.x + RELIEF_X_THICKNESS + view.text_width(&font, col.as_bytes());
+            let lh = font.ascent + font.descent;
+            let cy = a.y + RELIEF_Y_THICKNESS + line * lh;
+            view.draw_line(
+                &self.core.fg(),
+                dillo_dw::style::Shading::Normal,
+                cx,
+                cy,
+                cx,
+                cy + lh,
+            );
+        }
+    }
+
+    /// `uiButton` — ≙ press/release sur le `Fl_Text_Editor`
+    /// enfant : consommé (focus posé par `Embed`).
+    fn ui_button(&self, _event: &EventButton, _press: bool) -> bool {
+        true
     }
 
     /// `iterator` — `EmptyIterator` verbatim.
@@ -644,6 +824,77 @@ impl TextResource for SkiaMultiLineTextResource {
     /// `setEditable`.
     fn set_editable(&self, editable: bool) {
         self.editable.set(editable);
+    }
+
+    /// `setFocused` — ≙ `take_focus` : caret en fin de texte.
+    fn set_focused(&self, focused: bool) {
+        self.focused.set(focused);
+        if focused {
+            self.cursor.set(self.text.borrow().len());
+        }
+    }
+
+    /// `isFocused`.
+    fn is_focused(&self) -> bool {
+        self.focused.get()
+    }
+
+    /// `keyEvent` ≙ `Fl_Text_Editor::handle(FL_KEYBOARD)` — Enter
+    /// insère `\n` (pas d'activate pour l'éditeur amont).
+    fn key_event(&self, key: TextKey) -> bool {
+        if key == TextKey::Enter && self.editable.get() {
+            self.insert_text("\n");
+            return true;
+        }
+        let mut t = self.text.borrow_mut();
+        let mut cur = clamp_boundary(&t, self.cursor.get());
+        match key {
+            TextKey::Backspace => {
+                if self.editable.get() && cur > 0 {
+                    let prev = t[..cur].char_indices().next_back().map_or(0, |(i, _)| i);
+                    t.drain(prev..cur);
+                    cur = prev;
+                }
+            }
+            TextKey::Delete => {
+                if self.editable.get() && cur < t.len() {
+                    let next = cur + t[cur..].chars().next().map_or(1, char::len_utf8);
+                    t.drain(cur..next);
+                }
+            }
+            TextKey::Left => {
+                if cur > 0 {
+                    cur = t[..cur].char_indices().next_back().map_or(0, |(i, _)| i);
+                }
+            }
+            TextKey::Right => {
+                if cur < t.len() {
+                    cur += t[cur..].chars().next().map_or(1, char::len_utf8);
+                }
+            }
+            TextKey::Home => {
+                // ≙ `Fl_Text_Editor` : début de la ligne courante.
+                cur = t[..cur].rfind('\n').map_or(0, |i| i + 1);
+            }
+            TextKey::End => {
+                cur = t[cur..].find('\n').map_or(t.len(), |i| cur + i);
+            }
+            TextKey::Enter => {}
+        }
+        self.cursor.set(cur);
+        true
+    }
+
+    /// `insertText` ≙ saisie/paste dans le `Fl_Text_Editor`
+    /// (newlines conservés).
+    fn insert_text(&self, s: &str) {
+        if !self.editable.get() {
+            return;
+        }
+        let mut t = self.text.borrow_mut();
+        let cur = clamp_boundary(&t, self.cursor.get());
+        t.insert_str(cur, s);
+        self.cursor.set(cur + s.len());
     }
 }
 
@@ -814,6 +1065,17 @@ impl Resource for SkiaCheckButtonResource {
         Some(self)
     }
 
+    /// `uiButton` — ≙ `Fl_Check_Button` enfant : toggle `value()`
+    /// natif au release (le contrôle n'a pas de callback amont).
+    fn ui_button(&self, _event: &EventButton, press: bool) -> bool {
+        if press {
+            self.core.pressed.set(true);
+        } else if self.core.pressed.replace(false) {
+            self.t.activated.set(!self.t.activated.get());
+        }
+        true
+    }
+
     resource_common_impl!();
 }
 
@@ -927,6 +1189,21 @@ impl Resource for SkiaRadioButtonResource {
     /// (`create_radio_button_resource(grouped_with)`).
     fn as_radio_button_resource_rc(self: Rc<Self>) -> Option<Rc<dyn RadioButtonResource>> {
         Some(self)
+    }
+
+    /// `uiButton` — ≙ `Fl_Round_Button` enfant : release →
+    /// `buttonClicked` verbatim (fltkui.cc:1340) : tout le groupe
+    /// se `setActivated(other == this)`.
+    fn ui_button(&self, _event: &EventButton, press: bool) -> bool {
+        if press {
+            self.core.pressed.set(true);
+        } else if self.core.pressed.replace(false) {
+            let mut it = self.group_iterator();
+            while let Some(m) = it.get_next() {
+                m.set_activated(std::ptr::eq(m.as_resource(), self.as_resource()));
+            }
+        }
+        true
     }
 
     resource_common_impl!();
@@ -1100,6 +1377,12 @@ impl Resource for SkiaOptionMenuResource {
     /// `(OptionMenuResource*)res`.
     fn as_option_menu_resource(&self) -> Option<&dyn OptionMenuResource> {
         Some(self)
+    }
+
+    /// `uiButton` — consommé (≙ `Fl_Choice` enfant) ; le popup de
+    /// sélection n'est pas émulé (gap documenté).
+    fn ui_button(&self, _event: &EventButton, _press: bool) -> bool {
+        true
     }
 
     resource_common_impl!();
@@ -1348,6 +1631,12 @@ impl Resource for SkiaListResource {
     /// `(ListResource*)res`.
     fn as_list_resource(&self) -> Option<&dyn ListResource> {
         Some(self)
+    }
+
+    /// `uiButton` — consommé (≙ `Fl_Browser` enfant) ; la
+    /// sélection d'items n'est pas émulée (gap documenté).
+    fn ui_button(&self, _event: &EventButton, _press: bool) -> bool {
+        true
     }
 
     resource_common_impl!();
@@ -1602,6 +1891,31 @@ impl ComplexButtonOps for SkiaComplexButtonOps {
     fn set_style(&mut self, style: &Rc<Style>) {
         *self.style.borrow_mut() = Some(Rc::clone(style));
     }
+
+    /// `widgetCallback` (fltkui.cc:767-802) — verbatim :
+    /// press ≙ `pushed` ; release hors bouton droit → coords
+    /// `click_x`/`click_y` ajustées box-offsets + test inside.
+    fn ui_button(&mut self, event: &EventButton, press: bool) -> Option<(i32, i32, bool)> {
+        if press {
+            self.pressed.set(true);
+            return None;
+        }
+        if !self.pressed.replace(false) || event.button == 3 {
+            return None;
+        }
+        let a = self.allocation.get();
+        let mut cx = event.x_canvas - a.x;
+        let mut cy = event.y_canvas - a.y;
+        let mut w = a.width;
+        let mut h = a.ascent + a.descent;
+        if let Some(s) = &*self.style.borrow() {
+            cx -= s.box_offset_x();
+            cy -= s.box_offset_y();
+            w -= s.box_diff_width();
+            h -= s.box_diff_height();
+        }
+        Some((cx, cy, cx >= 0 && cy >= 0 && cx < w && cy < h))
+    }
 }
 
 // ------------------------------------------------------------------
@@ -1814,5 +2128,151 @@ mod tests {
             n3 += 1;
         }
         assert_eq!(n3, 1);
+    }
+}
+
+// --- saisie in-page (A10-D2 : ≙ focus/keys du widget enfant FLTK) ---
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use dillo_dw::events::EventButton;
+    use dillo_dw::ui::{ActivateReceiver, ClickedReceiver};
+    use std::cell::RefCell;
+
+    /// `EventButton` minimal.
+    fn ev(button: i32) -> EventButton {
+        EventButton {
+            state: 0,
+            x_canvas: 0,
+            y_canvas: 0,
+            x_widget: 0,
+            y_widget: 0,
+            num_pressed: 1,
+            button,
+        }
+    }
+
+    #[derive(Default)]
+    struct Recv {
+        /// `"a"` = activate, `"c"` = clicked.
+        log: RefCell<Vec<&'static str>>,
+    }
+    impl ActivateReceiver for Recv {
+        fn activate(&mut self, _r: &dyn Resource) {
+            self.log.borrow_mut().push("a");
+        }
+    }
+    impl ClickedReceiver for Recv {
+        fn clicked(&mut self, _r: &dyn Resource, _e: &EventButton) {
+            self.log.borrow_mut().push("c");
+        }
+    }
+
+    /// `Fl_Input` enfant : focus + insert + caret/backspace ≙
+    /// `handle(FL_KEYBOARD)` — A10-D2.
+    #[test]
+    fn entry_focus_insert_and_keys() {
+        let res = SkiaEntryResource::new(10, false, "", "");
+        res.set_editable(true);
+        res.set_focused(true);
+        assert!(res.is_focused());
+
+        res.insert_text("abc");
+        assert_eq!(res.get_text(), "abc");
+        // Curseur en fin → Left×2 + Backspace supprime 'b'.
+        res.key_event(TextKey::Left);
+        res.key_event(TextKey::Left);
+        res.key_event(TextKey::Backspace);
+        assert_eq!(res.get_text(), "bc");
+        // Home/Delete en tête.
+        res.key_event(TextKey::Home);
+        res.key_event(TextKey::Delete);
+        assert_eq!(res.get_text(), "c");
+
+        // Enter ≙ `FL_WHEN_ENTER_KEY_ALWAYS` → `emitActivate`.
+        let rec = Rc::new(RefCell::new(Recv::default()));
+        let dynr: Rc<RefCell<dyn ActivateReceiver>> = rec.clone();
+        res.connect_activate(&dynr);
+        assert!(res.key_event(TextKey::Enter));
+        assert_eq!(rec.borrow().log.borrow().as_slice(), &["a"]);
+    }
+
+    /// Entrée non éditable : saisie ignorée (≙ read-only `Fl_Input`)
+    /// mais les flèches restent consommées.
+    #[test]
+    fn entry_readonly_ignores_edits() {
+        let res = SkiaEntryResource::new(10, false, "", "");
+        res.insert_text("x");
+        assert_eq!(res.get_text(), "");
+        assert!(res.key_event(TextKey::Backspace)); // consommé
+        assert_eq!(res.get_text(), "");
+    }
+
+    /// `setMaxLength` borne la saisie en chars (≙ `maximum_size`).
+    #[test]
+    fn entry_max_length_bounds_insert() {
+        let res = SkiaEntryResource::new(10, false, "", "");
+        res.set_editable(true);
+        res.set_max_length(3);
+        res.insert_text("abcdef");
+        assert_eq!(res.get_text(), "abc");
+    }
+
+    /// `Fl_Text_Editor` : Enter insère `\n` (pas d'activate).
+    #[test]
+    fn multiline_enter_inserts_newline() {
+        let res = SkiaMultiLineTextResource::new(10, 3, "");
+        res.set_editable(true);
+        res.insert_text("ab");
+        res.key_event(TextKey::Enter);
+        res.insert_text("c");
+        assert_eq!(res.get_text(), "ab\nc");
+    }
+
+    /// `FL_WHEN_RELEASE` : release sans press (drag entrant) ne
+    /// déclenche pas `emitClicked` ; bouton 3 non plus.
+    #[test]
+    fn label_button_release_semantics() {
+        let res = SkiaResourceFactory::new().create_label_button_resource("go");
+        let rec = Rc::new(RefCell::new(Recv::default()));
+        let dynr: Rc<RefCell<dyn ClickedReceiver>> = rec.clone();
+        res.connect_clicked(&dynr);
+
+        assert!(res.ui_button(&ev(1), false)); // release sans press
+        assert!(rec.borrow().log.borrow().is_empty());
+        assert!(res.ui_button(&ev(1), true)); // press
+        assert!(res.ui_button(&ev(1), false)); // release → clicked
+        assert_eq!(rec.borrow().log.borrow().as_slice(), &["c"]);
+        // Bouton 3 : pas de widgetCallback (≙ `!event_button3()`).
+        res.ui_button(&ev(3), true);
+        res.ui_button(&ev(3), false);
+        assert_eq!(rec.borrow().log.borrow().len(), 1);
+    }
+
+    /// `Fl_Check_Button` enfant : toggle `value()` au release,
+    /// sans callback amont.
+    #[test]
+    fn check_button_toggles_on_release() {
+        let res = SkiaCheckButtonResource::new(false);
+        assert!(!res.is_activated());
+        res.ui_button(&ev(1), true);
+        res.ui_button(&ev(1), false);
+        assert!(res.is_activated());
+        res.ui_button(&ev(1), true);
+        res.ui_button(&ev(1), false);
+        assert!(!res.is_activated());
+    }
+
+    /// Radio : release → `buttonClicked` verbatim (exclusion de
+    /// groupe — `setActivated(other == this)`).
+    #[test]
+    fn radio_click_excludes_group() {
+        let f = SkiaResourceFactory::new();
+        let r1 = f.create_radio_button_resource(None, true);
+        let r2 = f.create_radio_button_resource(Some(Rc::clone(&r1)), false);
+        r2.ui_button(&ev(1), true);
+        r2.ui_button(&ev(1), false);
+        assert!(!r1.is_activated() && r2.is_activated());
     }
 }

@@ -2528,9 +2528,31 @@ impl Layout {
         if let Some(res) = self.embed_resource(w) {
             if event.button == 3 {
                 res.emit_clicked(event);
+                // L'enfant FLTK aurait aussi pris le focus.
+                if let Some(tr) = res.as_text_resource() {
+                    if tr.is_editable() {
+                        if let Some(v) = self.view_mut() {
+                            v.set_focused_resource(Some(res.clone()));
+                        }
+                    }
+                }
                 return true;
             }
-            return false;
+            // Adaptation : amont le contrôle est un vrai widget
+            // FLTK enfant qui reçoit le clic nativement — press sur
+            // une entrée texte ≙ `take_focus` du `Fl_Input`.
+            if let Some(tr) = res.as_text_resource() {
+                if tr.is_editable() {
+                    if let Some(v) = self.view_mut() {
+                        v.set_focused_resource(Some(res.clone()));
+                    }
+                }
+                return true;
+            }
+            // Boutons/check/radio/… : ≙ `FL_PUSH` sur l'enfant
+            // (consommé ; le déclenchement se fait au release —
+            // `FL_WHEN_RELEASE`).
+            return res.ui_button(event, true);
         }
         let _ = (w, event);
         false
@@ -2543,6 +2565,17 @@ impl Layout {
         }
         if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
             return self.img_button_release_impl(w, event);
+        }
+        // Adaptation : `FL_RELEASE` sur le widget enfant ≙
+        // `FL_WHEN_RELEASE`/`FL_WHEN_CHANGED` (clicked, toggle).
+        // Consommé → `queueDraw` : le handler a pu muter le contrôle
+        // (toggle, `setText` via reset — ≙ `widget->redraw` amont).
+        if let Some(res) = self.embed_resource(w) {
+            let handled = res.ui_button(event, false);
+            if handled {
+                self.widget_queue_draw(w);
+            }
+            return handled;
         }
         let _ = (w, event);
         false
