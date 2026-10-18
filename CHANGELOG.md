@@ -757,7 +757,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Seams `SC_BOTTOM`/`SC_TOP` posées pour `stackingcontextmgr`.
 - 19 tests oof (codecs parent_ref, recherche containers,
   collisions/clear/tellPosition, sections itérateur,
-  détachement). Audit `docs/audits/reports/A08_dw-oof_partial.md`.
+  détachement). Audit `docs/audits/reports/A08_dw-oof.md`.
 ### dw-1b — imgbuf dw/imgbridge aligné
 - `[dw]::imgbuf` trait complet (`set_cmap`/`copy_row`/`new_scan`/
   `get_scaled_buf`/`get_row_area`/`root_w·h`/`similar_buf`/`copy_to`/
