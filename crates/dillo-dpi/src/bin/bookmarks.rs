@@ -261,7 +261,8 @@ fn run() -> i32 {
     check_import(&st);
     st.cond_load();
 
-    let stdin = socket2::SockRef::from(&std::io::stdin());
+    let stdin_io = std::io::stdin();
+    let stdin = socket2::SockRef::from(&stdin_io);
     loop {
         if quit.load(std::sync::atomic::Ordering::Relaxed) {
             return 0;

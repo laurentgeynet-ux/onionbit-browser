@@ -728,7 +728,6 @@ fn serve_conn(sock: std::net::TcpStream, bye: std::sync::Arc<AtomicBool>) {
 #[cfg(unix)]
 fn run() -> i32 {
     use std::io;
-    use std::os::unix::io::AsRawFd;
 
     // Signaux verbatim `termination_handler` (exit(signum)) : flag
     // consulté dans la boucle d'accept (amont exit immédiat — ici on
@@ -739,7 +738,8 @@ fn run() -> i32 {
     let _ = signal_hook::flag::register(signal_hook::consts::SIGHUP, sig_int.clone());
 
     // stdin = socket d'écoute non-bloquante (verbatim fcntl O_NONBLOCK).
-    let stdin_ref = socket2::SockRef::from(&io::stdin());
+    let stdin = io::stdin();
+    let stdin_ref = socket2::SockRef::from(&stdin);
     if stdin_ref.set_nonblocking(true).is_err() {
         eprintln!("[file dpi]: stdin is not a socket");
         return 1;

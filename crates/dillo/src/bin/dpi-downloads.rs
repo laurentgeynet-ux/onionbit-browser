@@ -188,7 +188,8 @@ fn serve_conn(sock: std::net::TcpStream, tx: &std::sync::mpsc::Sender<Request>) 
 /// Boucle `accept` sur stdin (socket d'écoute verbatim).
 #[cfg(unix)]
 fn listener(tx: std::sync::mpsc::Sender<Request>) {
-    let stdin_ref = socket2::SockRef::from(&std::io::stdin());
+    let stdin = std::io::stdin();
+    let stdin_ref = socket2::SockRef::from(&stdin);
     loop {
         match stdin_ref.accept() {
             Ok((sock, _)) => {

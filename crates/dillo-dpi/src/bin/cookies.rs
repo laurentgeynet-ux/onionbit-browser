@@ -186,7 +186,8 @@ fn run() -> i32 {
     jar.load(&contents);
 
     // verbatim : accept bloquant + clients séquentiels.
-    let stdin = socket2::SockRef::from(&std::io::stdin());
+    let stdin_io = std::io::stdin();
+    let stdin = socket2::SockRef::from(&stdin_io);
     loop {
         if quit.load(Ordering::Relaxed) {
             break;
