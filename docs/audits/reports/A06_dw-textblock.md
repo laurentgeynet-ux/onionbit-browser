@@ -153,3 +153,45 @@ excessive_bools`/`struct_excessive_bools` signatures+champs
 verbatim, `comparison_chain`, `match_same_arms` bras verbatim)
 · 87 tests `dillo-dw` + workspace ✓ · `cargo doc` sans
 warning ✓ · aucun `unwrap`/`panic`/`todo` hors tests.
+
+---
+
+# Passe 2 (post-golden suite `f9aa4c8`, live-test `0b9756d`)
+
+## Delta code — commits textblock relus
+
+| Commit | Changement | Verdict |
+|---|---|---|
+| `f9aa4c8` | `BadnessAndPenalty` en `wrapping_*` ≙ wrap `int` C (`ratio³` wrappe amont, panic sinon) ; `textWidth len<0→0` verbatim ; `tb_dump` diagnostic. | **Conforme** — reproduit la sémantique C exacte. |
+| `a20dc55` | Appels de base `Widget::*` statiques dans `sizing.rs` ≙ liaison non-virtuelle amont (fix récursion `Resized`) ; `tb_resize_draw_impl` lit hors `node_tb_mut` (emprunt imbriqué). | **Conforme**. |
+| `f8e1fe7` | `draw.rs` clamp `len.max(0)` ≙ `len > 0` amont avant cast. | **Conforme**. |
+| `0b9756d` | `next_glyph` progress guards dans les boucles hit-test `words.rs` (amont = sentinelle NUL ; nos slices bornent — équivalent fidèle) ; corrections `next_glyph`/`smallcaps`/`hyphenator` stagnation — `next_glyph` retourne désormais le début du char **suivant** ≙ `fl_utf8fwd`. | **Conforme** — fix de boucle infinie réel (hit-test au clic). |
+
+## Re-vérifications ciblées
+
+- `penalties[][]`/`stretchabilityFactor` verbatim
+  (`{100,800}/{800,800}/{100,800}`, factor 100 — `mod.rs:128-130`
+  ≙ `textblock.cc:154-164`) ; setters ×100 exposés ≙ prefs.
+- Golden suite 38/38 pixel-identique : le corpus exerce wrap,
+  espaces collapsés, parbreak, listes, tables — L5 est désormais
+  **mesurée** (le « golden renders non écrit » de la passe 1 est
+  résorbé).
+- `hoverTooltip` `thread_local` (D2) reconduit verbatim.
+
+## Correction du rapport passé 1
+
+- **Hyphenator : 0 test réel** — la mention « loader testé sur
+  fixtures inline » était inexacte : aucun `#[test]` dans
+  `hyphenator.rs`/`breaking.rs`, aucune donnée `.pat`/`.exc`
+  copiée (amont n'a que `test/unit/hyph-{de,en-us}.pat`).
+  Reclassé en **test gap majeur** (apply : copier les 2 `.pat`
+  amont + tests trie/exceptions/priorités odd-even).
+- Les autres gaps passés 1 sont reconduits : re-wrap streaming
+  aux frontières de chunk, sélection après re-wrap/resize,
+  OOF×textblock `getBorder` (attend A08 apply).
+
+## Verdict passe 2
+
+**Conforme** — aucune déviation fonctionnelle nouvelle. Le
+périmètre gagne l'oracle pixel bout-en-bout ; le seul chantier
+réel est la couverture hyphenator (loader + données amont).
