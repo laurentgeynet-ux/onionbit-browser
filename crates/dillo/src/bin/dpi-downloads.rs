@@ -187,18 +187,13 @@ fn serve_conn(sock: std::net::TcpStream, tx: &std::sync::mpsc::Sender<Request>) 
 
 /// Boucle `accept` sur stdin (socket d'écoute verbatim).
 #[cfg(unix)]
-fn listener(tx: std::sync::mpsc::Sender<Request>) {
+fn listener(tx: &std::sync::mpsc::Sender<Request>) {
     let stdin = std::io::stdin();
     let stdin_ref = socket2::SockRef::from(&stdin);
-    loop {
-        match stdin_ref.accept() {
-            Ok((sock, _)) => {
-                let std_sock: std::net::TcpStream = sock.into();
-                let tx2 = tx.clone();
-                std::thread::spawn(move || serve_conn(std_sock, &tx2));
-            }
-            Err(_) => break,
-        }
+    while let Ok((sock, _)) = stdin_ref.accept() {
+        let std_sock: std::net::TcpStream = sock.into();
+        let tx2 = tx.clone();
+        std::thread::spawn(move || serve_conn(std_sock, &tx2));
     }
 }
 
@@ -567,7 +562,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = std::sync::mpsc::channel();
     #[cfg(unix)]
     {
-        std::thread::spawn(move || listener(tx));
+        std::thread::spawn(move || listener(&tx));
     }
     #[cfg(not(unix))]
     {
