@@ -78,13 +78,15 @@ pub struct Arena {
     pub(crate) nodes: Vec<WidgetNode>,
     /// Nœuds détachés (`widget->layout == NULL` amont).
     pub(crate) detached: HashSet<WidgetId>,
-    /// Draws différés des renderers externes — `Some(w)` =
-    /// coords widget (≙ `queueDrawArea`), `None` = coords
-    /// canvas (≙ `layout->queueDraw`). Le premier champ tague le
-    /// [`Layout`] émetteur (`id`) : une arène peut être partagée
-    /// entre plusieurs layouts (`ui::ComplexButtonResource`),
-    /// chacun ne draine que les siens.
-    pub(crate) pending_draws: Vec<(usize, Option<WidgetId>, Rectangle)>,
+    /// Draws différés des renderers externes — coords **canvas
+    /// figées à l'émission** (≙ `layout->queueDraw` immédiat amont :
+    /// `queueDrawArea` résout `+ allocation` au moment de l'appel —
+    /// différer la résolution décalait le damage quand le widget
+    /// bougeait entre push et flush → vestiges, corrigé passe-D).
+    /// Le premier champ tague le [`Layout`] émetteur (`id`) : une
+    /// arène peut être partagée entre plusieurs layouts
+    /// (`ui::ComplexButtonResource`), chacun ne draine que les siens.
+    pub(crate) pending_draws: Vec<(usize, Rectangle)>,
     /// Resizes différés des renderers externes (≙
     /// `queueResize(ref, extremesChanged)` — ex. `Image::
     /// setBuffer`) — vidés vers `widget_queue_resize` par
@@ -498,14 +500,8 @@ impl Layout {
             a.pending_draws = rest;
             mine
         };
-        for (_, w, rect) in draws {
-            match w {
-                Some(w) => {
-                    let alloc = self.node(w, |n| n.allocation);
-                    self.queue_draw(rect.x + alloc.x, rect.y + alloc.y, rect.width, rect.height);
-                }
-                None => self.queue_draw(rect.x, rect.y, rect.width, rect.height),
-            }
+        for (_, rect) in draws {
+            self.queue_draw(rect.x, rect.y, rect.width, rect.height);
         }
     }
 
@@ -1860,10 +1856,9 @@ impl style::ExternalImgRenderer for LayoutImgRenderer {
     /// `flush_pending_draws`).
     fn draw(&mut self, x: i32, y: i32, width: i32, height: i32) {
         if let Some(a) = self.pending_draws.upgrade() {
-            // `None` : coords canvas directes.
+            // Coords canvas directes (figées ≙ `queueDraw` immédiat).
             a.borrow_mut().pending_draws.push((
                 self.layout_id,
-                None,
                 Rectangle {
                     x,
                     y,
@@ -2575,6 +2570,56 @@ mod tests {
         assert!(l.node(b, WidgetNode::resize_queued));
         l.drain_idles();
         assert!(l.node(b, WidgetNode::was_allocated));
+    }
+
+    /// `pending_draws` : les coords **canvas** sont figées à
+    /// l'émission (≙ `queueDrawArea` → `queueDraw(x + alloc.x)`
+    /// immédiat amont). Si le widget bouge entre push et flush
+    /// (relayout pendant le rendu progressif), la zone endommagée
+    /// ne doit pas être décalée — sinon les pixels peints à la
+    /// nouvelle position ne sont jamais rafraîchis (vestiges).
+    #[test]
+    fn pending_draw_canvas_coords_frozen_at_emit() {
+        let mut l = make_layout();
+        l.attach_view(RecView::viewport());
+        let w = l.add_widget_node(WidgetKind::Base);
+        l.add_widget(w);
+        l.drain_idles();
+
+        // Émission d'un draw par un renderer externe — la rect est
+        // déjà en coords canvas au push.
+        let rect = Rectangle {
+            x: 7,
+            y: 9,
+            width: 3,
+            height: 4,
+        };
+        l.arena.borrow_mut().pending_draws.push((l.id, rect));
+
+        // Déplacement du widget entre push et flush (relayout) —
+        // sans effet sur le damage (figé ≙ amont).
+        l.node_mut(w, |n| {
+            n.allocation.x += 40;
+            n.allocation.y += 50;
+        });
+        l.flush_pending_draws();
+
+        let rv = l
+            .view
+            .as_ref()
+            .and_then(|v| v.as_any())
+            .and_then(|a| a.downcast_ref::<RecView>())
+            .expect("recview");
+        assert!(
+            rv.draws.contains(&rect),
+            "damage attendu aux coords d'émission: {:?}",
+            rv.draws
+        );
+        assert!(
+            !rv.draws.iter().any(|r| r.x == 47 && r.y == 59),
+            "damage déplacé (alloc du flush) = bug vestige: {:?}",
+            rv.draws
+        );
     }
 
     #[test]

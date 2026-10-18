@@ -415,3 +415,12 @@ mesurée** sur le corpus amont.
 Le seul reste est D6 (perf-only, différé par décision passé 1) et
 les gaps déjà documentés (drivers `test/dw/` non convertis — la
 golden suite couvre partiellement ce rôle).
+
+## Addendum post-passe 2 (retour utilisateur)
+
+- **`pending_draws` re-translatées au flush** — coords widget stockées
+  puis `+ alloc` courant au `flush_pending_draws` → damage décalé
+  après relayout (vestiges). Corrigé : coords canvas figées à
+  l'émission ≙ `queueDraw` immédiat (sites `widget.rs`, `image.rs`,
+  `textblock/mod.rs`, `LayoutImgRenderer`). Test
+  `pending_draw_canvas_coords_frozen_at_emit`.

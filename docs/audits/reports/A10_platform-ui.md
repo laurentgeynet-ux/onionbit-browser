@@ -208,3 +208,10 @@ phase `test/html/render`).
 Fonctionnel et verbatim sur tout le chrome relu. Déviations
 vivantes : **D2-form-entry** (saisie in-page non câblée — à
 consolider avec le fix A03-D7 dans l'apply), D3 cosmétique.
+
+## Addendum post-passe 2 (retour utilisateur)
+
+- **`set_viewport_size` sans damage** — changements de viewport /
+  visibilité scrollbar n'endommageaient rien → bandes de pixels
+  obsolètes en bordure. Corrigé : `damage_all` ≙ `FL_DAMAGE_ALL`
+  amont. Test `viewport_change_marks_full_damage`.

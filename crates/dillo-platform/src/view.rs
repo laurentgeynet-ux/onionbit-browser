@@ -1012,6 +1012,17 @@ macro_rules! canvas_view_impl {
                 return;
             };
             let mut c = c.borrow_mut();
+            // Tout changement (taille viewport ou visibilité des
+            // barres) ≙ resize/show/hide du widget amont → FLTK
+            // marque la zone (`FL_DAMAGE_ALL` au resize). Sans cela
+            // la bande libérée/recouverte garde ses anciens pixels.
+            if c.view_w != width
+                || c.view_h != height
+                || c.hsb_visible != (h_scrollbar_thickness > 0)
+                || c.vsb_visible != (v_scrollbar_thickness > 0)
+            {
+                c.damage_all = true;
+            }
             c.view_w = width;
             c.view_h = height;
             c.hsb_visible = h_scrollbar_thickness > 0;
@@ -2103,6 +2114,34 @@ mod tests {
         v.queue_draw_total();
         let (full, _) = v.take_damage();
         assert!(full);
+    }
+
+    /// `setViewportSize` : tout changement (taille viewport,
+    /// visibilité des barres) ≙ resize/show/hide du widget amont →
+    /// `FL_DAMAGE_ALL`. Sans damage, la bande de 15 px libérée ou
+    /// recouverte garde ses anciens pixels (vestiges).
+    #[test]
+    fn viewport_change_marks_full_damage() {
+        let (_p, mut v) = mk_view(100, 100);
+        let _ = v.take_damage(); // drain du damage initial
+                                 // Aucun changement → pas de damage.
+        v.set_viewport_size(100, 100, 0, 0);
+        assert!(!v.has_damage());
+        // Scrollbar verticale apparaît → expose total.
+        v.set_viewport_size(100, 100, 0, 15);
+        let (full, _) = v.take_damage();
+        assert!(full);
+        // Elle disparaît → expose total (bande libérée repeinte).
+        v.set_viewport_size(100, 100, 0, 0);
+        let (full, _) = v.take_damage();
+        assert!(full);
+        // Taille viewport changée (barres identiques) → idem.
+        v.set_viewport_size(80, 90, 0, 0);
+        let (full, _) = v.take_damage();
+        assert!(full);
+        // Tout identique → pas de damage parasite.
+        v.set_viewport_size(80, 90, 0, 0);
+        assert!(!v.has_damage());
     }
 
     /// `drawRectangle(filled)` écrit réellement dans le back-buffer.

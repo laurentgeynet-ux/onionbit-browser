@@ -307,7 +307,10 @@ impl ImgRenderer for ImageImgRenderer {
     }
 
     /// `Image::drawRow` (image.cc:540-551) — ≙
-    /// `queueDrawArea` (widget-relative) → `pending_draws`.
+    /// `drawRow` → `queueDrawArea(row_area + box_offset)` →
+    /// `layout->queueDraw(x + allocation.x)` — coords **canvas**
+    /// résolues immédiatement amont → figées ici au push
+    /// (l'alloc lue est celle d'émission, verbatim).
     fn draw_row(&mut self, row: i32) {
         let Some(arena) = self.arena.upgrade() else {
             return;
@@ -315,6 +318,7 @@ impl ImgRenderer for ImageImgRenderer {
         let mut a = arena.borrow_mut();
         let node = &mut a.nodes[self.widget];
         let (ox, oy) = (node.box_offset_x(), node.box_offset_y());
+        let (ax, ay) = (node.allocation.x, node.allocation.y);
         let WidgetKind::Image { img } = &mut node.kind else {
             return;
         };
@@ -326,10 +330,9 @@ impl ImgRenderer for ImageImgRenderer {
         if row_area.width != 0 && row_area.height != 0 {
             a.pending_draws.push((
                 self.layout_id,
-                Some(self.widget),
                 Rectangle::new(
-                    row_area.x + ox,
-                    row_area.y + oy,
+                    row_area.x + ox + ax,
+                    row_area.y + oy + ay,
                     row_area.width,
                     row_area.height,
                 ),

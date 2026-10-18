@@ -3192,17 +3192,16 @@ impl style::ExternalImgRenderer for WidgetImgRenderer {
     /// (widget.cc:59). Le renderer n'a pas `&mut Layout` :
     /// `queue_draw_area` enfile dans `arena.pending_draws`, vidé
     /// vers `view->queueDraw` par `Layout::flush_pending_draws`
-    /// (adaptation documentée — différé vs immédiat amont).
+    /// (adaptation documentée — différé vs immédiat amont ; les
+    /// coords **canvas** sont figées ici, amont résout
+    /// `x + allocation.x` immédiatement).
     fn draw(&mut self, x: i32, y: i32, width: i32, height: i32) {
         if let Some(a) = self.arena.upgrade() {
-            let mut a = a.borrow_mut();
-            let alloc = a.nodes[self.widget].allocation;
-            a.pending_draws.push((
+            a.borrow_mut().pending_draws.push((
                 self.layout_id,
-                Some(self.widget),
                 crate::types::Rectangle {
-                    x: x - alloc.x,
-                    y: y - alloc.y,
+                    x,
+                    y,
                     width,
                     height,
                 },

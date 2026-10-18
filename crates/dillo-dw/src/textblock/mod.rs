@@ -1079,17 +1079,17 @@ impl crate::style::ExternalImgRenderer for WordImgRenderer {
     }
 
     /// `draw` (textblock.cc:104-108) —
-    /// `queueDrawArea (x - alloc.x, y - alloc.y, w, h)` ≙
+    /// `queueDrawArea (x - alloc.x, y - alloc.y, w, h)` →
+    /// `queueDraw(x, y, w, h)` amont : `queueDrawArea` ré-additionne
+    /// l'alloc, résultat net = coords canvas figées à l'émission ≙
     /// `pending_draws` (modèle D, différé).
     fn draw(&mut self, x: i32, y: i32, width: i32, height: i32) {
         if let Some(a) = self.arena.upgrade() {
-            let alloc = a.borrow().nodes[self.widget].allocation;
             a.borrow_mut().pending_draws.push((
                 self.layout_id,
-                Some(self.widget),
                 crate::types::Rectangle {
-                    x: x - alloc.x,
-                    y: y - alloc.y,
+                    x,
+                    y,
                     width,
                     height,
                 },

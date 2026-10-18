@@ -39,6 +39,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **vestiges de page / zones non repeintes (damage model)** :
+  - `pending_draws` stocke les coords **canvas figées à
+    l'émission** (≙ `queueDraw` immédiat amont) au lieu de les
+    re-traduire avec l'allocation courante au flush — un relayout
+    pendant le rendu progressif décalait le damage et laissait
+    des pixels de l'ancienne page.
+  - `set_viewport_size` marque un expose total quand la taille du
+    viewport ou la visibilité des scrollbars change (≙
+    `FL_DAMAGE_ALL` au resize/show/hide amont) — fini la bande de
+    15 px non repeinte en bordure au changement de page.
 - **audits passe 2 — apply consolidé (A02/A03/A09)** :
   - **démon cookies** (`dillo-dpi`) : panic `validate_domain` sur
     domaine d'un caractère ; `cookiesrc` tout-DENY activait le démon
