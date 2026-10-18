@@ -105,7 +105,7 @@ const OPTIONS: &[CliOption] = &[
         longopt: "--xid",
         opt_argc: 1,
         id: DILLO_CLI_XID,
-        help: "  -x, --xid XID          Open first Dillo window in an existing\n  \
+        help: "  -x, --xid XID          Open first OnionBit-Browser window in an existing\n  \
                \x20                        window whose window ID is XID.",
     },
 ];
@@ -145,7 +145,7 @@ fn get_cmd_option<'a>(args: &'a [String], idx: &mut usize, opt_args: &mut Vec<&'
 
 /// `a_Version_print_info` ≙ version.cc (`dillo --version`).
 fn print_version() {
-    println!("Dillo {}", env!("CARGO_PKG_VERSION"));
+    println!("OnionBit-Browser {}", env!("CARGO_PKG_VERSION"));
     println!("  (port Rust — stack winit/softbuffer/tiny-skia/cosmic-text, rustls)");
 }
 
@@ -214,7 +214,7 @@ fn main() -> std::process::ExitCode {
             DILLO_CLI_XID => {
                 // xembed non porté (X11) — l'option est reconnue puis
                 // refusée proprement plutôt qu'ignorée en silence.
-                eprintln!("dillo: -x/--xid (xembed) is not supported by this port");
+                eprintln!("onionbit-browser: -x/--xid (xembed) is not supported by this port");
                 return std::process::ExitCode::from(2);
             }
             DILLO_CLI_GEOMETRY => {
@@ -268,7 +268,7 @@ fn main() -> std::process::ExitCode {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("dillo: cannot start io runtime: {e}");
+            eprintln!("onionbit-browser: cannot start io runtime: {e}");
             return std::process::ExitCode::from(1);
         }
     };
@@ -288,7 +288,7 @@ fn main() -> std::process::ExitCode {
     }
     // `dLib_show_messages(prefs.show_msg)` ≙ filtre tracing.
     if !prefs_rc.borrow().show_msg {
-        tracing::info!("dillo: show_msg off");
+        tracing::info!("onionbit-browser: show_msg off");
     }
 
     // --- initialisation des modules (ordre verbatim de `dillo.cc`) ------
@@ -551,10 +551,10 @@ fn main() -> std::process::ExitCode {
     paths::free();
     // dw::core::freeall / dw::fltk::freeall → drop des layouts/vues.
     if let Err(e) = ret {
-        eprintln!("dillo: event loop error: {e}");
+        eprintln!("onionbit-browser: event loop error: {e}");
         return std::process::ExitCode::from(1);
     }
-    println!("Dillo: normal exit!");
+    println!("OnionBit-Browser: normal exit!");
     std::process::ExitCode::from(0)
 }
 

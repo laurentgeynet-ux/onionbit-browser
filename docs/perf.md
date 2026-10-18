@@ -9,16 +9,16 @@ sont des ordres de grandeur publiés (binaire ~1-3 Mo, RSS ~10-30 Mo).
 
 | Binaire | Taille |
 |---|---|
-| `dillo.exe` | 9,2 Mo |
+| `onionbit-browser.exe` | 9,2 Mo |
 | `dpi-downloads.exe` | 2,6 Mo (embarque tiny-skia pour le rendu liste) |
 | `dillo-dpid`/`dpidc`, `dilloc`, `dpi-*` (7 autres) | 0,1-0,25 Mo chacun |
 
-Package `dist/dillorust-0.0.0-windows-x86_64.zip` ≈ 14 Mo décompressé,
+Package `dist/onionbit-browser-0.0.0-windows-x86_64.zip` ≈ 14 Mo décompressé,
 tous binaires + `dillorc` + `dpidrc` gabarits.
 
 ## Démarrage
 
-`dillo --version` (spawn → exit) : **~60 ms** — dominé par le chargement
+`onionbit-browser --version` (spawn → exit) : **~60 ms** — dominé par le chargement
 du processus, pas par du code métier.
 
 ## Mémoire au repos

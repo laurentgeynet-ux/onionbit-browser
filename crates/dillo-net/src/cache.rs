@@ -555,7 +555,7 @@ impl Cache {
     fn stats_html(&self) -> String {
         use std::fmt::Write as _;
         let mut s = String::from(
-            "<!DOCTYPE HTML>\n<html>\n<head><title>Dillo Cache</title></head>\n<body>\n",
+            "<!DOCTYPE HTML>\n<html>\n<head><title>OnionBit-Browser Cache</title></head>\n<body>\n",
         );
         let _ = writeln!(s, "<h1>Cached URLs ({})</h1>", self.entries.len());
         s.push_str("<table>\n<tr>\n<th>Hits</th>\n<th>Size</th>\n<th>URL</th>\n</tr>\n");
@@ -1565,7 +1565,7 @@ fn provide_redirection_blocked_page(cell: &RefCell<Cache>, cl: &mut CacheClient)
         cl.callback = Some(cb);
     }
     cl.buf = format!(
-        "<!doctype html><html><body>Dillo blocked a redirection from \
+        "<!doctype html><html><body>OnionBit-Browser blocked a redirection from \
          <a href=\"{url_s}\">{url_s}</a> to <a href=\"{loc_s}\">{loc_s}</a> \
          based on your domainrc settings.</body></html>"
     )
@@ -2312,7 +2312,8 @@ mod tests {
         assert_eq!(cache_get_flags(&url) & ca::REDIRECT, 0);
         let evs = events.borrow();
         let blocked = evs.iter().any(|(op, buf)| {
-            *op == CA_SEND && String::from_utf8_lossy(buf).contains("Dillo blocked a redirection")
+            *op == CA_SEND
+                && String::from_utf8_lossy(buf).contains("OnionBit-Browser blocked a redirection")
         });
         assert!(blocked, "{evs:?}");
     }

@@ -491,7 +491,7 @@ impl ApplicationHandler for DlWin {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.surf.is_none() {
             let attrs = WindowAttributes::default()
-                .with_title("Dillo Downloads")
+                .with_title("OnionBit-Browser Downloads")
                 .with_inner_size(dillo_platform::winit::dpi::LogicalSize::new(
                     WIN_W as f64,
                     WIN_H as f64,

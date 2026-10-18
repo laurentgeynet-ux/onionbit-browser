@@ -24,7 +24,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [[bin]]
-name = "dillo"
+name = "onionbit-browser"
 path = "src/main.rs"
 
 [[bin]]

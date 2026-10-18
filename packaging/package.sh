@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 VER=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/dillo/Cargo.toml | head -1)
 ARCH=$(uname -m)
 [ "$ARCH" = "x86_64" ] || ARCH="$ARCH"
-NAME="dillorust-${VER}-linux-${ARCH}"
+NAME="onionbit-browser-${VER}-linux-${ARCH}"
 OUT="dist/$NAME"
 
 cargo build --release --workspace
@@ -15,7 +15,7 @@ cargo build --release --workspace
 rm -rf "$OUT"
 mkdir -p "$OUT/bin" "$OUT/dpi" "$OUT/etc/dillo"
 
-cp target/release/dillo target/release/dilloc "$OUT/bin/"
+cp target/release/onionbit-browser target/release/dilloc "$OUT/bin/"
 cp target/release/dillo-dpid "$OUT/bin/dpid"
 cp target/release/dillo-dpidc "$OUT/bin/dpidc"
 

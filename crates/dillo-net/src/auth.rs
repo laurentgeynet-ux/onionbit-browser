@@ -565,7 +565,7 @@ impl Auth {
             .hostname()
             .map(|h| String::from_utf8_lossy(h).into_owned())
             .unwrap_or_default();
-        let title = format!("Dillo: Password for {realm}");
+        let title = format!("OnionBit-Browser: Password for {realm}");
         let msg = format!(
             "The server at {host} requires a username and password for  \"{realm}\".\n\nAuthentication scheme: {typestr}"
         );

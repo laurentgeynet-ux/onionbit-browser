@@ -479,7 +479,7 @@ impl UiCmd {
         let mut choice = 1;
         if !force && prefs.show_quit_dialog && reg.len() > 1 {
             choice = shell.dialog_choice(
-                "Dillo: Quit?",
+                "OnionBit-Browser: Quit?",
                 "More than one open tab or window.",
                 &["Quit", "Cancel"],
             );
@@ -976,7 +976,7 @@ impl UiCmd {
                 md.len()
             );
             shell.dialog_choice(
-                "Dillo Save: File exists!",
+                "OnionBit-Browser Save: File exists!",
                 &msg,
                 &["Abort", "Continue", "Rename"],
             )
@@ -1034,12 +1034,19 @@ impl UiCmd {
         url: &DilloUrl,
         filename: Option<Vec<u8>>,
     ) {
-        self.save(reg, shell, bw, url, filename, "Dillo: Save Link as File");
+        self.save(
+            reg,
+            shell,
+            bw,
+            url,
+            filename,
+            "OnionBit-Browser: Save Link as File",
+        );
     }
 
     /// `a_UIcmd_select_file` (verbatim).
     pub fn select_file(&self, shell: &mut dyn UiShell) -> Option<String> {
-        shell.dialog_select_file("Dillo: Select a File", None, None)
+        shell.dialog_select_file("OnionBit-Browser: Select a File", None, None)
     }
 
     /// `a_UIcmd_stop` (verbatim) — annule l'expect + stop clients +
@@ -1069,7 +1076,7 @@ impl UiCmd {
 
     /// `a_UIcmd_open_file` (verbatim) — dialogue → `file:` URL.
     pub fn open_file(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
-        if let Some(name) = shell.dialog_open_file("Dillo: Open File", None, "") {
+        if let Some(name) = shell.dialog_open_file("OnionBit-Browser: Open File", None, "") {
             let url = url_new(name.as_bytes(), Some(b"file:"));
             self.open_url(reg, shell, prefs, bw, url.as_ref());
         }
@@ -1116,7 +1123,7 @@ impl UiCmd {
 
     /// `a_UIcmd_search_dialog` (verbatim).
     pub fn search_dialog(&self, reg: &BwRegistry, shell: &mut dyn UiShell, prefs: &Prefs, bw: u32) {
-        if let Some(query) = shell.dialog_input("Dillo: Search", "Search the Web:") {
+        if let Some(query) = shell.dialog_input("OnionBit-Browser: Search", "Search the Web:") {
             let url_str = Self::make_search_str(prefs, query.as_bytes());
             self.open_urlstr(reg, shell, prefs, bw, &url_str);
         }
@@ -1125,7 +1132,7 @@ impl UiCmd {
     /// `a_UIcmd_get_passwd` (verbatim).
     pub fn get_passwd(&self, shell: &mut dyn UiShell, user: &str) -> Option<String> {
         let msg = format!("Password for user \"{user}\"");
-        shell.dialog_passwd("Dillo: Password", &msg)
+        shell.dialog_passwd("OnionBit-Browser: Password", &msg)
     }
 
     /// `a_UIcmd_book` (verbatim — `dpi:/bm/`).
@@ -1257,9 +1264,12 @@ impl UiCmd {
         let Some(b) = reg.get(bw) else { return };
         if b.num_page_bugs.get() > 0 {
             let bugs = b.page_bugs.borrow().clone();
-            shell.dialog_text_window("Dillo: Detected HTML errors", &bugs);
+            shell.dialog_text_window("OnionBit-Browser: Detected HTML errors", &bugs);
         } else {
-            shell.dialog_msg("Dillo: Good HTML!", "No HTML errors found while parsing!");
+            shell.dialog_msg(
+                "OnionBit-Browser: Good HTML!",
+                "No HTML errors found while parsing!",
+            );
         }
     }
 
@@ -1382,7 +1392,7 @@ impl UiCmd {
         }
     }
 
-    /// `a_UIcmd_set_page_title` (verbatim) — titre `Dillo: %s`
+    /// `a_UIcmd_set_page_title` (verbatim) — titre `OnionBit-Browser: %s`
     /// tronqué à 128 avec `...` sur borne UTF-8, label onglet +
     /// titre fenêtre si onglet actif.
     pub fn set_page_title(
@@ -1394,7 +1404,7 @@ impl UiCmd {
     ) {
         const SIZE: usize = 128;
         let label_str = label.unwrap_or("");
-        let mut title = format!("Dillo: {label_str}").into_bytes();
+        let mut title = format!("OnionBit-Browser: {label_str}").into_bytes();
         if title.len() >= SIZE {
             let i = (SIZE - 4).min(1 + end_of_char(&title, SIZE - 8));
             title.truncate(i);
@@ -1601,7 +1611,7 @@ impl UiCmd {
 
         if prefs.show_quit_dialog && ntabs > 1 {
             choice = shell.dialog_choice(
-                "Dillo: Close window?",
+                "OnionBit-Browser: Close window?",
                 "Window contains more than one tab.",
                 &["Close", "Cancel"],
             );
@@ -1971,7 +1981,7 @@ mod tests {
             (800, 600)
         }
         fn ui_label(&self, _ui: usize) -> String {
-            "Dillo:".to_string()
+            "OnionBit-Browser:".to_string()
         }
         fn ui_copy_label(&mut self, _ui: usize, title: &str) {
             self.labels.push(title.to_string());
@@ -2300,16 +2310,19 @@ mod tests {
         );
     }
 
-    /// `set_page_title` verbatim — troncature `Dillo: %s` + `...`,
+    /// `set_page_title` verbatim — troncature `OnionBit-Browser: %s` + `...`,
     /// label onglet (label brut) + titre fenêtre.
     #[test]
     fn page_title_truncation() {
         let (reg, mut shell, bw) = fixture();
         let uicmd = UiCmd::new(&Prefs::default());
         uicmd.set_page_title(&reg, &mut shell, bw, Some("Titre"));
-        assert_eq!(shell.labels.last().unwrap(), "Dillo: Titre");
+        assert_eq!(shell.labels.last().unwrap(), "OnionBit-Browser: Titre");
         assert_eq!(shell.tab_labels.last().unwrap().1, "Titre");
-        assert_eq!(shell.win_titles.last().unwrap().1, "Dillo: Titre");
+        assert_eq!(
+            shell.win_titles.last().unwrap().1,
+            "OnionBit-Browser: Titre"
+        );
 
         let long = "x".repeat(300);
         uicmd.set_page_title(&reg, &mut shell, bw, Some(&long));
@@ -2325,11 +2338,17 @@ mod tests {
         let (reg, mut shell, bw) = fixture();
         let uicmd = UiCmd::new(&Prefs::default());
         uicmd.view_page_bugs(&reg, &mut shell, bw);
-        assert_eq!(shell.dialogs.last().unwrap(), "Dillo: Good HTML!");
+        assert_eq!(
+            shell.dialogs.last().unwrap(),
+            "OnionBit-Browser: Good HTML!"
+        );
         reg.get(bw).unwrap().num_page_bugs.set(2);
         *reg.get(bw).unwrap().page_bugs.borrow_mut() = "bad tag".to_string();
         uicmd.view_page_bugs(&reg, &mut shell, bw);
-        assert_eq!(shell.dialogs.last().unwrap(), "Dillo: Detected HTML errors");
+        assert_eq!(
+            shell.dialogs.last().unwrap(),
+            "OnionBit-Browser: Detected HTML errors"
+        );
     }
 
     /// `get_history` verbatim — pile vide → `[-1]`.

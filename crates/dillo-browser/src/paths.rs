@@ -80,7 +80,7 @@ pub fn init() {
             }
         }
         Err(e) => {
-            tracing::warn!("Dillo: error reading {}: {}", path.display(), e);
+            tracing::warn!("OnionBit-Browser: error reading {}: {}", path.display(), e);
         }
         Ok(_) => {}
     }

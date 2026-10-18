@@ -508,7 +508,7 @@ impl Nav {
             if !is_vsource && h_url.flags & url::URL_POST != 0 {
                 // Tentative de re-POST : confirmation utilisateur.
                 let choice = seams.dialog_choice(
-                    "Dillo: Repost form?",
+                    "OnionBit-Browser: Repost form?",
                     "Repost form data?",
                     "No",
                     "Yes",

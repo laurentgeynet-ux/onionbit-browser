@@ -917,7 +917,7 @@ impl Glue {
         let mut choice = 1;
         if self.prefs.borrow().show_quit_dialog && ntabs > 1 {
             choice = self.chrome.dialog_choice(
-                "Dillo: Close window?",
+                "OnionBit-Browser: Close window?",
                 "Window contains more than one tab.",
                 &["Close", "Cancel"],
             );
@@ -975,13 +975,16 @@ impl Glue {
     fn apply_win_op(&mut self, app: &mut DwApp, op: WinOp) {
         match op {
             WinOp::Open { tabs, w, h } => {
-                let title = self.chrome.win_title(tabs).map_or("Dillo:", |t| {
-                    if t.is_empty() {
-                        "Dillo:"
-                    } else {
-                        t
-                    }
-                });
+                let title = self
+                    .chrome
+                    .win_title(tabs)
+                    .map_or("OnionBit-Browser:", |t| {
+                        if t.is_empty() {
+                            "OnionBit-Browser:"
+                        } else {
+                            t
+                        }
+                    });
                 let idx = app.open_window_attrs(
                     WindowAttributes::default()
                         .with_title(title.to_string())

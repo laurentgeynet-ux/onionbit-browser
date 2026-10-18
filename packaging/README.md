@@ -4,9 +4,9 @@
 workspace en `--release` puis assemblent une archive autonome :
 
 ```
-dillorust-<ver>-<os>-<arch>/
+onionbit-browser-<ver>-<os>-<arch>/
   bin/
-    dillo          navigateur (dillo.cc)
+    onionbit-browser  navigateur (dillo.cc)
     dilloc         client de contrôle distant (dilloc.c)
     dpid           démon de plugins (dpid/main.c)
     dpidc          contrôle du démon (dpid/dpidc.c)
@@ -28,7 +28,7 @@ dillorust-<ver>-<os>-<arch>/
 Les noms et l'arborescence `dpi/` sont **contraintes par le protocole**,
 pas cosmétiques :
 
-- `dillo` lance le démon sous le nom nu `dpid` (`~/.dillo/dpid`,
+- `onionbit-browser` lance le démon sous le nom nu `dpid` (`~/.dillo/dpid`,
   `<bindir>/dpid`, `PATH` — `Dpi_start_dpid`) : le binaire
   `dillo-dpid` est renommé `dpid` dans le package.
 - `dpid` découvre les plugins sous `<dpi_dir>/<service>/*.dpi`

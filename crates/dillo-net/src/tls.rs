@@ -702,7 +702,7 @@ impl TlsEngine {
     /// Retourne `true` ≙ `ret == 0` (connexion acceptée).
     pub fn after_handshake(&mut self, url: &mut DilloUrl, has_cert: bool) -> bool {
         let title = format!(
-            "Dillo TLS security warning: {}",
+            "OnionBit-Browser TLS security warning: {}",
             url.hostname()
                 .map(|h| String::from_utf8_lossy(h).into_owned())
                 .unwrap_or_default()

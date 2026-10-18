@@ -717,7 +717,12 @@ impl HtmlSink for DocSink {
 
     /// `a_UIcmd_select_file` (`fl_file_chooser` SELECTSINGLE).
     fn select_file(&mut self) -> Option<String> {
-        let spec = file_spec(DialogKind::SelectFile, "Dillo: Select a File", None, None);
+        let spec = file_spec(
+            DialogKind::SelectFile,
+            "OnionBit-Browser: Select a File",
+            None,
+            None,
+        );
         match self.run_dialog(&spec) {
             DialogAnswer::Path(p) => p,
             _ => None,

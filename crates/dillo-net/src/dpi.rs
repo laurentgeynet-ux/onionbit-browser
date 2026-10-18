@@ -480,8 +480,7 @@ fn check_dpid(num_tries: i32) -> i32 {
 /// dpid coûte 12 essais × 250 ms **par appel** (3 s par requête via
 /// `send_blocking_cmd("cookies")`) — et un `dpid` étranger trouvé
 /// dans le `PATH` pourrait être détourné.
-static DPI_DISABLED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static DPI_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Active la coupure dpi (appelé une fois au démarrage, pref
 /// `no_dpi`). Idempotent — les appels dpi rendent `None`/`DpidERROR`.

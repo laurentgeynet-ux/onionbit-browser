@@ -5,7 +5,7 @@ Set-Location (Split-Path $PSScriptRoot -Parent)
 
 $ver  = (Select-String -Path crates/dillo/Cargo.toml -Pattern '^version = "(.*)"' |
          Select-Object -First 1).Matches.Groups[1].Value
-$name = "dillorust-$ver-windows-x86_64"
+$name = "onionbit-browser-$ver-windows-x86_64"
 $out  = "dist/$name"
 
 cargo build --release --workspace
@@ -13,7 +13,7 @@ cargo build --release --workspace
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force "$out/bin", "$out/dpi", "$out/etc/dillo" | Out-Null
 
-Copy-Item target/release/dillo.exe, target/release/dilloc.exe "$out/bin/"
+Copy-Item target/release/onionbit-browser.exe, target/release/dilloc.exe "$out/bin/"
 Copy-Item target/release/dillo-dpid.exe  "$out/bin/dpid.exe"
 Copy-Item target/release/dillo-dpidc.exe "$out/bin/dpidc.exe"
 

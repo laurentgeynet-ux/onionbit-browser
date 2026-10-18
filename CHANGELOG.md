@@ -61,6 +61,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   liens (lecteur branche 2 + écrivain branche 1) et relais du `FD`
   remonté par `bfcb` (`capi.c` OpStart ×2 + OpSend `"FD"`).
 
+### Changed
+
+- **renommage produit → OnionBit-Browser** : binaire `dillo` →
+  `onionbit-browser` (`[[bin]]`), titres de fenêtre/dialogs
+  (`"Dillo: …"` → `"OnionBit-Browser: …"`), messages console,
+  `about:splash` (« Welcome to OnionBit-Browser (a Rust port of
+  Dillo 3.3.0-rc1) »), titres de pages internes (`about:cache`,
+  redirection bloquée, warning TLS), scripts `packaging/` (artefact +
+  nom d'archive). **Inchangés** (identités, pas cosmétique) :
+  `User-Agent: Dillo/3.3.0-rc1` (format wire + version remontée aux
+  plugins dpi), `dilloc`, `dpi-*`/`dpid`/`dpidc` (noms protocolaires),
+  `~/.dillo`, `dillorc`/`cookiesrc` (formats de fichiers partagés avec
+  Dillo C), noms de crates `dillo-*`.
+
 ### Fixed
 
 - **saisie dans les formulaires in-page** (barre de recherche

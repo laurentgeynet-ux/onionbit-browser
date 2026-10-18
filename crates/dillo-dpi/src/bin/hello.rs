@@ -79,7 +79,7 @@ fn main() {
         "cmd=%s title=%s msg=%s alt1=%s alt2=%s alt3=%s alt4=%s alt5=%s",
         &[
             "dialog",
-            "Dillo: Hello",
+            "OnionBit-Browser: Hello",
             "Do you want to see the hello page?",
             choice[1],
             choice[2],

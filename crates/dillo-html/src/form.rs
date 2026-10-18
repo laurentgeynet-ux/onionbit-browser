@@ -702,7 +702,7 @@ impl HtmlForm {
             };
             if insecure {
                 let choice = shared.sink.borrow_mut().dialog_choice(
-                    "Dillo: Insecure form submission",
+                    "OnionBit-Browser: Insecure form submission",
                     "A form on a SECURE page wants to use an \
                      INSECURE protocol to submit data.",
                     &["Continue", "Cancel"],

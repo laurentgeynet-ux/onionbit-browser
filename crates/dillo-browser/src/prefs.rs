@@ -599,7 +599,10 @@ mod tests {
         assert!((p.font_factor - 1.2).abs() < f64::EPSILON);
         // extension OnionBit : passwd proxy lu depuis le dillorc.
         assert_eq!(p.http_proxyuser.as_deref(), Some(b"onionbit".as_slice()));
-        assert_eq!(p.http_proxypass.as_deref(), Some(b"tok3n-s3ssion".as_slice()));
+        assert_eq!(
+            p.http_proxypass.as_deref(),
+            Some(b"tok3n-s3ssion".as_slice())
+        );
         assert!(!p.no_dpi);
     }
 

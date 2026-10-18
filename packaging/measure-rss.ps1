@@ -1,5 +1,5 @@
-# Mesure le WorkingSet64/Private de dillo.exe au repos (fenêtre ouverte ~6 s).
-$p = Start-Process -FilePath "$PSScriptRoot\..\target\release\dillo.exe" -PassThru
+# Mesure le WorkingSet64/Private de onionbit-browser.exe au repos (fenêtre ouverte ~6 s).
+$p = Start-Process -FilePath "$PSScriptRoot\..\target\release\onionbit-browser.exe" -PassThru
 Start-Sleep -Seconds 6
 $ws = [math]::Round($p.WorkingSet64 / 1MB, 1)
 $pm = [math]::Round($p.PrivateMemorySize64 / 1MB, 1)

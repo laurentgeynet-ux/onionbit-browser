@@ -88,7 +88,7 @@ pub struct DialogSpec {
     /// Kind.
     pub kind: DialogKind,
     /// `title` (après default verbatim : `""`/`None` →
-    /// `"Dillo: <Kind>"` — cf. [`default_title`]).
+    /// `"OnionBit-Browser: <Kind>"` — cf. [`default_title`]).
     pub title: String,
     /// `msg`.
     pub msg: String,
@@ -185,13 +185,15 @@ pub fn default_title(kind: &DialogKind, title: Option<&str>) -> String {
         }
     }
     match kind {
-        DialogKind::Msg => "Dillo: Message",
-        DialogKind::Input => "Dillo: Input",
-        DialogKind::Passwd => "Dillo: Password",
-        DialogKind::Choice => "Dillo: Choice",
-        DialogKind::UserPassword => "Dillo: User/Password",
-        DialogKind::TextWindow => "Dillo: Text",
-        DialogKind::SaveFile | DialogKind::SelectFile | DialogKind::OpenFile => "Dillo: File",
+        DialogKind::Msg => "OnionBit-Browser: Message",
+        DialogKind::Input => "OnionBit-Browser: Input",
+        DialogKind::Passwd => "OnionBit-Browser: Password",
+        DialogKind::Choice => "OnionBit-Browser: Choice",
+        DialogKind::UserPassword => "OnionBit-Browser: User/Password",
+        DialogKind::TextWindow => "OnionBit-Browser: Text",
+        DialogKind::SaveFile | DialogKind::SelectFile | DialogKind::OpenFile => {
+            "OnionBit-Browser: File"
+        }
     }
     .to_string()
 }
@@ -483,9 +485,12 @@ mod tests {
     fn default_titles_verbatim() {
         assert_eq!(
             default_title(&DialogKind::Choice, Some("")),
-            "Dillo: Choice"
+            "OnionBit-Browser: Choice"
         );
-        assert_eq!(default_title(&DialogKind::Input, None), "Dillo: Input");
+        assert_eq!(
+            default_title(&DialogKind::Input, None),
+            "OnionBit-Browser: Input"
+        );
         assert_eq!(default_title(&DialogKind::Input, Some("T")), "T");
     }
 
