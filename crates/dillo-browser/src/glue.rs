@@ -1304,13 +1304,8 @@ impl Glue {
         if let Some(l) = &self.ctl_listener {
             // `Control_listen_cb` verbatim — accept non-bloquant,
             // une requête `Control` par socket.
-            loop {
-                match l.accept() {
-                    Ok(Some(io)) => {
-                        self.ctl.borrow_mut().accept(Box::new(io));
-                    }
-                    Ok(None) | Err(_) => break,
-                }
+            while let Ok(Some(io)) = l.accept() {
+                self.ctl.borrow_mut().accept(Box::new(io));
             }
         }
         let ctl = Rc::clone(&self.ctl);
