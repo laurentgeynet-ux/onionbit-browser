@@ -218,3 +218,55 @@ spans et tolérance aux arbres tordus fidèles, itérateur raster
 verbatim, `\bug` amont conservés. 18 tests table verts ; 118
 tests dillo-dw ; workspace/clippy/doc/fmt verts. La glue
 `src/table.cc` reste un lot futur dépendant du parseur HTML.
+
+---
+
+# Passe 2 (glue `src/table.cc` maintenant portée et auditée)
+
+## Delta code
+
+`dw/table.rs` **inchangé** depuis la passe 1 (mock `add_idle`
+tagué seul, `f9aa4c8`). Verdicts `dw` reconduits.
+
+## Glue `crates/dillo-html/src/table.rs` — auditée (était hors
+périmètre passé 1)
+
+Relue contre `src/table.cc` intégral — **verbatim** :
+
+- `tag_open_table` : `border` non-numérique→1, `cellspacing`/
+  `cellpadding`/`width`/`align`/`bgcolor` → non-CSS hints, ordre
+  hints-table→`style()`→`clear`→hints-cellules (border>0 → 1px
+  inset, cellpadding → padding) identique (`table.cc:48-161` ≙
+  `table.rs:134-240`), BUG_MSG obsolètes HTML5 verbatim.
+- `tag_content_table` : parbreak → `Table` → parbreak, états
+  `S_TOP` (`table.rs:244-266` ≙ `table.cc:162-176`).
+- `tag_open_tr` : `inherit_non_css_hints`, bgcolor lu **deux
+  fois** (avant/après `inherit_background_color` — ordre verbatim
+  `table.cc:197-216`), `cell_text_align_set` + `set_align_attr`
+  sous `align` présent.
+- `tag_content_tr` : `addRow(style)` + `table_mode=Tr` verbatim.
+- `tag_open/content_table_cell` : `td`→Left/`th`→Center,
+  `nowrap`→`WhiteSpace::Nowrap`, `colspan<0|sans chiffre→1`,
+  `rowspan.max(1)`, `AlignedTableCell` si
+  `text_align==String` (verbatim `table.cc:466-488`), modèles
+  collapse/separate émulés verbatim (margin/border-width
+  dispatchés table↔cellule, `table.rs:68-130` ≙
+  `table.cc:344-430`).
+- `tbody`/`thead`/`tfoot` : handlers vides verbatim.
+- `<col>`/`<colgroup>` : **non supportés amont aussi** (entrées
+  commentées de la tag table `html.cc:3505-3506`) — l'absence
+  est verbatim, pas une lacune du port.
+- Foster parenting : absent amont (contenu orphelin = warn +
+  `add_cell` tolérant) — gap documenté en A03, non-déviation.
+
+## Oracle
+
+Golden suite 38/38 : plusieurs paires du corpus amont exercent
+les tables (nested, spans, attrs legacy) — L5 mesurée.
+
+## Verdict passe 2
+
+**Conforme.** Aucune déviation nouvelle ; la glue est un port
+verbatim. Restes : drivers `test/dw/dw_table*` non convertis
+(partiellement couverts par golden), `valign` réel non testé
+unitairement.
