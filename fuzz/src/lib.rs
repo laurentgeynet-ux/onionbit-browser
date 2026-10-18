@@ -247,6 +247,16 @@ pub fn files(data: &[u8]) {
         let _ = domain_permit(&mut a, &mut b);
     }
     domain_freeall();
+
+    // dillorc — parseur tolérant (commentaires, whitespace, clés
+    // inconnues ignorées, override PREFS_STRINGS à la 1re occurrence).
+    let mut prefs = dillo_browser::prefs::Prefs::default();
+    let _ = prefs.parse_dillorc(&mut std::io::Cursor::new(data.to_vec()));
+
+    // keysrc — parseur tolérant (mods `<Ctrl|Shift|…>`, commandes,
+    // `nop`, lignes malformées).
+    let mut keys = dillo_browser::keys::Keys::new();
+    keys.parse(&text);
 }
 
 // ── Images ───────────────────────────────────────────────────────

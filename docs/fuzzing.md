@@ -12,7 +12,7 @@ malformée (§4 règle 3).
 | `fuzz_css` | `cssparser.cc` — `CssParser::parse` (feuille, `@`-directives) + `parse_declaration_block` (`style="…"`) |
 | `fuzz_decode` | `decode.c` — `DecodeTransfer` chunked, `content_init` gzip/x-gzip/deflate/br, `charset_init` tous labels connus + label inconnu |
 | `fuzz_dpip` | `dpip.c` — `get_attr_l` (tag wire byte-exact, quoting `'`/`"`/échappements) + round-trip `build_cmd`/`get_attr` |
-| `fuzz_files` | `cookiesrc` + `cookies_get_query`, `hsts` preload + header `Strict-Transport-Security`, `domainrc` + `domain_permit` |
+| `fuzz_files` | `cookiesrc` + `cookies_get_query`, `hsts` preload + header `Strict-Transport-Security`, `domainrc` + `domain_permit`, `dillorc` (`Prefs::parse_dillorc` — clés inconnues tolérées, override `PREFS_STRINGS` à la 1re occurrence), `keysrc` (`Keys::parse` — mods `<Ctrl|Shift|…>`, `nop`, lignes malformées) |
 | `fuzz_url` | `url.c` — parse lenient, résolution relative, `decode/encode_hex_str`, `url_cmp` |
 | `fuzz_images` | `gif/png/jpeg/webp/svg` via la vraie boucle `dicache_callback` (feed cumulatif `Client->Buf`, `CA_Send`/`CA_Close`), `xpm_decode` (icônes `ui.cc`), blits `Imgbuf` |
 
