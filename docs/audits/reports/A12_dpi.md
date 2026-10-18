@@ -145,3 +145,39 @@ points non fidèles sont des choix ADR-0002 (FLTK→natif) ou des
    ↔ daemon Rust et réciproque) — non faisable sous Windows.
 2. `dpi-downloads` : vérifier le comportement Escape/close
    avec plusieurs téléchargements concurrents réels.
+
+---
+
+# Passe 2 (post-fuzz `99ca279` + A01-p2 `b00d296`)
+
+## Delta code
+
+- `dpi.rs` : `chain.check()` ajouté en entrée de `dpi_ccc`
+  (≙ `dReturn_if_fail(a_Chain_check(...))` amont) — fix A01-D10,
+  déjà audité.
+- Fuzz `fuzz_dpip` + `fuzz_files` (cookiesrc/hsts/domainrc) :
+  campagne 30k+10k clean — L1 solidifiée sur le framing wire et
+  les fichiers partagés.
+
+## Croisement avec A02 passe 2 (même périmètre physique)
+
+L'audit A02 passe 2 a relu `dpi/cookies.c` → `dillo-dpi` et trouvé
+**deux déviations fonctionnelles dans le plugin cookies** — elles
+relèvent aussi de ce périmètre (consignées ici pour l'apply
+consolidé ; preuves dans `A02_url-cookies.md`) :
+
+- **D6-A02** — `CookieJar::validate_domain` : `domain[1..len-1]`
+  sur domaine à 1 caractère → range inversé → **panic du démon**
+  (toutes les cookies KO). Amont : boucle 0 itérations → rejet
+  propre (`cookies.c:1195-1199` vs `cookies.rs:1009`).
+- **D7-A02** — `bin/cookies.rs` : logique `disabled` inversée —
+  `Cookie_control_init()!=0` amont (ex. cookiesrc tout-DENY, le
+  fichier auto-créé !) doit faire `exit(1)` du démon ; le port
+  démarre et répond `not set`/`""` (`cookies.c:349-364,1662-1663`
+  vs `bin/cookies.rs:138-169`).
+
+## Verdict passe 2
+
+Verdicts passés 1 reconduits ; fuzz clean sur les surfaces wire.
+**À l'apply consolidé** : D6/D7-A02 (cookies daemon). Interop
+vivante C↔Rust toujours à faire sous Linux (hôte Windows).
