@@ -126,6 +126,12 @@ cargo test --workspace
 cargo doc --workspace --no-deps
 ```
 
+## More from this forge
+
+- **[OnionBit](https://github.com/laurentgeynet-ux/OnionBit)** — the portable anonymity swiss army knife: anonymous BitTorrent, serverless e2e messaging, `.onion` services, stealth transport
+- **[BitDeamonRust](https://github.com/laurentgeynet-ux/BitDeamonRust)** — a 100% safe Rust BitTorrent engine, faithful port of libtorrent (Rasterbar) — same wire behavior and `.session` formats, verified against real swarms
+- **[eMule-Rust](https://github.com/laurentgeynet-ux/eMule-Rust)** — a modern eD2K/eDonkey + Kad client in Rust: Tokio daemon, JSON-RPC API, Flutter UI, MCP server
+
 ## License
 
 GPL-3.0-or-later, as upstream Dillo. See `LICENSE`.
