@@ -56,6 +56,8 @@ enum FileState {
     Dpip,
     Http,
     Content,
+    // verbatim amont — jamais atteint dans le port non plus.
+    #[expect(dead_code)]
     Done,
     Err,
 }
