@@ -3891,6 +3891,28 @@ pub fn chrome_widget(
                     }
                     true
                 }
+                WId::Location => {
+                    // `Fl_Input::handle(FL_PUSH)` ≙ `take_focus` +
+                    // `handle_mouse` : caret sous le clic (pas de
+                    // select-all — réservé à `UI::focus_location`) ;
+                    // middle = `Fl::paste` à la position.
+                    if let Some(u) = shell.ui_mut(ui) {
+                        if u.panel_mode == UiPanelMode::Hidden {
+                            u.panels_toggle();
+                            u.panel_temporary = true;
+                        }
+                        u.focus = Focus::Location;
+                        let cw = (u.loc_font_px * 2 / 3).max(1);
+                        let p = ((wx - (rect.x + 3)).max(0) / cw) as usize;
+                        u.location.set_position(p, p);
+                        if mouse == MOUSE_MIDDLE {
+                            if let Some(t) = paste() {
+                                u.location.insert(&t);
+                            }
+                        }
+                    }
+                    true
+                }
                 _ => false,
             }
         }

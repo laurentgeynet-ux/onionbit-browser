@@ -39,6 +39,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **phase 9 — bugs réels trouvés en test live (fenêtre Windows,
+  navigation HTTP(S) réelle)** : `dillo-browser` — un clic sous la
+  barre d'onglets (`y >= ctab_h`) retournait `Some(false)` de
+  `strip_hit` et court-circuitait `press` avant le hit-test chrome :
+  tout le chrome sous le strip (toolbar, Location, status) et le
+  contenu étaient inertes (verbatim `UI::handle` — `Tabs->handle`
+  qui retourne 0 poursuit le dispatch). `chrome_widget` gère
+  désormais `WId::Location` : `take_focus` + caret sous le clic
+  (≙ `Fl_Input::handle_mouse`), paste middle-click. `dillo-net` —
+  **stall HTTPS** : `TlsConn::try_write` n'appelait `write_tls`
+  qu'une fois ; rustls n'émet qu'un chunk par appel → le ciphertext
+  de la requête restait bufferisé (`wants_write=true`) et jamais
+  re-flushé, le serveur attendait la fin du record indéfiniment.
+  `flush_conn` boucle désormais jusqu'à `!wants_write` (handshake,
+  write, close_notify, drain post-`process_new_packets` ≙ écritures
+  internes `mbedtls_ssl_read`), et `write_task` draine le résidu sur
+  readiness `WRITABLE` (`drain_tls_pending`). `dillo` — les logs
+  `tracing` vont sur stderr (verbatim `MSG`/`_MSG` amont), pas
+  stdout.
+
 - **phase 9 — bugs réels trouvés par le golden harness** :
   `dillo-platform` : fontes — quand la requête `fontdb` par famille
   échoue (familles génériques non taguées sous Windows), les

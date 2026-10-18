@@ -44,7 +44,7 @@ use dillo_dw::view::View;
 use dillo_net::cache::{self};
 use dillo_net::control::{Control, CtlOps};
 use dillo_net::url::url_new;
-use dillo_net::{capi, timeout};
+use dillo_net::{capi, history, timeout};
 use dillo_platform::app::{DwApp, ShellEv, ShellGlue};
 use dillo_platform::platform::SkiaPlatform;
 use dillo_platform::winit::dpi::LogicalSize;
@@ -376,11 +376,12 @@ impl Glue {
         clicks: i32,
         state: i32,
     ) -> bool {
-        if let Some(hit) = self.strip_hit(win, x, y, button) {
-            if hit {
-                app.request_redraw(win);
-            }
-            return hit;
+        // `Tabs->handle(FL_PUSH)` amont : `Some(true)` = strip
+        // consommé ; `Some(false)`/`None` = sous le strip ou pas de
+        // strip → `UI::handle` poursuit le dispatch chrome/contenu.
+        if self.strip_hit(win, x, y, button).unwrap_or(false) {
+            app.request_redraw(win);
+            return true;
         }
         let Some(ui) = self.active_ui(win) else {
             return false;
@@ -1156,7 +1157,20 @@ impl Glue {
         let shell = &mut self.chrome;
         match op {
             GlueOp::SetMsg { bw, msg } => self.uicmd.set_msg(reg, shell, bw, &msg),
-            GlueOp::SetPageTitle { bw, title } => {
+            GlueOp::SetPageTitle {
+                bw,
+                mut url,
+                title,
+                hist,
+            } => {
+                // `a_History_set_title_by_url` au drain — ordre de
+                // file ≙ synchronicité amont (`ExpectDone`/`add_url`
+                // a déjà tourné, pas de « not found » parasite).
+                if hist {
+                    if let Some(t) = &title {
+                        history::history_set_title_by_url(&mut url, t);
+                    }
+                }
                 self.uicmd.set_page_title(reg, shell, bw, title.as_deref());
             }
             GlueOp::SetBugProg { bw, n } => self.uicmd.set_bug_prog(reg, shell, bw, n),

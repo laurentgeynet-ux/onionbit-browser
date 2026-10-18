@@ -544,6 +544,7 @@ fn main() -> std::process::ExitCode {
 fn tracing_subscriber_init() {
     use tracing_subscriber::EnvFilter;
     let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr) // MSG/_MSG/DEBUG_MSG amont → stderr
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
         )

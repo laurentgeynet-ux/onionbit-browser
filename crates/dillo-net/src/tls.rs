@@ -234,12 +234,14 @@ impl TlsConn {
             match conn.reader().read(buf) {
                 Ok(n) => return Ok(n),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    match conn.read_tls(&mut SockRead(&self.sock)) {
-                        Err(e) => return Err(e), // WouldBlock inclus
-                        Ok(_) => {
-                            conn.process_new_packets().map_err(io::Error::other)?;
-                        }
-                    }
+                    // WouldBlock propagé ≙ EAGAIN (watch conservée).
+                    conn.read_tls(&mut SockRead(&self.sock))?;
+                    conn.process_new_packets().map_err(io::Error::other)?;
+                    // `mbedtls_ssl_read` amont écrit en interne si
+                    // nécessaire (KeyUpdate, close_notify ack) —
+                    // drain best-effort du ciphertext généré par la
+                    // lecture.
+                    let _ = Self::flush_conn(&mut conn, &self.sock);
                 }
                 Err(e) => return Err(e),
             }
@@ -247,20 +249,67 @@ impl TlsConn {
         Err(io::Error::from(io::ErrorKind::WouldBlock))
     }
 
-    /// `a_Tls_write` : plaintext → `write_tls` flush (best-effort —
-    /// les records restants ressortiront au write suivant).
+    /// `write_tls` n'émet qu'un chunk par appel — boucle tant que du
+    /// ciphertext est en attente (`wants_write`) ; `WouldBlock` sort
+    /// en laissant le résidu pour [`TlsConn::flush_tls`].
+    fn flush_conn(conn: &mut ClientConnection, sock: &TcpStream) -> io::Result<()> {
+        while conn.wants_write() {
+            match conn.write_tls(&mut SockWrite(sock)) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::WouldBlock)),
+                Ok(_) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// `a_Tls_write` : plaintext → `write_tls` flush. Un `WouldBlock`
+    /// socket laisse du ciphertext en attente — visible via
+    /// [`TlsConn::wants_write`], à drainer par [`TlsConn::flush_tls`]
+    /// sur la prochaine readiness writable (≙ `IO_write` relancée par
+    /// la watch fd amont).
     ///
     /// # Errors
     /// Erreur d'écriture plaintext (`WouldBlock` si le record buffer
-    /// rustls est plein ≙ `WANT_WRITE` amont).
+    /// rustls est plein ≙ `WANT_WRITE` amont) ou erreur socket fatale
+    /// du flush.
     pub fn try_write(&self, buf: &[u8]) -> io::Result<usize> {
         let mut conn = self
             .conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let n = conn.writer().write(buf)?;
-        let _ = conn.write_tls(&mut SockWrite(&self.sock));
+        match Self::flush_conn(&mut conn, &self.sock) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e),
+        }
         Ok(n)
+    }
+
+    /// `true` si du ciphertext reste bufferisé dans rustls — le pair
+    /// attend un record tronqué tant que [`TlsConn::flush_tls`] n'a
+    /// pas drainé (watch writable ≙ `IO_write` amont).
+    #[must_use]
+    pub fn wants_write(&self) -> bool {
+        self.conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .wants_write()
+    }
+
+    /// Draine le ciphertext en attente — `Ok(())` quand
+    /// `wants_write` retombe, `Err(WouldBlock)` si la socket est
+    /// pleine (résidu conservé), autre `Err` fatal.
+    ///
+    /// # Errors
+    /// `WouldBlock` (résidu encore pending) ou erreur socket fatale.
+    pub fn flush_tls(&self) -> io::Result<()> {
+        let mut conn = self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::flush_conn(&mut conn, &self.sock)
     }
 
     /// `mbedtls_ssl_close_notify` seul — le fd reste ouvert
@@ -272,7 +321,7 @@ impl TlsConn {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         conn.send_close_notify();
-        let _ = conn.write_tls(&mut SockWrite(&self.sock));
+        let _ = Self::flush_conn(&mut conn, &self.sock);
     }
 
     /// `mbedtls_ssl_close_notify` + shutdown socket.
@@ -286,7 +335,7 @@ impl TlsConn {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             conn.send_close_notify();
-            let _ = conn.write_tls(&mut SockWrite(&self.sock));
+            let _ = Self::flush_conn(&mut conn, &self.sock);
         }
         socket2::SockRef::from(&self.sock).shutdown(std::net::Shutdown::Both)
     }
@@ -720,7 +769,12 @@ async fn handshake_task(sock_id: i32, tls: Arc<TlsConn>, tx: mpsc::UnboundedSend
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut r: io::Result<()> = Ok(());
             if conn.wants_write() {
-                r = conn.write_tls(&mut SockWrite(&tls.sock)).map(|_| ());
+                // boucle `flush_conn` — un seul `write_tls` peut
+                // laisser du ciphertext pending (chunk par appel).
+                r = TlsConn::flush_conn(&mut conn, &tls.sock);
+                if matches!(r, Err(ref e) if e.kind() == io::ErrorKind::WouldBlock) {
+                    r = Ok(()); // socket pleine → readiness suivante
+                }
             }
             if r.is_ok() && conn.wants_read() {
                 let _ = conn.read_tls(&mut SockRead(&tls.sock));

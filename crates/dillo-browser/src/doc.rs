@@ -48,7 +48,6 @@ use dillo_html::plain::DilloPlain;
 use dillo_html::sink::{HtmlPrefs, HtmlSink};
 use dillo_net::cache::{BrowserOps, CaCb, CacheClient, NavOps, UiOps};
 use dillo_net::capi::{self, DpiOps};
-use dillo_net::history;
 use dillo_net::http::HttpWeb;
 use dillo_net::mime::{self, MimeViewer};
 use dillo_net::url::DilloUrl;
@@ -78,8 +77,18 @@ pub fn io_queue() -> IoQueue {
 pub enum GlueOp {
     /// `a_UIcmd_set_msg`.
     SetMsg { bw: u32, msg: String },
-    /// `a_UIcmd_set_page_title` (label ≙ titre nu).
-    SetPageTitle { bw: u32, title: Option<String> },
+    /// `a_UIcmd_set_page_title` (label ≙ titre nu). `url`+`hist` :
+    /// `a_History_set_title_by_url` — fait **au drain** car amont
+    /// tout est synchrone et `expect_done` (`add_url`, headers)
+    /// précède toujours `<title>` (body) ; un appel eager au parse
+    /// inverserait cet ordre. `hist` ≙ uniquement le chemin
+    /// `<title>` (html.cc:1727), pas le basename du dispatch.
+    SetPageTitle {
+        bw: u32,
+        url: DilloUrl,
+        title: Option<String>,
+        hist: bool,
+    },
     /// `a_UIcmd_set_bug_prog`.
     SetBugProg { bw: u32, n: i32 },
     /// `a_UIcmd_set_buttons_sens` (relit le snapshot nav).
@@ -489,13 +498,16 @@ impl HtmlSink for DocSink {
         });
     }
 
-    /// `a_UIcmd_set_page_title` + `a_History_set_title_by_url`.
+    /// `a_UIcmd_set_page_title` + `a_History_set_title_by_url`
+    /// (l'appel history est fait au drain — ordre de file ≙
+    /// synchronicité amont, cf. `GlueOp::SetPageTitle`).
     fn set_page_title(&mut self, url: &DilloUrl, title: &[u8]) {
         let t = String::from_utf8_lossy(title).into_owned();
-        history::history_set_title_by_url(&mut url.clone(), &t);
         self.queue.borrow_mut().push_back(GlueOp::SetPageTitle {
             bw: self.bw,
+            url: url.clone(),
             title: Some(t),
+            hist: true,
         });
     }
 
@@ -996,7 +1008,9 @@ impl WebDispatch for DocDispatch {
             let mut q = self.ctx.queue.borrow_mut();
             q.push_back(GlueOp::SetPageTitle {
                 bw: web.bw,
+                url: u,
                 title: Some(title),
+                hist: false,
             });
             q.push_back(GlueOp::SetLocationText {
                 bw: web.bw,

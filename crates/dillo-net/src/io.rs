@@ -93,6 +93,23 @@ impl IoStream {
         }
     }
 
+    /// `wants_write` rustls — ciphertext bufferisé en attente de
+    /// flush (toujours `false` en clair).
+    fn tls_wants_write(&self) -> bool {
+        match self {
+            Self::Plain(_) => false,
+            Self::Tls(t) => t.wants_write(),
+        }
+    }
+
+    /// Drain du ciphertext TLS résiduel (no-op en clair).
+    fn flush_tls(&self) -> io::Result<()> {
+        match self {
+            Self::Plain(_) => Ok(()),
+            Self::Tls(t) => t.flush_tls(),
+        }
+    }
+
     /// `dup(fd)` : deuxième handle sur la même socket — amont partage
     /// le *même* `io->FD` entre lecteur et écrivain. `Plain` passe par
     /// `socket2` + `from_std` dans le contexte runtime ; `Tls` partage
@@ -549,7 +566,9 @@ async fn read_task(
                     stop = Some(Stop::Eof);
                     break;
                 }
-                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Ok(n) => {
+                    out.extend_from_slice(&buf[..n]);
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => {
@@ -600,6 +619,33 @@ async fn read_task(
             return;
         }
     }
+}
+
+/// Draine le ciphertext TLS resté en attente après un `try_write`
+/// (`wants_write` ≙ watch writable relancée amont) — `false` si
+/// erreur fatale (déjà signalée via `WriteErr`).
+async fn drain_tls_pending(s: &IoStream, tx: &mpsc::Sender<IoEvent>, key: IoKey) -> bool {
+    while s.tls_wants_write() {
+        match s.flush_tls() {
+            Ok(()) => break,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if s.ready(Interest::WRITABLE).await.is_err() {
+                    let _ = tx.send(IoEvent::WriteErr { key, status: -1 }).await;
+                    return false;
+                }
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(IoEvent::WriteErr {
+                        key,
+                        status: e.raw_os_error().unwrap_or(-1),
+                    })
+                    .await;
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// `IO_write` + `IO_fd_write_cb` — buffer → socket jusqu'à drain ou
@@ -671,18 +717,32 @@ async fn write_task(
                 break 'outer;
             }
             match s.try_write(&buf) {
-                Ok(n) if n < buf.len() => {
-                    // `dStr_erase(io->Buf, 0, St)`
-                    buf.drain(..n);
-                    // upstream boucle immédiatement ; la readiness peut
-                    // avoir été consommée → tour suivant ré-attend
+                Ok(n) => {
+                    if n < buf.len() {
+                        // `dStr_erase(io->Buf, 0, St)`
+                        buf.drain(..n);
+                        // upstream boucle immédiatement ; la readiness peut
+                        // avoir été consommée → tour suivant ré-attend
+                    } else {
+                        buf.clear();
+                    }
+                    // rustls peut retenir du ciphertext non flushé —
+                    // le pair attendrait un record tronqué sinon.
+                    if !drain_tls_pending(s, &tx, key).await {
+                        break 'outer;
+                    }
+                    if buf.is_empty() {
+                        let _ = tx.send(IoEvent::Written { key }).await;
+                        continue 'outer;
+                    }
                 }
-                Ok(_) => {
-                    buf.clear();
-                    let _ = tx.send(IoEvent::Written { key }).await;
-                    continue 'outer;
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    // Plaintext refusé — du ciphertext TLS peut
+                    // quand même être drainé.
+                    if !drain_tls_pending(s, &tx, key).await {
+                        break 'outer;
+                    }
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => {
                     let _ = tx
