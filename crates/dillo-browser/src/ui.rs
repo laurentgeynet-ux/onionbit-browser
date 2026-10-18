@@ -641,6 +641,26 @@ fn next_boundary(s: &str, p: usize) -> usize {
     p
 }
 
+/// Span `(début, fin)` du mot autour de `p` (≙ `word_end`/
+/// `word_begin` de `Fl_Input` au double-clic — run de
+/// `[A-Za-z0-9_]` ; un séparateur seul sélectionne le caractère).
+fn word_span(s: &str, p: usize) -> (usize, usize) {
+    let b = s.as_bytes();
+    let is_w = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut a = p.min(b.len());
+    let mut z = a;
+    if z < b.len() && !is_w(b[z]) {
+        return (a, (z + 1).min(b.len()));
+    }
+    while a > 0 && is_w(b[a - 1]) {
+        a -= 1;
+    }
+    while z < b.len() && is_w(b[z]) {
+        z += 1;
+    }
+    (a, z)
+}
+
 // -- `UI` ---------------------------------------------------------------------
 
 /// État de focus (`Main` ≙ viewport / `Location` ≙ `CustInput`).
@@ -654,6 +674,9 @@ pub enum Focus {
 }
 
 /// `UI` amont (par onglet) — modèle logique complet du chrome.
+/// Les bools reflètent des flags verbatim (`panel_temporary`,
+/// `small_icons`, `loc_drag`…).
+#[allow(clippy::struct_excessive_bools)]
 pub struct Ui {
     /// Rect de l'onglet (`UI` hérite `CustGroupVertical`).
     pub rect: Rect,
@@ -722,6 +745,10 @@ pub struct Ui {
     pub scroll: dillo_platform::app::ScrollbarGlue,
     /// `Location` textsize (`rint(14*font_factor)`).
     pub loc_font_px: i32,
+    /// Drag bouton-1 amorcé dans `Location` (≙ `Fl_Input`
+    /// `FL_PUSH`→`FL_DRAG` — la sélection suit la souris jusqu'au
+    /// release).
+    pub loc_drag: bool,
 }
 
 impl Ui {
@@ -773,6 +800,7 @@ impl Ui {
             view: Rc::new(RefCell::new(SkiaView::new(platform, 1, 1))),
             scroll: dillo_platform::app::ScrollbarGlue::default(),
             loc_font_px: (14.0 * prefs.font_factor).round() as i32,
+            loc_drag: false,
         };
         if let Some(cur) = cur_ui {
             ui.panel_size = cur.panel_size;
@@ -2000,6 +2028,18 @@ pub struct Chrome {
     /// Globaux `popup_*`/`history_*`/`current_page_url` amont + file
     /// des popups différés (≙ `a_Timeout_add(0, Menu_popup_cb)`).
     pub menus: MenuCtx,
+    /// Popup présenté — overlay modal dessiné dans le back-buffer
+    /// de la fenêtre (amont : fenêtre `Fl_Menu` native — déviation
+    /// ADR-0002, même modèle que les autres widgets chrome).
+    pub popup: Option<menu::Popup>,
+    /// Item armé par le press `(item, sub)` — dispatch au release
+    /// sur le même item (≙ `Fl_Menu` : activation au relâchement).
+    pub popup_armed: Option<(usize, Option<usize>)>,
+    /// Sous-menu ouvert (index de l'item parent).
+    pub popup_sub: Option<usize>,
+    /// Item sous le curseur `(item, sub)` — surlignage + ouverture
+    /// de sous-menu au survol (≙ tracking `Fl_Menu`).
+    pub popup_hover: Option<(usize, Option<usize>)>,
     /// `my_tipwin()` ≙ instance unique de [`TipWin`].
     pub tipwin: TipWin,
     /// Statics `input_answer`/`input_str`/`choice_answer` + cache du
@@ -2057,6 +2097,10 @@ impl Chrome {
             control: None,
             bookmarks: crate::bookmark::Bookmarks::default(),
             menus: MenuCtx::default(),
+            popup: None,
+            popup_armed: None,
+            popup_sub: None,
+            popup_hover: None,
             tipwin: TipWin::new(show_tip),
             dialog_state: DialogState::default(),
             dialog_runner: Box::new(AutoCancelRunner),
@@ -2088,6 +2132,29 @@ impl Chrome {
     /// Prochain popup à présenter (≙ timeout `Menu_popup_cb` amont).
     pub fn take_popup(&mut self) -> Option<menu::Popup> {
         self.menus.take_popup()
+    }
+
+    /// Drain des popups différés (≙ `a_Timeout_add(0, …)` : le plus
+    /// récent devient l'overlay actif). `true` si changement.
+    pub fn popup_activate(&mut self) -> bool {
+        let mut changed = false;
+        while let Some(p) = self.take_popup() {
+            self.popup = Some(p);
+            self.popup_armed = None;
+            self.popup_sub = None;
+            self.popup_hover = None;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Ferme l'overlay (≙ `Fl_Menu` quitté — clic dehors, Escape,
+    /// item choisi).
+    pub fn popup_close(&mut self) {
+        self.popup = None;
+        self.popup_armed = None;
+        self.popup_sub = None;
+        self.popup_hover = None;
     }
 
     /// Dispatch de l'item choisi (≙ `m->do_callback` dans
@@ -2990,6 +3057,7 @@ pub fn cust_input_key(
         }
         return false;
     }
+    let platform = Rc::clone(shell.platform_rc());
     let Some(u) = shell.ui_mut(ui_id) else {
         return false;
     };
@@ -3039,10 +3107,19 @@ pub fn cust_input_key(
         location_commit(uicmd, reg, shell, prefs, bw);
         return true;
     }
-    let mut copy = |_s: &str| {
-        // clipboard ≙ platform — via Chrome (chrome-3 tipwin/clipboard).
+    // `Fl::copy`/`Fl::paste` ≙ clipboard plateforme (OS via arboard).
+    let mut copy = {
+        let platform = Rc::clone(&platform);
+        move |s: &str| platform.borrow_mut().copy_selection(s.as_bytes(), 1)
     };
-    let mut paste = || Option::<String>::None;
+    let mut paste = move || {
+        let t = platform.borrow().clipboard_text();
+        if t.is_empty() {
+            None
+        } else {
+            String::from_utf8(t).ok()
+        }
+    };
     line_input_key(
         &mut u.location,
         keysym,
@@ -3235,9 +3312,10 @@ fn pm_text(
     rgb: u32,
     left: bool,
 ) {
-    use dillo_platform::cosmic_text::{Attrs, Buffer, Color as CColor, Metrics, Shaping};
+    use dillo_platform::cosmic_text::{Attrs, Buffer, Color as CColor, Metrics, Shaping, Wrap};
     let size = px.max(1) as f32;
     let mut buf = Buffer::new(fs, Metrics::new(size, size * 1.2));
+    buf.set_wrap(fs, Wrap::None);
     buf.set_size(fs, Some(r.w.max(1) as f32), Some(r.h.max(1) as f32));
     let text = dillo_platform::platform::sanitize_shape_text(text);
     buf.set_text(fs, &text, Attrs::new(), Shaping::Advanced);
@@ -3302,6 +3380,426 @@ fn pm_text(
             }
         }
     });
+}
+
+/// Buffer cosmic mono-ligne identique au `pm_text` du `CustInput`
+/// (mêmes métriques/wrap) — caret, sélection et hit-test de la
+/// barre d'adresse mesurés sur les glyphes réels (≙ `fl_width` +
+/// hit-test de `Fl_Input::handle_mouse`), pas sur une avance fixe.
+pub(crate) fn loc_buf(
+    fs: &mut dillo_platform::cosmic_text::FontSystem,
+    text: &str,
+    px: i32,
+    w: i32,
+) -> dillo_platform::cosmic_text::Buffer {
+    use dillo_platform::cosmic_text::{Attrs, Buffer, Metrics, Shaping, Wrap};
+    let size = px.max(1) as f32;
+    let mut buf = Buffer::new(fs, Metrics::new(size, size * 1.2));
+    buf.set_wrap(fs, Wrap::None);
+    buf.set_size(fs, Some(w.max(1) as f32), Some(size * 1.2));
+    let text = dillo_platform::platform::sanitize_shape_text(text);
+    buf.set_text(fs, &text, Attrs::new(), Shaping::Advanced);
+    buf.shape_until_scroll(fs, true);
+    buf
+}
+
+/// X du caret (origine glyphes, ≙ `fl_width(text[..pos])`) pour
+/// `pos` en octets dans la ligne shapée — bord gauche du glyphe
+/// contenant `pos`, fin de ligne si `pos` dépasse tout.
+pub(crate) fn loc_x(buf: &dillo_platform::cosmic_text::Buffer, pos: usize) -> f32 {
+    if let Some(run) = buf.layout_runs().next() {
+        let mut x = 0.0;
+        for g in run.glyphs {
+            if pos < g.end {
+                return g.x;
+            }
+            x = g.x + g.w;
+        }
+        return x;
+    }
+    0.0
+}
+
+/// Span `(x,w)` de la sélection `[a,b)` (octets) sur les glyphes
+/// réels — ≙ rectangle de surlignage FLTK.
+pub(crate) fn loc_sel_span(
+    buf: &dillo_platform::cosmic_text::Buffer,
+    a: usize,
+    b: usize,
+) -> Option<(f32, f32)> {
+    use dillo_platform::cosmic_text::Cursor;
+    buf.layout_runs()
+        .next()
+        .and_then(|run| run.highlight(Cursor::new(0, a), Cursor::new(0, b)))
+}
+
+/// Index octet sous `x` (origine glyphes) — ≙ hit-test
+/// `Fl_Input::handle_mouse` via `Buffer::hit`.
+pub(crate) fn loc_index_at(buf: &dillo_platform::cosmic_text::Buffer, x: f32) -> usize {
+    let mid = buf
+        .layout_runs()
+        .next()
+        .map_or(0.0, |r| r.line_top + r.line_height / 2.0);
+    buf.hit(x, mid)
+        .map_or(if x < 0.0 { 0 } else { usize::MAX }, |c| c.index)
+}
+
+// -- overlay popup (≙ `Fl_Menu` — déviation ADR-0002 : dessiné
+//    dans le back-buffer de la fenêtre au lieu d'une fenêtre
+//    native, modale côté dispatch) --------------------------------
+
+/// Métriques lignes (≙ `Fl_Menu_Item` : textsize 12, hauteur
+/// textsize+10 ≈ FLTK par défaut).
+const POP_FONT: i32 = 12;
+/// Hauteur d'une ligne item.
+const POP_ROW_H: i32 = 22;
+/// Surhauteur d'un item `divider` (filet sous l'item ≙
+/// `FL_MENU_DIVIDER`).
+const POP_DIV_H: i32 = 7;
+/// Marge latérale externe.
+const POP_PAD_X: i32 = 6;
+/// Colonne check/radio.
+const POP_CHECK_W: i32 = 20;
+/// Écart label↔shortcut.
+const POP_SHORT_GAP: i32 = 16;
+/// Colonne `>` sous-menu.
+const POP_SUB_W: i32 = 14;
+
+/// ≙ `fl_shortcut_label` — `Ctrl+T`, `Shift+F5`…
+fn shortcut_label(sc: i32) -> String {
+    use crate::keys::{mods, Keys};
+    let mut s = String::new();
+    if sc & mods::CTRL != 0 {
+        s.push_str("Ctrl+");
+    }
+    if sc & mods::ALT != 0 {
+        s.push_str("Alt+");
+    }
+    if sc & mods::SHIFT != 0 {
+        s.push_str("Shift+");
+    }
+    if sc & mods::META != 0 {
+        s.push_str("Meta+");
+    }
+    s.push_str(&Keys::key_name(
+        sc & !(mods::SHIFT
+            | mods::CTRL
+            | mods::ALT
+            | mods::META
+            | mods::BUTTON1
+            | mods::BUTTON2
+            | mods::BUTTON3),
+    ));
+    s
+}
+
+/// Largeur de texte mesurée sur glyphes réels (≙ `fl_width` —
+/// contrairement à `text_w`, approximation pour la géométrie
+/// initiale des widgets).
+fn glyph_w(fs: &mut dillo_platform::cosmic_text::FontSystem, s: &str, px: i32) -> i32 {
+    if s.is_empty() {
+        return 0;
+    }
+    let buf = loc_buf(fs, s, px, 10_000);
+    buf.layout_runs()
+        .map(|r| r.line_w)
+        .fold(0.0, f32::max)
+        .ceil() as i32
+}
+
+/// Géométrie du popup `items` ancré en `(x, y)` clampé dans la
+/// fenêtre `(max_w, max_h)` — partagée par draw et hit-test :
+/// `(outer, rows)` où `rows[i]` est la ligne de `items[i]` (le
+/// filet d'un `divider` occupe la fin de sa ligne).
+fn popup_geom(
+    fs: &mut dillo_platform::cosmic_text::FontSystem,
+    items: &[menu::MenuItem],
+    x: i32,
+    y: i32,
+    max_w: i32,
+    max_h: i32,
+) -> (Rect, Vec<Rect>) {
+    let mut w = 40;
+    for it in items {
+        let lw = glyph_w(fs, &it.label, POP_FONT);
+        let sw = if it.shortcut != 0 {
+            POP_SHORT_GAP + glyph_w(fs, &shortcut_label(it.shortcut), POP_FONT)
+        } else {
+            0
+        };
+        let sub = if it.submenu.is_some() { POP_SUB_W } else { 0 };
+        w = w.max(POP_PAD_X + POP_CHECK_W + lw + sw + sub + POP_PAD_X);
+    }
+    let mut rows = Vec::with_capacity(items.len());
+    let mut cy = y;
+    for it in items {
+        let h = POP_ROW_H + if it.divider { POP_DIV_H } else { 0 };
+        rows.push(Rect { x, y: cy, w, h });
+        cy += h;
+    }
+    // Clamp dans la fenêtre (≙ `Fl_Menu` qui reste à l'écran).
+    let dx = (x + w - max_w).max(0).min(x);
+    let dy = (cy - max_h).max(0).min(y);
+    for r in &mut rows {
+        r.x -= dx;
+        r.y -= dy;
+    }
+    (
+        Rect {
+            x: x - dx,
+            y: y - dy,
+            w,
+            h: cy - y,
+        },
+        rows,
+    )
+}
+
+/// `(item, sub)` sous `(x, y)` — `sub` = `Some(j)` dans le
+/// sous-menu ouvert `sub_open`. `None` = hors du menu (clic dehors
+/// ≙ fermeture).
+pub(crate) fn popup_item_at(
+    fs: &mut dillo_platform::cosmic_text::FontSystem,
+    pop: &menu::Popup,
+    sub_open: Option<usize>,
+    x: i32,
+    y: i32,
+    max_w: i32,
+    max_h: i32,
+) -> Option<(usize, Option<usize>)> {
+    let (outer, rows) = popup_geom(fs, &pop.items, pop.x, pop.y, max_w, max_h);
+    // Sous-menu d'abord (au-dessus du parent).
+    if let Some(p) = sub_open {
+        if let Some(subs) = pop.items.get(p).and_then(|i| i.submenu.as_ref()) {
+            if let Some(pr) = rows.get(p) {
+                let (_, srows) = popup_geom(fs, subs, outer.x + outer.w, pr.y, max_w, max_h);
+                for (j, r) in srows.iter().enumerate() {
+                    if r.contains(x, y) {
+                        return Some((p, Some(j)));
+                    }
+                }
+            }
+        }
+    }
+    for (i, r) in rows.iter().enumerate() {
+        // La zone divider (bas de ligne) ne sélectionne pas.
+        let selectable_h = if pop.items[i].divider { POP_ROW_H } else { r.h };
+        if x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + selectable_h {
+            return Some((i, None));
+        }
+    }
+    None
+}
+
+/// Dessin de l'overlay (≙ `Fl_Menu_::draw`) — fond, items,
+/// coches/radios, shortcuts, `>` sous-menus, dividers, surlignage
+/// de `hover`/`armed`, puis le sous-menu ouvert.
+#[allow(clippy::too_many_arguments)]
+fn draw_popup(
+    pm: &mut dillo_platform::tiny_skia::Pixmap,
+    fs: &mut dillo_platform::cosmic_text::FontSystem,
+    sw: &mut dillo_platform::cosmic_text::SwashCache,
+    pop: &menu::Popup,
+    sub_open: Option<usize>,
+    sel: Option<(usize, Option<usize>)>,
+    max_w: i32,
+    max_h: i32,
+) {
+    let (outer, rows) = popup_geom(fs, &pop.items, pop.x, pop.y, max_w, max_h);
+    let bg = 0x00f0_f0f0;
+    pm_fill(pm, outer, bg);
+    pm_rect(pm, outer, shade(bg, 0.6));
+    for (i, it) in pop.items.iter().enumerate() {
+        let r = rows[i];
+        let row = Rect {
+            h: POP_ROW_H.min(r.h),
+            ..r
+        };
+        let hot = sel == Some((i, None));
+        if hot && it.active {
+            pm_fill(pm, row, 0x002e_5a9b); // ≙ FL_SELECTION_COLOR
+        }
+        let fg = if !it.active {
+            shade(bg, 0.45)
+        } else if hot {
+            0x00ff_ffff
+        } else {
+            0
+        };
+        let tx = Rect {
+            x: row.x + POP_PAD_X + POP_CHECK_W,
+            y: row.y,
+            w: (row.w - POP_PAD_X * 2 - POP_CHECK_W - POP_SUB_W).max(1),
+            h: row.h,
+        };
+        // check / radio
+        if it.set && it.toggle {
+            pm_text(
+                pm,
+                fs,
+                sw,
+                Rect {
+                    x: row.x + 2,
+                    w: POP_CHECK_W,
+                    ..row
+                },
+                "\u{2713}",
+                POP_FONT,
+                fg,
+                true,
+            );
+        } else if it.set && it.radio {
+            pm_text(
+                pm,
+                fs,
+                sw,
+                Rect {
+                    x: row.x + 2,
+                    w: POP_CHECK_W,
+                    ..row
+                },
+                "\u{25cf}",
+                POP_FONT - 4,
+                fg,
+                true,
+            );
+        }
+        pm_text(pm, fs, sw, tx, &it.label, POP_FONT, fg, true);
+        if it.shortcut != 0 {
+            let sl = shortcut_label(it.shortcut);
+            let swd = glyph_w(fs, &sl, POP_FONT);
+            pm_text(
+                pm,
+                fs,
+                sw,
+                Rect {
+                    x: row.x + row.w - POP_PAD_X - POP_SUB_W - swd,
+                    w: swd,
+                    ..row
+                },
+                &sl,
+                POP_FONT,
+                fg,
+                true,
+            );
+        }
+        if it.submenu.is_some() {
+            pm_text(
+                pm,
+                fs,
+                sw,
+                Rect {
+                    x: row.x + row.w - POP_SUB_W,
+                    w: POP_SUB_W,
+                    ..row
+                },
+                "\u{203a}",
+                POP_FONT,
+                fg,
+                true,
+            );
+        }
+        if it.divider {
+            let dy = r.y + POP_ROW_H + POP_DIV_H / 2;
+            pm_fill(
+                pm,
+                Rect {
+                    x: r.x + POP_PAD_X,
+                    y: dy,
+                    w: (r.w - POP_PAD_X * 2).max(0),
+                    h: 1,
+                },
+                shade(bg, 0.6),
+            );
+        }
+    }
+    // Sous-menu ouvert : ancré au bord droit de la ligne parente
+    // (≙ `Fl_Menu` sous-menu adjacent). Un seul niveau — les menus
+    // amont n'en ouvrent jamais davantage.
+    if let Some(p) = sub_open {
+        if let Some(subs) = pop.items.get(p).and_then(|i| i.submenu.as_ref()) {
+            if let Some(pr) = rows.get(p) {
+                let sub_sel = sel.and_then(|(i, s)| if i == p { s } else { None });
+                draw_sub_popup(
+                    pm,
+                    fs,
+                    sw,
+                    subs,
+                    outer.x + outer.w,
+                    pr.y,
+                    sub_sel,
+                    max_w,
+                    max_h,
+                );
+            }
+        }
+    }
+}
+
+/// Dessin d'une liste de sous-menu (≙ même `Fl_Menu` à un niveau).
+#[allow(clippy::too_many_arguments)]
+fn draw_sub_popup(
+    pm: &mut dillo_platform::tiny_skia::Pixmap,
+    fs: &mut dillo_platform::cosmic_text::FontSystem,
+    sw: &mut dillo_platform::cosmic_text::SwashCache,
+    items: &[menu::MenuItem],
+    x: i32,
+    y: i32,
+    sel: Option<usize>,
+    max_w: i32,
+    max_h: i32,
+) {
+    let (outer, rows) = popup_geom(fs, items, x, y, max_w, max_h);
+    let bg = 0x00f0_f0f0;
+    pm_fill(pm, outer, bg);
+    pm_rect(pm, outer, shade(bg, 0.6));
+    for (i, it) in items.iter().enumerate() {
+        let row = Rect {
+            h: POP_ROW_H.min(rows[i].h),
+            ..rows[i]
+        };
+        let hot = sel == Some(i);
+        if hot && it.active {
+            pm_fill(pm, row, 0x002e_5a9b);
+        }
+        let fg = if !it.active {
+            shade(bg, 0.45)
+        } else if hot {
+            0x00ff_ffff
+        } else {
+            0
+        };
+        if it.set && (it.toggle || it.radio) {
+            pm_text(
+                pm,
+                fs,
+                sw,
+                Rect {
+                    x: row.x + 2,
+                    w: POP_CHECK_W,
+                    ..row
+                },
+                if it.radio { "\u{25cf}" } else { "\u{2713}" },
+                if it.radio { POP_FONT - 4 } else { POP_FONT },
+                fg,
+                true,
+            );
+        }
+        pm_text(
+            pm,
+            fs,
+            sw,
+            Rect {
+                x: row.x + POP_PAD_X + POP_CHECK_W,
+                w: (row.w - POP_PAD_X * 2 - POP_CHECK_W).max(1),
+                ..row
+            },
+            &it.label,
+            POP_FONT,
+            fg,
+            true,
+        );
+    }
 }
 
 /// Blit icône RGBA (`icon.data` = `0xAARRGGBB`) dans `r` centré.
@@ -3389,26 +3887,29 @@ impl Ui {
                     w: (it.rect.w - 6).max(1),
                     h: (it.rect.h - 4).max(1),
                 };
+                // Buffer shapé seulement quand le caret/sélection
+                // sont visibles — positions réelles ≙
+                // `fl_width`/hit-test amont.
+                let buf = (self.focus == Focus::Location)
+                    .then(|| loc_buf(fs, &self.location.text, self.loc_font_px, inner.w));
                 // sélection (tout bleu ≙ FL_SELECTION_COLOR)
                 let (a, b) = (
                     self.location.pos.min(self.location.mark),
                     self.location.pos.max(self.location.mark),
                 );
-                if a < b && self.focus == Focus::Location {
-                    // largeur de préfixe ≙ approx (mesure exacte au
-                    // reflow — suffisant au caret visible)
-                    let sel_w = (b - a) as i32 * self.loc_font_px * 2 / 3;
-                    let pre_w = a as i32 * self.loc_font_px * 2 / 3;
-                    pm_fill(
-                        pm,
-                        Rect {
-                            x: inner.x + pre_w,
-                            y: inner.y,
-                            w: sel_w,
-                            h: inner.h,
-                        },
-                        0x0000_8090,
-                    );
+                if let (Some(buf), true) = (&buf, a < b) {
+                    if let Some((sx, sw_)) = loc_sel_span(buf, a, b) {
+                        pm_fill(
+                            pm,
+                            Rect {
+                                x: inner.x + 2 + sx.round() as i32,
+                                y: inner.y,
+                                w: sw_.ceil().max(0.0) as i32,
+                                h: inner.h,
+                            },
+                            0x0000_8090,
+                        );
+                    }
                 }
                 pm_text(
                     pm,
@@ -3421,8 +3922,8 @@ impl Ui {
                     true,
                 );
                 // curseur (caret 1px) quand focus
-                if self.focus == Focus::Location {
-                    let cx = inner.x + self.location.pos as i32 * self.loc_font_px * 2 / 3;
+                if let Some(buf) = &buf {
+                    let cx = inner.x + 2 + loc_x(buf, self.location.pos).round() as i32;
                     pm_fill(
                         pm,
                         Rect {
@@ -3552,6 +4053,10 @@ impl Chrome {
     /// l'onglet actif + blit de sa vue contenu dans `Main`
     /// (≙ `Fl_Window::draw` + `FltkViewport` présentation).
     pub fn draw_window(&mut self, tabs: usize, pm: &mut dillo_platform::tiny_skia::Pixmap) {
+        // Drain des popups poussés depuis la dernière passe
+        // (≙ `a_Timeout_add(0, Menu_popup_cb)`) — avant l'emprunt
+        // `w`/`platform`, `&mut self` requis.
+        self.popup_activate();
         let Some(w) = self.wins.get(tabs).and_then(|w| w.as_ref()) else {
             return;
         };
@@ -3644,6 +4149,24 @@ impl Chrome {
                     }
                 }
             }
+        }
+
+        // Overlay popup (≙ fenêtre `Fl_Menu` modale amont) —
+        // dessiné en dernier, par-dessus chrome et contenu ; le
+        // drain des popups différés a eu lieu avant l'emprunt
+        // plateforme (`self.popup_activate()` plus haut).
+        let sel = self.popup_armed.or(self.popup_hover);
+        if let Some(pop) = &self.popup {
+            draw_popup(
+                pm,
+                &mut fs,
+                &mut sw,
+                pop,
+                self.popup_sub,
+                sel,
+                pm.width() as i32,
+                pm.height() as i32,
+            );
         }
     }
 
@@ -3766,6 +4289,7 @@ pub fn chrome_widget(
     bw: u32,
     hit: Hit,
     mouse: i32,
+    clicks: i32,
     wx: i32,
     wy: i32,
     paste: &mut dyn FnMut() -> Option<String>,
@@ -3896,15 +4420,33 @@ pub fn chrome_widget(
                     // `handle_mouse` : caret sous le clic (pas de
                     // select-all — réservé à `UI::focus_location`) ;
                     // middle = `Fl::paste` à la position.
+                    let platform = Rc::clone(shell.platform_rc());
                     if let Some(u) = shell.ui_mut(ui) {
                         if u.panel_mode == UiPanelMode::Hidden {
                             u.panels_toggle();
                             u.panel_temporary = true;
                         }
                         u.focus = Focus::Location;
-                        let cw = (u.loc_font_px * 2 / 3).max(1);
-                        let p = ((wx - (rect.x + 3)).max(0) / cw) as usize;
-                        u.location.set_position(p, p);
+                        u.loc_drag = mouse == MOUSE_LEFT;
+                        // Hit-test sur les glyphes réels — le texte
+                        // est dessiné à `inner.x + 2` (≙ `pm_text`).
+                        let p = {
+                            let pl = platform.borrow();
+                            let mut fs = pl.font_system().borrow_mut();
+                            let buf = loc_buf(&mut fs, &u.location.text, u.loc_font_px, rect.w - 6);
+                            loc_index_at(&buf, (wx - (rect.x + 3 + 2)) as f32)
+                        };
+                        if clicks >= 3 {
+                            // Triple-clic ≙ `event_clicks()>1` :
+                            // sélection totale.
+                            u.location.select_all();
+                        } else if clicks == 2 {
+                            // Double-clic ≙ `wordboundary` : le mot.
+                            let (wa, wz) = word_span(&u.location.text, p);
+                            u.location.set_position(wz, wa);
+                        } else {
+                            u.location.set_position(p, p);
+                        }
                         if mouse == MOUSE_MIDDLE {
                             if let Some(t) = paste() {
                                 u.location.insert(&t);
@@ -3975,6 +4517,7 @@ pub fn findbar_key(
 ) -> bool {
     let Some(b) = reg.get(bw) else { return false };
     let ui = b.ui.get();
+    let platform = Rc::clone(shell.platform_rc());
     let Some(u) = shell.ui_mut(ui) else {
         return false;
     };
@@ -3995,10 +4538,20 @@ pub fn findbar_key(
         crate::findbar::InputKey::Pass => false,
         crate::findbar::InputKey::Consumed => true,
         crate::findbar::InputKey::Edit => {
-            // `Fl_Input::handle` ≙ `line_input_key` (sans clipboard :
-            // verbatim MyInput n'y touche pas pour ces touches).
-            let mut copy = |_s: &str| {};
-            let mut p = || Option::<String>::None;
+            // `Fl_Input::handle` ≙ `line_input_key` — clipboard OS
+            // (MyInput hérite Fl_Input : Ctrl+C/X/V actifs amont).
+            let mut copy = {
+                let platform = Rc::clone(&platform);
+                move |s: &str| platform.borrow_mut().copy_selection(s.as_bytes(), 1)
+            };
+            let mut p = move || {
+                let t = platform.borrow().clipboard_text();
+                if t.is_empty() {
+                    None
+                } else {
+                    String::from_utf8(t).ok()
+                }
+            };
             let mut ed = LineInput {
                 text: u.findbar_state.input.buf.clone(),
                 pos: u.findbar_state.input.pos,
@@ -4295,6 +4848,20 @@ mod tests {
         li.insert("xy");
         assert_eq!(li.text, "xy");
         assert_eq!(li.pos, 2);
+    }
+
+    #[test]
+    fn word_span_runs() {
+        // ≙ `word_end`/`word_begin` : run alnum + `_`.
+        assert_eq!(word_span("foo.bar baz", 1), (0, 3));
+        assert_eq!(word_span("foo.bar baz", 4), (4, 7));
+        // Séparateur seul → le caractère.
+        assert_eq!(word_span("foo.bar", 3), (3, 4));
+        // Bord droit / hors bornes.
+        assert_eq!(word_span("abc", 3), (0, 3));
+        assert_eq!(word_span("", 5), (0, 0));
+        // `_` compte dans le mot.
+        assert_eq!(word_span("a_b", 1), (0, 3));
     }
 
     // -- Ui metrics (verbatim make_panel) ------------------------------------
@@ -4918,6 +5485,7 @@ mod tests {
             bw,
             Hit::Wid(WId::Btn(UiButton::Back)),
             MOUSE_RIGHT,
+            1,
             5,
             5,
             &mut paste,
@@ -4932,6 +5500,7 @@ mod tests {
             bw,
             Hit::Wid(WId::FileMenu),
             MOUSE_LEFT,
+            1,
             5,
             5,
             &mut paste,
@@ -4947,6 +5516,7 @@ mod tests {
             bw,
             Hit::Wid(WId::BugMeter),
             MOUSE_RIGHT,
+            1,
             5,
             5,
             &mut paste,

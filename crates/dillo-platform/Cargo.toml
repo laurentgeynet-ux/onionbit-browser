@@ -19,3 +19,4 @@ png.workspace = true
 winit.workspace = true
 softbuffer.workspace = true
 cosmic-text.workspace = true
+arboard.workspace = true

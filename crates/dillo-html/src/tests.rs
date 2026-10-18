@@ -166,6 +166,7 @@ struct MockSink {
     pending_css: i32,
     closed: Vec<i32>,
     images: Vec<DilloUrl>,
+    removed: i32,
 }
 
 impl HtmlSink for MockSink {
@@ -205,7 +206,9 @@ impl HtmlSink for MockSink {
         self.closed.push(key);
     }
     fn add_doc(&mut self) {}
-    fn remove_doc(&mut self) {}
+    fn remove_doc(&mut self) {
+        self.removed += 1;
+    }
     fn num_pending_style_sheets(&self) -> i32 {
         self.pending_css
     }
@@ -298,6 +301,36 @@ fn make_html() -> (Rc<RefCell<MockSink>>, DilloHtml<'static>) {
         prefs_rc,
     );
     (sink, h)
+}
+
+/// Régression — le widget toplevel possède le document
+/// (`setDeleteCallback(Html_free, this)` amont) : sans
+/// [`DilloHtml::arm_widget_delete`] le `Rc` du parseur mourait en fin
+/// de fetch avec le cache client → `Weak` des receivers cassé →
+/// clics sur liens / submits de forms en no-op silencieux (bug
+/// interactif trouvé au live-test, invisible au corpus golden).
+#[test]
+fn widget_delete_callback_owns_doc() {
+    let (sink, h) = make_html();
+    let html = Rc::new(RefCell::new(h));
+    DilloHtml::arm_widget_delete(&html);
+    let (layout, dw, weak_shared) = {
+        let b = html.borrow();
+        (
+            Rc::clone(&b.core.shared.borrow().layout),
+            b.dw().expect("toplevel dw"),
+            Rc::downgrade(&b.core.shared),
+        )
+    };
+    // ≙ fin de fetch : la closure `call` du cache client est droppée.
+    drop(html);
+    // Le callback du widget retient le document → `HtmlShared` vivant.
+    assert!(weak_shared.upgrade().is_some());
+    // Destruction du toplevel (navigation) → `Html_free` ≙ callback
+    // → `remove_doc` puis libération réelle du document.
+    layout.borrow_mut().widget_delete(dw);
+    assert_eq!(sink.borrow().removed, 1);
+    assert!(weak_shared.upgrade().is_none());
 }
 
 fn with_ctx<R>(bugs: &mut Vec<String>, f: impl FnOnce(&mut EntityCtx) -> R) -> R {

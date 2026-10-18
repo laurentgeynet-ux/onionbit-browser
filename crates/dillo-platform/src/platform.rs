@@ -4,9 +4,9 @@
 //! (`FontSystem` + `SwashCache` ≙ `FltkFont`/`fl_width`/`fl_height`),
 //! couleurs ≙ `FltkColor` (`shade` déjà dans `dillo-dw`), tooltips
 //! ≙ `FltkTooltip` (hooks plateforme), imgbuf ≙ `FltkImgbuf`
-//! (délégué à `dillo-images`), clipboard = shim in-process
-//! (pas de `arboard`/`copypasta` dans les deps — déviation A10
-//! documentée : la sélection ne sort pas du processus).
+//! (délégué à `dillo-images`), clipboard = OS via `arboard`
+//! (≙ `Fl::copy`/`Fl::paste` — l'ex-shim in-process A10 est clos :
+//! le test live exige le copier-coller inter-applications).
 //!
 //! Métriques de fontes : `rustybuzz` (`ttf_parser`) donne
 //! `ascender`/`descender`/advances en unités em → mise à l'échelle
@@ -91,8 +91,12 @@ pub struct SkiaPlatform {
     /// Facteur d'échelle moniteur — `dpi = 96*scale` ≙
     /// `Fl::screen_dpi`.
     scale: Cell<f64>,
-    /// Presse-papier in-process (shim — cf. doc module).
+    /// Presse-papier local (repli si l'OS clipboard est
+    /// indisponible — headless, environnement sans session).
     clipboard: RefCell<Vec<u8>>,
+    /// Clipboard OS (`arboard` ≙ `Fl::copy`/`Fl::paste`) —
+    /// `None` si indisponible (headless) → repli sur `clipboard`.
+    os_clipboard: RefCell<Option<arboard::Clipboard>>,
     /// ≙ `resources` — ressources vivantes (attach/detachView).
     resources: RefCell<Vec<Rc<dyn Resource>>>,
     /// `FltkResourceFactory resourceFactory` (ctor).
@@ -122,6 +126,7 @@ impl SkiaPlatform {
             has_view: Cell::new(false),
             scale: Cell::new(1.0),
             clipboard: RefCell::new(Vec::new()),
+            os_clipboard: RefCell::new(arboard::Clipboard::new().ok()),
             resources: RefCell::new(Vec::new()),
             factory: Rc::new(SkiaResourceFactory::new()),
         }
@@ -337,9 +342,16 @@ impl SkiaPlatform {
         self.resources.borrow_mut().retain(|r| !Rc::ptr_eq(r, res));
     }
 
-    /// Contenu du presse-papier shim (`app.rs` paste).
+    /// Contenu du presse-papier — OS d'abord (`Fl::paste` ≙ lecture
+    /// du clipboard système), repli sur le buffer local si le
+    /// clipboard OS est indisponible.
     #[must_use]
     pub fn clipboard_text(&self) -> Vec<u8> {
+        if let Some(cb) = self.os_clipboard.borrow_mut().as_mut() {
+            if let Ok(t) = cb.get_text() {
+                return t.into_bytes();
+            }
+        }
         self.clipboard.borrow().clone()
     }
 
@@ -427,10 +439,14 @@ impl Platform for SkiaPlatform {
             .into_bytes()
     }
 
-    /// `nextGlyph` — `fl_utf8fwd` : fin du caractère à `idx`.
+    /// `nextGlyph` — verbatim `fl_utf8fwd(&text[idx + 1], text,
+    /// &text[strlen])` : **début du caractère suivant** (≙
+    /// `end_of_char(idx) + 1`). Retourner `end_of_char` nu bloquait
+    /// `char_pos` sur le caractère courant → boucle infinie dans
+    /// `sendSelectionEvent` à tout clic sur un mot TEXT.
     fn next_glyph(&mut self, text: &[u8], idx: i32) -> i32 {
         let i = (idx.max(0) as usize).min(text.len());
-        utf8::end_of_char(text, i) as i32
+        (utf8::end_of_char(text, i) + 1) as i32
     }
 
     /// `prevGlyph` — `fl_utf8back` : début du caractère avant `idx`.
@@ -547,9 +563,15 @@ impl Platform for SkiaPlatform {
         )
     }
 
-    /// `copySelection` — shim in-process (cf. doc module).
+    /// `copySelection` — clipboard OS (`Fl::copy` ≙ Win32/X11
+    /// clipboard) + buffer local en repli. `destination` (sélection
+    /// primaire X11 vs clipboard) est ignorée — pas d'analogue
+    /// Windows, un seul canal comme amont sous Win32.
     fn copy_selection(&mut self, text: &[u8], _destination: i32) {
         *self.clipboard.borrow_mut() = text.to_vec();
+        if let Some(cb) = self.os_clipboard.borrow_mut().as_mut() {
+            let _ = cb.set_text(String::from_utf8_lossy(text).into_owned());
+        }
     }
 
     /// `getResourceFactory` — `SkiaResourceFactory` (≙ `fltkui.cc`).

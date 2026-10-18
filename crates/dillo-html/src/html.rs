@@ -500,9 +500,10 @@ impl<'p> DilloHtml<'p> {
         self.core.dw = Some(dw);
         self.s_top_mut().textblock = Some(dw);
         // `dw->setDeleteCallback(Html_free, this)` ≙ libère le DilloHtml
-        // quand le widget est détruit — le port appelle
-        // `sink.remove_doc()` au `Drop` (invariant : page détruite avec
-        // son toplevel).
+        // quand le widget est détruit — ici en deux phases : `init_dw`
+        // pose un callback faible (le `Rc<DilloHtml>` n'existe pas
+        // encore), `arm_widget_delete` le remplace par un callback qui
+        // *possède* le document (verbatim : `Html_free` libère `this`).
         let shared = Rc::downgrade(&self.core.shared);
         self.core
             .shared
@@ -517,6 +518,35 @@ impl<'p> DilloHtml<'p> {
                     }
                 })),
             );
+    }
+
+    /// `dw->setDeleteCallback(Html_free, this)` — phase forte : le
+    /// widget toplevel *possède* le document. Amont `Html_free` libère
+    /// le `DilloHtml` à la destruction du widget ; ici la closure
+    /// retient le `Rc` (le `take` de `run_delete_callback` casse le
+    /// cycle pile à la destruction). Sans cette rétention le
+    /// `DilloHtml` meurt en fin de fetch avec le cache client → le
+    /// `Weak` des receivers (liens, forms) casse et les clics
+    /// deviennent des no-ops silencieux.
+    pub fn arm_widget_delete(this: &Rc<RefCell<Self>>)
+    where
+        Self: 'static,
+    {
+        let (layout, dw) = {
+            let h = this.borrow();
+            (Rc::clone(&h.core.shared.borrow().layout), h.core.dw)
+        };
+        if let Some(dw) = dw {
+            let doc = Rc::clone(this);
+            layout.borrow_mut().widget_set_delete_callback(
+                dw,
+                Some(Rc::new(move || {
+                    if let Ok(h) = doc.try_borrow() {
+                        h.core.shared.borrow().sink.borrow_mut().remove_doc();
+                    }
+                })),
+            );
+        }
     }
 
     /// `html->dw` — le widget toplevel (créé par `initDw` au
@@ -2783,18 +2813,12 @@ impl LinkReceiver for HtmlLinkReceiver {
                 } else {
                     return false;
                 }
-                drop(sink);
-                // feedback "visited" — remonte au textblock parent.
+                // feedback "visited" — différé via le sink : le
+                // `Layout` est déjà sous `borrow_mut` (emission
+                // pendant `button_event`), la maj part en `GlueOp`.
                 let visited = shared.visited_color;
-                let mut arena = shared.layout.borrow_mut();
-                let mut w = widget;
-                while let Some(wid) = w {
-                    if arena.widget_is_textblock_kind(wid) {
-                        arena.tb_change_link_color(wid, link, visited);
-                        break;
-                    }
-                    w = arena.widget_parent(wid);
-                }
+                sink.link_visited(widget, link, visited);
+                drop(sink);
             }
         }
         true

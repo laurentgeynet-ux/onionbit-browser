@@ -118,6 +118,17 @@ pub enum GlueOp {
     Redirection0 { bw: u32, url: DilloUrl },
     /// `a_UIcmd_repush`.
     Repush { bw: u32 },
+    /// Feedback « visited » du lien — ≙ la maj synchrone
+    /// `DwTextblock::changeLinkColor` de `HTML_link_clicked`.
+    /// Différée : le `Layout` est sous `borrow_mut` pendant
+    /// l'émission du signal (`button_event`) — le drain remonte
+    /// du widget cliqué à son textblock parent.
+    LinkVisited {
+        bw: u32,
+        widget: Option<usize>,
+        link: i32,
+        color: i32,
+    },
     /// `a_UIcmd_page_popup`.
     PagePopup {
         bw: u32,
@@ -200,6 +211,7 @@ impl std::fmt::Debug for GlueOp {
             Self::OpenUrlNt { .. } => "OpenUrlNt",
             Self::Redirection0 { .. } => "Redirection0",
             Self::Repush { .. } => "Repush",
+            Self::LinkVisited { .. } => "LinkVisited",
             Self::PagePopup { .. } => "PagePopup",
             Self::LinkPopup { .. } => "LinkPopup",
             Self::ImagePopup { .. } => "ImagePopup",
@@ -543,6 +555,17 @@ impl HtmlSink for DocSink {
             .push_back(GlueOp::Repush { bw: self.bw });
     }
 
+    /// Feedback « visited » — différé : `clicked` tourne sous le
+    /// `borrow_mut` du `Layout` (cf. `HtmlSink::link_visited`).
+    fn link_visited(&mut self, widget: Option<usize>, link: i32, color: i32) {
+        self.queue.borrow_mut().push_back(GlueOp::LinkVisited {
+            bw: self.bw,
+            widget,
+            link,
+            color,
+        });
+    }
+
     // -- menus contextuels -----------------------------------------------------
 
     fn page_popup(&mut self, has_bugs: bool, css_urls: &[DilloUrl]) {
@@ -831,6 +854,9 @@ fn html_viewer(ctx: Rc<DocCtx>) -> MimeViewer {
             ctx.hprefs_ref,
             ctx.hprefs.clone(),
         )));
+        // Le widget toplevel possède le document (≙ `Html_free`) :
+        // sans ça le `Weak` des receivers meurt en fin de fetch.
+        DilloHtml::arm_widget_delete(&html);
         let dw = html.borrow().dw()?;
         Some(mime::ViewerOutcome {
             call: Box::new(move |op, cl: &mut CacheClient| {

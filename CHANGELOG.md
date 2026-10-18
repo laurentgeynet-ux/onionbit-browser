@@ -39,6 +39,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **phase 9 — test live, 2ᵉ passe (clics liens, popups, saisie)** :
+  - **clic sur lien figeait le navigateur** : `SkiaPlatform::
+    next_glyph` renvoyait `end_of_char(i)` (dernier octet du
+    caractère *courant* = `i` pour l'ASCII) au lieu du début du
+    caractère suivant (≙ `fl_utf8fwd`) → la boucle de hit-test de
+    `tb_send_selection_event` n'avançait jamais → boucle infinie sur
+    tout clic texte. Même avance stagnante corrigée dans
+    l'hyphenator et la mesure smallcaps ; gardes de progression et
+    de bornes ajoutées (malformed shaping ne doit jamais pendre ni
+    slicer hors texte — amont s'en remet au NUL final).
+  - **clic sur lien sans effet** : `DilloHtml` n'était retenu que par
+    la closure du cache client — droppé en fin de fetch → le `Weak`
+    de `HtmlLinkReceiver`/`DilloHtmlReceiver` (forms) cassait →
+    `enter`/`clicked`/`pressed` en no-op silencieux. Le port
+    reproduit désormais la propriété amont
+    `setDeleteCallback(Html_free, this)` : `arm_widget_delete` fait
+    de la delete callback du widget toplevel le possesseur du
+    document (`Rc`), libéré pile à la destruction (≙ `Html_free`).
+  - **panic latent RefCell** : le feedback « visited » dans
+    `clicked` empruntait le `Layout` déjà sous `borrow_mut` pendant
+    `button_event` → différé via `GlueOp::LinkVisited` (drain post-
+    event, comme `open_url`).
+  - **popups jamais rendus** : `take_popup` n'était drainé qu'en
+    tests — Tools/File/clic droit construits mais invisibles.
+    Overlay natif possédé par `Chrome` : dessin au-dessus du layout,
+    hit-test modal, sous-menus, fermeture Échap/clic hors-zone
+    (ADR-0002 — trou fonctionnel A10 clos).
+  - **barre d'adresse** : caret/sélection/hit-test mesurés via le
+    shaping réel cosmic-text (`Buffer::hit`, positions glyphes) au
+    lieu de l'avance fixe `pos*size*2/3` ; double-clic = mot,
+    triple-clic = tout, drag-sélection (≙ `event_clicks`/`FL_DRAG`
+    amont) ; `set_scale_factor` câblé (init + `ScaleFactorChanged`
+    ≙ `Fl::screen_dpi`).
+  - **clipboard OS** : `arboard` (texte, `default-features=false`)
+    dans `dillo-platform` + fallback in-process ; copier/coller
+    câblés dans la barre d'adresse et la findbar.
+
 - **phase 9 — bugs réels trouvés en test live (fenêtre Windows,
   navigation HTTP(S) réelle)** : `dillo-browser` — un clic sous la
   barre d'onglets (`y >= ctab_h`) retournait `Some(false)` de

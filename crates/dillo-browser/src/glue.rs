@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
 
-use dillo_dw::events::ButtonEventType;
+use dillo_dw::events::{button_state, ButtonEventType};
 use dillo_dw::view::View;
 use dillo_net::cache::{self};
 use dillo_net::control::{Control, CtlOps};
@@ -61,8 +61,8 @@ use crate::doc::{
 use crate::keys::{keysym, KeysCommand};
 use crate::prefs::Prefs;
 use crate::ui::{
-    chrome_widget, cust_input_key, findbar_key, ui_shortcut, Chrome, Focus, Hit, Ui, WinOp,
-    MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT,
+    chrome_widget, cust_input_key, findbar_key, loc_buf, loc_index_at, ui_shortcut, Chrome, Focus,
+    Hit, Ui, WId, WinOp, MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT,
 };
 use crate::uicmd::{UiCmd, UiShell};
 
@@ -363,6 +363,54 @@ impl Glue {
         Some(true)
     }
 
+    /// Hit-test de l'overlay popup actif — `(item, sub)` sous
+    /// `(x, y)` (coords fenêtre). `None` = clic hors menu.
+    fn popup_hit(
+        &mut self,
+        app: &DwApp,
+        win: usize,
+        x: i32,
+        y: i32,
+    ) -> Option<(usize, Option<usize>)> {
+        let (mw, mh) = app
+            .win_view(win)
+            .map_or((i32::MAX, i32::MAX), |v| v.borrow().view_size());
+        let platform = Rc::clone(self.chrome.platform_rc());
+        let pl = platform.borrow();
+        let mut fs = pl.font_system().borrow_mut();
+        let sub = self.chrome.popup_sub;
+        self.chrome
+            .popup
+            .as_ref()
+            .and_then(|p| crate::ui::popup_item_at(&mut fs, p, sub, x, y, mw, mh))
+    }
+
+    /// Press pendant popup ouvert (≙ `Fl_Menu` modal — le clic
+    /// arme un item, ouvre un sous-menu, ou ferme le tout).
+    fn popup_press(&mut self, app: &mut DwApp, win: usize, x: i32, y: i32) -> bool {
+        match self.popup_hit(app, win, x, y) {
+            Some((i, Some(j))) => self.chrome.popup_armed = Some((i, Some(j))),
+            Some((i, None)) => {
+                let has_sub = self
+                    .chrome
+                    .popup
+                    .as_ref()
+                    .and_then(|p| p.items.get(i))
+                    .is_some_and(|it| it.submenu.is_some());
+                if has_sub {
+                    self.chrome.popup_sub = Some(i);
+                    self.chrome.popup_armed = None;
+                } else {
+                    self.chrome.popup_armed = Some((i, None));
+                }
+            }
+            // Clic dehors ≙ menu quitté.
+            None => self.chrome.popup_close(),
+        }
+        app.request_redraw(win);
+        true
+    }
+
     /// `FL_PUSH` — verbatim `UI::handle` (strip → chrome → contenu
     /// → boutons 4/5 back/forw).
     #[allow(clippy::too_many_arguments)]
@@ -376,6 +424,10 @@ impl Glue {
         clicks: i32,
         state: i32,
     ) -> bool {
+        // Popup overlay modal ≙ `Fl_Menu` — intercepte tout.
+        if self.chrome.popup.is_some() {
+            return self.popup_press(app, win, x, y);
+        }
         // `Tabs->handle(FL_PUSH)` amont : `Some(true)` = strip
         // consommé ; `Some(false)`/`None` = sous le strip ou pas de
         // strip → `UI::handle` poursuit le dispatch chrome/contenu.
@@ -454,6 +506,7 @@ impl Glue {
                     bw,
                     hit,
                     button,
+                    clicks,
                     x,
                     y,
                     &mut paste,
@@ -464,6 +517,44 @@ impl Glue {
                 consumed
             }
         }
+    }
+
+    /// Release pendant popup ouvert (≙ `Fl_Menu` — le relâchement
+    /// sur l'item armé dispatche `do_callback` et ferme ; ailleurs,
+    /// désarme sans fermer).
+    fn popup_release(
+        &mut self,
+        app: &mut DwApp,
+        win: usize,
+        x: i32,
+        y: i32,
+        button: i32,
+        state: i32,
+    ) -> bool {
+        let hit = self.popup_hit(app, win, x, y);
+        if hit.is_some() && hit == self.chrome.popup_armed {
+            if let Some(mut pop) = self.chrome.popup.take() {
+                self.chrome.popup_armed = None;
+                self.chrome.popup_sub = None;
+                self.chrome.popup_hover = None;
+                if let Some((i, sub)) = hit {
+                    let shift = state & button_state::SHIFT_MASK != 0;
+                    self.chrome.popup_dispatch(
+                        &self.uicmd,
+                        &self.reg,
+                        &mut pop,
+                        i,
+                        sub,
+                        button,
+                        shift,
+                    );
+                }
+            }
+        } else {
+            self.chrome.popup_armed = None;
+        }
+        app.request_redraw(win);
+        true
     }
 
     /// `FL_RELEASE` — verbatim `UI::handle` : scrollbars, contenu,
@@ -479,12 +570,17 @@ impl Glue {
         clicks: i32,
         state: i32,
     ) -> bool {
+        // Popup overlay modal ≙ `Fl_Menu`.
+        if self.chrome.popup.is_some() {
+            return self.popup_release(app, win, x, y, button, state);
+        }
         let Some(ui) = self.active_ui(win) else {
             return false;
         };
         let Some(u) = self.active_ui_mut(win) else {
             return false;
         };
+        u.loc_drag = false;
         if y < u.rect.y {
             return true; // strip (press déjà consommé)
         }
@@ -551,6 +647,50 @@ impl Glue {
         let Some(ui) = self.active_ui(win) else {
             return false;
         };
+        // Survol popup (≙ tracking `Fl_Menu` — surligne l'item et
+        // ouvre/ferme le sous-menu au passage).
+        if self.chrome.popup.is_some() {
+            let hit = self.popup_hit(app, win, x, y);
+            self.chrome.popup_hover = hit;
+            self.chrome.popup_sub = match hit {
+                Some((i, Some(_))) => Some(i),
+                Some((i, None)) => self
+                    .chrome
+                    .popup
+                    .as_ref()
+                    .and_then(|p| p.items.get(i))
+                    .filter(|it| it.submenu.is_some())
+                    .map(|_| i),
+                None => self.chrome.popup_sub,
+            };
+            app.request_redraw(win);
+            return true;
+        }
+        // `Fl_Input::handle(FL_DRAG)` : un press bouton-1 dans
+        // `Location` étend la sélection jusqu'au release — le drag
+        // est suivi même hors du widget (≙ grab FLTK).
+        if self.chrome.ui(ui).is_some_and(|u| u.loc_drag) {
+            if state & button_state::BUTTON1_MASK == 0 {
+                if let Some(u) = self.active_ui_mut(win) {
+                    u.loc_drag = false;
+                }
+                return false;
+            }
+            let platform = Rc::clone(self.chrome.platform_rc());
+            if let Some(u) = self.active_ui_mut(win) {
+                let rect = u.rect_of(WId::Location).unwrap_or_default();
+                let p = {
+                    let pl = platform.borrow();
+                    let mut fs = pl.font_system().borrow_mut();
+                    let buf = loc_buf(&mut fs, &u.location.text, u.loc_font_px, rect.w - 6);
+                    loc_index_at(&buf, (x - (rect.x + 3 + 2)) as f32)
+                };
+                let mark = u.location.mark;
+                u.location.set_position(p, mark);
+            }
+            app.request_redraw(win);
+            return true;
+        }
         let Some(u) = self.active_ui_mut(win) else {
             return false;
         };
@@ -633,6 +773,12 @@ impl Glue {
     fn key(&mut self, app: &mut DwApp, win: usize, ev: &KeyEvent, state: i32) -> bool {
         if ev.state != ElementState::Pressed {
             return false; // verbatim : seul le press agit
+        }
+        // Popup modal ≙ `Fl_Menu` — Escape ferme.
+        if winit_keysym(ev) == keysym::ESCAPE && self.chrome.popup.is_some() {
+            self.chrome.popup_close();
+            app.request_redraw(win);
+            return true;
         }
         let Some(ui) = self.active_ui(win) else {
             return false;
@@ -957,6 +1103,11 @@ impl ShellGlue for Glue {
         // différés pendant scroll ne repartent jamais.
         self.chrome.drain_layouts();
         self.drain_queue();
+        // Popups différés (≙ `a_Timeout_add(0, Menu_popup_cb)`) —
+        // présentés au prochain redraw.
+        if self.chrome.popup_activate() {
+            self.apply_win_op(app, WinOp::RedrawAll);
+        }
         while let Some(op) = self.chrome.app_ops.pop_front() {
             self.apply_win_op(app, op);
         }
@@ -1207,6 +1358,28 @@ impl Glue {
                 self.uicmd.redirection0(reg, shell, &p, bw, &url);
             }
             GlueOp::Repush { bw } => self.uicmd.repush(reg, shell, &p, bw),
+            GlueOp::LinkVisited {
+                bw,
+                widget,
+                link,
+                color,
+            } => {
+                // `HTML_link_clicked` → `DwTextblock::changeLinkColor`
+                // — différé car le `Layout` est sous `borrow_mut`
+                // pendant `button_event` (emission du signal).
+                let ui = reg.get(bw).map_or(0, |b| b.ui.get());
+                if let Some(l) = shell.layout_of(ui) {
+                    let mut arena = l.borrow_mut();
+                    let mut w = widget;
+                    while let Some(wid) = w {
+                        if arena.widget_is_textblock_kind(wid) {
+                            arena.tb_change_link_color(wid, link, color);
+                            break;
+                        }
+                        w = arena.widget_parent(wid);
+                    }
+                }
+            }
             GlueOp::PagePopup {
                 bw,
                 has_bugs,

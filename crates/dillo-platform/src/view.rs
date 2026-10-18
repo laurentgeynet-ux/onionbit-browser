@@ -460,7 +460,14 @@ impl Canvas {
             (rgba.blue() * 255.0) as u8,
             255,
         );
-        let (bx, by) = (base_x as i32, base_y as i32);
+        // `draw_text` reçoit une *baseline* (≙ `fl_draw` amont) ;
+        // `Buffer::draw` donne des `py` relatifs au **haut** du
+        // buffer — `line_y` du premier run = la baseline dans le
+        // buffer. Sans la conversion tout le texte descend d'une
+        // ascent (labels hors boutons, lignes qui se chevauchent —
+        // invisible au golden : test et ref dérivent à l'identique).
+        let line_y = buf.layout_runs().next().map_or(0.0, |r| r.line_y);
+        let (bx, by) = (base_x as i32, (base_y - line_y) as i32);
         buf.draw(&mut fs, &mut sw, cc, |px, py, gw, gh, col| {
             let pc = col.as_rgba();
             for dy in 0..gh as i32 {

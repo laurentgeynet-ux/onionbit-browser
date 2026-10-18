@@ -1511,8 +1511,25 @@ impl Layout {
                                             _ => Vec::new(),
                                         };
                                         loop {
+                                            // Garde : `x_widget` au-delà de
+                                            // la somme des glyphes (arrondis
+                                            // de shaping) → fin de mot —
+                                            // amont s'en remet au NUL final,
+                                            // le slice `tb_text_width`
+                                            // paniquerait à `len+1`.
+                                            if char_pos as usize >= text.len() {
+                                                char_pos = SELECTION_END_OF_WORD;
+                                                break;
+                                            }
                                             let next_char_pos =
                                                 l.platform.borrow_mut().next_glyph(&text, char_pos);
+                                            // `next_glyph` sans
+                                            // progression (plateforme
+                                            // boguée) → fin de mot.
+                                            if next_char_pos <= char_pos {
+                                                char_pos = SELECTION_END_OF_WORD;
+                                                break;
+                                            }
                                             let glyph_width = l.tb_text_width(
                                                 &text,
                                                 char_pos as usize,
@@ -1543,6 +1560,12 @@ impl Layout {
                                                         .platform
                                                         .borrow_mut()
                                                         .next_glyph(&text, char_pos);
+                                                    // Progression
+                                                    // obligatoire — sinon
+                                                    // boucle infinie.
+                                                    if ncp <= char_pos {
+                                                        break;
+                                                    }
                                                     if l.tb_text_width(
                                                         &text,
                                                         char_pos as usize,

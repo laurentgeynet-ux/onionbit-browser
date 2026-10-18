@@ -47,6 +47,9 @@ tiny-skia = "0.11"
 winit = "0.30"
 softbuffer = "0.4"
 cosmic-text = "0.12"
+# Clipboard OS (≙ Fl::copy/Fl::paste) — bindings natifs, pas de C
+# compilé (même classe que winit). `image-data` inutile (texte seul).
+arboard = { version = "3.7", default-features = false }
 # Sérialisation PNG des golden renders (pur Rust, dev/test).
 png = "0.17"
 # Décodeurs image (pur Rust) — ≙ libjpeg/libwebp/libpng amont.

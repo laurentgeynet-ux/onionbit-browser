@@ -78,6 +78,17 @@ pub trait HtmlSink {
     /// `a_UIcmd_repush` — re-rendu quand les feuilles sont chargées.
     fn repush(&mut self);
 
+    /// Feedback « visited » du lien cliqué — ≙ la maj synchrone
+    /// `DwTextblock::changeLinkColor` dans `HTML_link_clicked`
+    /// (html.cc). **Doit être différée** : `clicked` tourne sous
+    /// un `borrow_mut` du `Layout` (emission de signal pendant
+    /// `button_event`), le sink route vers `GlueOp` — un emprunt
+    /// direct paniquerait (double-borrow `RefCell`).
+    /// `widget` ≙ le widget cliqué (la maj remonte à son
+    /// textblock parent), `color` ≙ `prefs.contrast_visited_color`
+    /// résolue (`visited_color`).
+    fn link_visited(&mut self, _widget: Option<usize>, _link: i32, _color: i32) {}
+
     // -- menus contextuels --------------------------------------------------
 
     /// `a_UIcmd_page_popup`.

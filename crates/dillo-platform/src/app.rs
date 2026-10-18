@@ -905,6 +905,9 @@ impl DwApp {
                     let win = std::sync::Arc::new(win);
                     w.wid = Some(win.id());
                     self.wids.insert(win.id(), i);
+                    // ≙ `Fl::screen_dpi` par moniteur — calibre les
+                    // métriques `dpiX`/`dpiY` (tailles pt → px).
+                    self.platform.borrow().set_scale_factor(win.scale_factor());
                     let size = win.inner_size();
                     match PlatformSurface::new(win) {
                         Ok(s) => {
@@ -973,6 +976,11 @@ impl ApplicationHandler for DwApp {
                     self.wins[wi].close_requested = true;
                     self.dead.push(wi);
                 }
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // winit renvoie un `Resized` juste après — on ne fait
+                // que recalibrer les métriques (≙ `screen_dpi`).
+                self.platform.borrow().set_scale_factor(scale_factor);
             }
             WindowEvent::Resized(sz) => {
                 {
