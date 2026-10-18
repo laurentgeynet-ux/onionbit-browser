@@ -37,6 +37,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (libFuzzer non linkable sous MSVC — cibles prêtes pour CI/Linux).
   Documentation `docs/fuzzing.md`.
 
+- `dillo-net` : tests filaires proxy (`http.rs`) vérifiant le contrat
+  `http_proxy` bout en bout contre un stub TCP loopback — forme
+  absolue `GET http://h/…` sans DNS de la cible (`inexistant.invalid`
+  irrésolvable), tunnel `CONNECT` suivi du `ClientHello` TLS **sur la
+  même socket** (TLS en-process, pas de contournement), bypass
+  `no_proxy` en forme origine. Le harnais émule capi amont : deux
+  liens (lecteur branche 2 + écrivain branche 1) et relais du `FD`
+  remonté par `bfcb` (`capi.c` OpStart ×2 + OpSend `"FD"`).
+
 ### Fixed
 
 - **phase 9 — test live, 2ᵉ passe (clics liens, popups, saisie)** :

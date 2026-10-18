@@ -2234,6 +2234,261 @@ mod tests {
         assert!(s.contains("Connection: keep-alive\r\n"));
     }
 
+    /// Wire proxy : `http_proxy` honoré de bout en bout — le stub
+    /// reçoit la **forme absolue** (`GET http://h/…`) alors que la
+    /// cible (`inexistant.invalid`) est **irrésolvable** : la preuve
+    /// que le DNS n'est consulté que pour l'hôte proxy, jamais pour
+    /// la cible (le nom voyage dans l'URI — le contrat est celui de
+    /// l'`ADR-0030`).
+    #[tokio::test(flavor = "current_thread")]
+    async fn wire_proxy_get_absolute_uri_no_target_dns() {
+        use crate::dns::poll_dns;
+        use crate::io::{poll_io, IoEngine};
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        let rt = tokio::runtime::Handle::current();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                match s.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = tx.send(got);
+        });
+
+        let mut ch = Chain::new();
+        ch.set_module(Dns::new_sync());
+        ch.set_module(IoEngine::new(rt.clone()));
+        {
+            let mut e = eng(&rt);
+            e.proxy = Some(mk_url(&format!("http://127.0.0.1:{port}/")));
+            e.proxy_user = Some("onionbit".to_string());
+            e.set_proxy_passwd("secret");
+            ch.set_module(e);
+        }
+        // Cible non résolvable : si le DNS la consultait, tout
+        // échouerait — la requête doit arriver au proxy telle quelle.
+        let url = mk_url("http://inexistant.invalid/dir/x?q=1");
+        let web = Rc::new(HttpWeb::new(url, None, WEB_ROOT_URL));
+        let info = ch.new_link();
+        http_ccc(
+            &mut ch,
+            OP_START,
+            1,
+            BCK,
+            info,
+            ChainData::Owned(web as Rc<dyn std::any::Any>),
+            ChainData::None,
+        );
+        let mut got = None;
+        for _ in 0..200 {
+            poll_dns(&mut ch);
+            poll_http(&mut ch);
+            poll_io(&mut ch);
+            if let Ok(g) = rx.try_recv() {
+                got = Some(g);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let got = got.expect("la requête doit atteindre le proxy");
+        let s = String::from_utf8_lossy(&got);
+        assert!(
+            s.starts_with("GET http://inexistant.invalid/dir/x?q=1 HTTP/1.1\r\n"),
+            "forme absolue attendue, got: {s:?}"
+        );
+        assert!(s.contains("Host: inexistant.invalid\r\n"));
+        assert!(s.contains("Proxy-Authorization: Basic "));
+    }
+
+    /// Wire proxy HTTPS : `CONNECT host:443` sur la socket proxy, puis
+    /// après le `200` le `ClientHello` TLS part **sur la même connexion**
+    /// (TLS en-process `TlsEngine`, pas de socket séparée — le plugin
+    /// ne contourne pas le proxy).
+    #[tokio::test(flavor = "current_thread")]
+    async fn wire_proxy_connect_then_tls_on_same_socket() {
+        use crate::dns::poll_dns;
+        use crate::io::{poll_io, IoEngine};
+        use crate::tls::TlsEngine;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let rt = tokio::runtime::Handle::current();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                match s.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = s
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await;
+            // Premiers octets post-CONNECT : record TLS handshake.
+            if let Ok(n) = s.read(&mut buf).await {
+                got.extend_from_slice(&buf[..n]);
+            }
+            let _ = tx.send(got);
+        });
+
+        let mut ch = Chain::new();
+        ch.set_module(Dns::new_sync());
+        ch.set_module(IoEngine::new(rt.clone()));
+        ch.set_module(TlsEngine::new(rt.clone()).expect("tls"));
+        {
+            let mut e = eng(&rt);
+            e.proxy = Some(mk_url(&format!("http://127.0.0.1:{port}/")));
+            ch.set_module(e);
+        }
+        let url = mk_url("https://secure.invalid/");
+        let web = Rc::new(HttpWeb::new(url, None, WEB_ROOT_URL));
+        // Rôle de capi amont : deux liens — lecteur (branche 2) puis
+        // écrivain (branche 1) — et relais du `FD` remonté par `bfcb`
+        // sur l'écrivain vers le lecteur (≙ capi.c OpStart ×2 +
+        // `a_Capi_ccc(OpSend, 2, BCK, InfoRecv, &SockFD, "FD")`).
+        let info_recv = ch.new_link();
+        let info_send = ch.new_link();
+        let relay_fd: ChainCb = Rc::new(move |chain, op, _b, _d, _i, d1, d2| {
+            if op == OP_SEND && d2.is_tag("FD") {
+                http_ccc(chain, OP_SEND, 2, BCK, info_recv, d1, d2);
+            }
+        });
+        if let Some(l) = ch.link_mut(info_send) {
+            l.fcb = Some(relay_fd);
+            l.fcb_info = Some(info_send);
+            l.fcb_branch = 1;
+        }
+        http_ccc(
+            &mut ch,
+            OP_START,
+            2,
+            BCK,
+            info_recv,
+            ChainData::None,
+            ChainData::None,
+        );
+        http_ccc(
+            &mut ch,
+            OP_START,
+            1,
+            BCK,
+            info_send,
+            ChainData::Owned(web as Rc<dyn std::any::Any>),
+            ChainData::None,
+        );
+        let mut got = None;
+        for _ in 0..400 {
+            poll_dns(&mut ch);
+            poll_http(&mut ch);
+            poll_io(&mut ch);
+            if let Ok(g) = rx.try_recv() {
+                got = Some(g);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let got = got.expect("CONNECT puis ClientHello attendus");
+        assert!(
+            got.starts_with(b"CONNECT secure.invalid:443 HTTP/1.1\r\n"),
+            "CONNECT attendu, got: {got:?}"
+        );
+        // Après l'en-tête CONNECT + "\r\n\r\n" : le record TLS
+        // handshake (0x16, version 0x03xx) arrive sur la MÊME socket.
+        let marker = b"\r\n\r\n";
+        let pos = got
+            .windows(4)
+            .position(|w| w == marker)
+            .expect("fin d'en-tête");
+        let tls = &got[pos + 4..];
+        assert!(tls.len() >= 3, "ClientHello attendu après le 200");
+        assert_eq!(tls[0], 0x16, "record handshake TLS attendu");
+        assert_eq!(tls[1], 0x03, "record TLS version major");
+    }
+
+    /// `no_proxy` court-circuite : la requête part en **direct**
+    /// (forme origin) — si le bypass échouait, le connect irait vers
+    /// le proxy injoignable (`127.0.0.1:1`) et rien n'arriverait.
+    #[tokio::test(flavor = "current_thread")]
+    async fn wire_proxy_no_proxy_bypasses_to_origin_form() {
+        use crate::dns::poll_dns;
+        use crate::io::{poll_io, IoEngine};
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        let rt = tokio::runtime::Handle::current();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                match s.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = tx.send(got);
+        });
+
+        let mut ch = Chain::new();
+        ch.set_module(Dns::new_sync());
+        ch.set_module(IoEngine::new(rt.clone()));
+        {
+            let mut e = eng(&rt);
+            e.proxy = Some(mk_url("http://127.0.0.1:1/")); // injoignable
+            e.no_proxy = Some("127.0.0.1".to_string());
+            ch.set_module(e);
+        }
+        let url = mk_url(&format!("http://127.0.0.1:{port}/local"));
+        let web = Rc::new(HttpWeb::new(url, None, WEB_ROOT_URL));
+        let info = ch.new_link();
+        http_ccc(
+            &mut ch,
+            OP_START,
+            1,
+            BCK,
+            info,
+            ChainData::Owned(web as Rc<dyn std::any::Any>),
+            ChainData::None,
+        );
+        let mut got = None;
+        for _ in 0..200 {
+            poll_dns(&mut ch);
+            poll_http(&mut ch);
+            poll_io(&mut ch);
+            if let Ok(g) = rx.try_recv() {
+                got = Some(g);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let got = got.expect("connexion directe attendue (no_proxy)");
+        let s = String::from_utf8_lossy(&got);
+        assert!(s.starts_with("GET /local HTTP/1.1\r\n"), "got: {s:?}");
+    }
+
     /// File + limite : `active_conns` ne dépasse pas `http_max_conns`,
     /// les extras restent `QUEUED`.
     #[tokio::test(flavor = "current_thread")]
