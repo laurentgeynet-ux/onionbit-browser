@@ -60,6 +60,8 @@ CHANGELOG.md       Keep a Changelog
 docs/
   PORTING.md       C/C++→Rust file mapping + status — ALWAYS up to date
   feasibility.md   étude de faisabilité
+  onionbit-suite.md contexte intégration suite OnionBit — coutures à
+                   garder ouvertes (contexte, PAS un ordre de travail)
   adr/             architecture decision records
   audits/          rapports + fragments changelog (skills .devin/skills)
 .devin/skills/     audit-*/SKILL.md — audits de parité par périmètre
