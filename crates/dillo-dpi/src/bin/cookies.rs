@@ -77,10 +77,14 @@ fn srv_parse_tok(
             let host = dillo_net::dpip::get_attr(buf, "host").unwrap_or_default();
             let path = dillo_net::dpip::get_attr(buf, "path").unwrap_or_default();
             let cookie = jar.get(&host, &path, &scheme);
+            // verbatim : write_str ≠ 0 → ret 1 → exit(1) (dpid
+            // relancera le démon à la prochaine requête).
             if let Some(ans) =
                 dillo_net::dpip::build_cmd("cmd=%s cookie=%s", &["get_cookie_answer", &cookie])
             {
-                let _ = sh.write_str(true, &ans);
+                if sh.write_str(true, &ans) != 0 {
+                    return 1;
+                }
             }
             2
         }
@@ -99,7 +103,16 @@ fn cookies_fopen(path: &std::path::Path, init: Option<&str>) -> Option<std::fs::
     {
         return Some(f);
     }
-    let mut f = std::fs::File::create(path).ok()?;
+    // verbatim `open(O_WRONLY|O_CREAT|O_TRUNC, S_IRUSR|S_IWUSR)` +
+    // `FD_CLOEXEC` (défaut Rust sur unix).
+    let mut oo = std::fs::OpenOptions::new();
+    oo.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        oo.mode(0o600);
+    }
+    let mut f = oo.open(path).ok()?;
     if let Some(init) = init {
         let _ = f.write_all(init.as_bytes());
     }
@@ -142,6 +155,13 @@ fn run() -> i32 {
         }
         None => 2,
     };
+    // verbatim `Cookies_init` : `Cookie_control_init() != 0`
+    // (DENY-only ou pas de cookiesrc) → `disabled` → `exit(1)`
+    // **avant** d'ouvrir/créer cookies.txt.
+    if enabled != 0 {
+        eprintln!("[cookies dpi]: disabled (cookiesrc DENY-only or unreadable)");
+        return 1;
+    }
 
     // `Cookies_init` verbatim : cookies.txt (créé avec l'en-tête),
     // lock POSIX ≙ `fcntl(F_SETLK)` — std n'a pas de lock safe ;
@@ -155,18 +175,15 @@ fn run() -> i32 {
               # [domain  subdomains  path  secure  expiry_time  name  value]\n\n",
         ),
     );
-    if enabled != 2 && txt.is_some() {
-        jar.disabled = false;
-        let mut contents = String::new();
-        if let Some(f) = txt.as_mut() {
-            let _ = f.read_to_string(&mut contents);
-        }
-        jar.load(&contents);
-    }
-    if jar.disabled {
-        eprintln!("[cookies dpi]: disabled (cookiesrc DENY-only or no cookies.txt)");
+    // verbatim : échec d'ouverture → disabled → exit(1).
+    let Some(txt_file) = txt.as_mut() else {
+        eprintln!("[cookies dpi]: can't open ~/.dillo/cookies.txt; disabling cookies");
         return 1;
-    }
+    };
+    jar.disabled = false;
+    let mut contents = String::new();
+    let _ = txt_file.read_to_string(&mut contents);
+    jar.load(&contents);
 
     // verbatim : accept bloquant + clients séquentiels.
     let stdin = socket2::SockRef::from(&std::io::stdin());

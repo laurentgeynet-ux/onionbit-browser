@@ -33,7 +33,7 @@ pub mod web;
 /// est relu comme ligne suivante (`cookiesrc`, `hsts` preload).
 /// La borne tombe sur une frontière UTF-8 (amont coupe à l'octet ;
 /// `dStrstrip` rend le fragment invalide inerte de toute façon).
-pub(crate) fn fgets_lines(content: &str) -> impl Iterator<Item = &str> {
+pub fn fgets_lines(content: &str) -> impl Iterator<Item = &str> {
     content.split('\n').flat_map(|line| {
         let mut chunks = Vec::new();
         let mut rest = line;

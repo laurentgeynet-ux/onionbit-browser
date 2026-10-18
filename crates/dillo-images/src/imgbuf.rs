@@ -15,15 +15,15 @@
 //!
 //! Face `dw::core::Imgbuf` : ce buffer implémente le trait
 //! [`dillo_dw::imgbuf::Imgbuf`] (≙ `FltkImgbuf`) — arbre de buffers
-//! scalés (`scaleMode == SIMPLE` ; le défaut amont
-//! `BEAUTIFUL_GAMMA` est une déviation documentée, correction
-//! gamma à venir avec la couche platform), `copiedRows` par
+//! scalés (`scaleMode == BEAUTIFUL_GAMMA` verbatim : moyenne de boîte
+//! gamma-corrigée), `copiedRows` par
 //! buffer, `setCMap` no-op verbatim, rawdata init `222` verbatim.
 //! `root` est un `Rc` fort (≙ le jeu de refcounts amont gardant
 //! la racine vivante tant qu'un fils existe — même durée de vie
 //! observable).
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use dillo_common::bitvec::Bitvec;
@@ -37,6 +37,106 @@ pub enum ImgbufType {
     Rgb,
 }
 
+/// `ScaleMode` (fltkimgbuf.cc) — `SIMPLE`/`BEAUTIFUL`/`BEAUTIFUL_GAMMA`.
+/// `BEAUTIFUL` = même box-average sans correction gamma (upstream ne
+/// le distingue que par l'absence des tables).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // `SIMPLE`/`BEAUTIFUL` conservés pour parité (amont garde les 3 modes).
+enum ScaleMode {
+    /// `SIMPLE` — nearest-neighbor/copie (`scaleRowSimple`).
+    Simple,
+    /// `BEAUTIFUL` — box-average sans gamma.
+    Beautiful,
+    /// `BEAUTIFUL_GAMMA` — box-average gamma-corrigé (défaut amont).
+    BeautifulGamma,
+}
+
+/// `scaleMode` amont — constante en dur `BEAUTIFUL_GAMMA`
+/// (fltkimgbuf.cc:37, jamais modifiée ailleurs).
+const SCALE_MODE: ScaleMode = ScaleMode::BeautifulGamma;
+
+thread_local! {
+    /// `gammaCorrectionTables` amont — cache global de tables
+    /// `map[i] = 255*pow(i/255, gamma)`, lookup par gamma exact
+    /// (`to_bits` ≙ égalité double amont).
+    static GAMMA_TABLES: RefCell<HashMap<u64, [u8; 256]>> = RefCell::new(HashMap::new());
+}
+
+/// `findGammaCorrectionTable` — table de 256 entrées
+/// `map[i] = (uchar)(255 * pow(i/255, gamma))` — troncature ≙ cast
+/// `uchar` C (valeurs ∈ [0,255]).
+#[must_use]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn gamma_table(gamma: f64) -> [u8; 256] {
+    GAMMA_TABLES.with(|tables| {
+        if let Some(m) = tables.borrow().get(&gamma.to_bits()) {
+            return *m;
+        }
+        let mut m = [0u8; 256];
+        for (i, v) in m.iter_mut().enumerate() {
+            *v = (255.0 * (i as f64 / 255.0).powf(gamma)) as u8;
+        }
+        tables.borrow_mut().insert(gamma.to_bits(), m);
+        m
+    })
+}
+
+/// `scaleBuffer` (fltkimgbuf.cc:290) — pour chaque pixel dest,
+/// moyenne la boîte source `[xo1,xo2)×[yo1,yo2)` :
+/// `xo1 = x*srcW/destW`, `xo2 = max((x+1)*srcW/destW, xo1+1)` (idem Y).
+/// `BEAUTIFUL_GAMMA` : `map2` linéarise chaque composante source
+/// (`v += gammaMap2[p]`), `map1` ré-applique le gamma sur la moyenne
+/// (`v[i]/n`). `int` amont → `i32` wrapping (borne amont identique).
+/// `bpp = 3` (RGB).
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
+fn scale_buffer(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dest: &mut [u8],
+    dest_w: usize,
+    dest_h: usize,
+    gamma: f64,
+) {
+    const BPP: usize = 3;
+    let map1 = gamma_table(gamma);
+    let map2 = gamma_table(1.0 / gamma);
+    for x in 0..dest_w {
+        for y in 0..dest_h {
+            let xo1 = x * src_w / dest_w;
+            let xo2 = ((x + 1) * src_w / dest_w).max(xo1 + 1);
+            let yo1 = y * src_h / dest_h;
+            let yo2 = ((y + 1) * src_h / dest_h).max(yo1 + 1);
+            let n = ((xo2 - xo1) * (yo2 - yo1)) as i32;
+            let mut v = [0i32; BPP];
+            for xo in xo1..xo2 {
+                for yo in yo1..yo2 {
+                    let ps = (yo * src_w + xo) * BPP;
+                    for (i, acc) in v.iter_mut().enumerate() {
+                        if let Some(&p) = src.get(ps + i) {
+                            *acc = acc.wrapping_add(i32::from(map2[p as usize]));
+                        }
+                    }
+                }
+            }
+            let pd = (y * dest_w + x) * BPP;
+            for (i, acc) in v.iter().enumerate() {
+                if let Some(d) = dest.get_mut(pd + i) {
+                    *d = map1[acc.wrapping_div(n).clamp(0, 255) as usize];
+                }
+            }
+        }
+    }
+}
+
 /// `dw::core::Imgbuf` (face buffer de `fltkimgbuf`) — données RGB
 /// organisées en lignes `3*width`.
 #[derive(Debug)]
@@ -47,7 +147,8 @@ pub struct Imgbuf {
     pub width: u32,
     /// `height`.
     pub height: u32,
-    /// `gamma` (passée au backend — pas de correction dans le buffer).
+    /// `gamma` — utilisée par `scaleBuffer` (`BEAUTIFUL_GAMMA`) pour
+    /// linéariser avant moyenne (`gammaMap2 = table(1/gamma)`).
     pub gamma: f64,
     /// Données RGB (`root buffer` amont) — `3*width*height`. Partagé
     /// entre entrée dicache et widget via `Rc` → `RefCell` (mutations
@@ -152,9 +253,9 @@ impl Imgbuf {
         children.iter().filter_map(Weak::upgrade).collect()
     }
 
-    /// `scaleRow` — `row` en coordonnées ROOT (`scaleMode` amont =
-    /// `BEAUTIFUL_GAMMA` ; ici `SIMPLE` — déviation documentée :
-    /// pixels scalés non gamma-corrigés).
+    /// `scaleRow` — `row` en coordonnées ROOT. `scaleMode` amont =
+    /// `BEAUTIFUL_GAMMA` (constante en dur, fltkimgbuf.cc:37) —
+    /// dispatch verbatim (`SIMPLE` gardé pour parité structurelle).
     fn scale_row(&self, row: u32, data: &[u8]) {
         let Some(root) = &self.root else {
             return;
@@ -162,13 +263,117 @@ impl Imgbuf {
         if row >= root.height {
             return;
         }
-        self.scale_row_simple(row, data);
+        match SCALE_MODE {
+            ScaleMode::Simple => self.scale_row_simple(row, data),
+            ScaleMode::Beautiful | ScaleMode::BeautifulGamma => {
+                self.scale_row_beautiful(row, data);
+            }
+        }
     }
 
     /// `scaledY` — `ySrc * height / root->height`.
     fn scaled_y(&self, y_src: u32) -> u32 {
         let root_h = self.root.as_ref().map_or(self.height, |r| r.height);
         y_src * self.height / root_h
+    }
+
+    /// `backscaledY` — `yScaled * root->height / height` (borne
+    /// inférieure — pas l'inverse exacte de `scaledY`, verbatim).
+    fn backscaled_y(&self, y_scaled: u32) -> u32 {
+        let root_h = self.root.as_ref().map_or(self.height, |r| r.height);
+        y_scaled * root_h / self.height
+    }
+
+    /// `scaleRowBeautiful` (fltkimgbuf.cc:245) — upscale : la ligne
+    /// source arrivante alimente `sr2-sr1` lignes dest via
+    /// `scaleBuffer(srcH=1)` ; downscale : attend que TOUTES les
+    /// lignes racine de `[backscaledY(sr1), backscaledY(sr1+1))`
+    /// soient copiées puis produit UNE ligne dest (`destH=1`).
+    /// `copiedRows[sr1]` court-circuite le rescale (verbatim).
+    fn scale_row_beautiful(&self, row: u32, data: &[u8]) {
+        let Some(root) = &self.root else {
+            return;
+        };
+        let sr1 = self.scaled_y(row);
+        let sr2 = self.scaled_y(row + 1);
+        if sr1 >= self.height {
+            return;
+        }
+        if self.copied_rows.borrow().get_bit(sr1 as usize) != 0 {
+            return;
+        }
+        let dw = (3 * self.width) as usize;
+        if self.height > root.height {
+            // Agrandissement vertical : 1 ligne source → sr2-sr1
+            // lignes dest (bornées à `height`).
+            let count = (sr2 - sr1).min(self.height - sr1).max(1);
+            let mut out = vec![0u8; count as usize * dw];
+            scale_buffer(
+                data,
+                root.width as usize,
+                1,
+                &mut out,
+                self.width as usize,
+                count as usize,
+                self.gamma,
+            );
+            let off = sr1 as usize * dw;
+            self.data.borrow_mut()[off..off + out.len()].copy_from_slice(&out);
+            // `for (sr = sr1; sr < sr2 || sr == sr1; sr++)` verbatim —
+            // marque au moins sr1 même si sr2 <= sr1.
+            let mut cr = self.copied_rows.borrow_mut();
+            let mut sr = sr1;
+            while sr < sr2 || sr == sr1 {
+                if sr < self.height {
+                    cr.set_bit(sr as usize);
+                }
+                sr += 1;
+            }
+        } else {
+            // Réduction : `assert(sr1==sr2 || sr1+1==sr2)` amont.
+            let row1 = self.backscaled_y(sr1);
+            let row2 = self.backscaled_y(sr1 + 1);
+            // `for (r=row1; (allRootRows = root->copiedRows->get(r))
+            //  && ++r < row2; )` — vrai si toutes les lignes
+            // [row1, row2) sont arrivées.
+            let mut r = row1;
+            let all_root = loop {
+                if root.copied_rows.borrow().get_bit(r as usize) == 0 {
+                    break false;
+                }
+                r += 1;
+                if r >= row2 {
+                    break true;
+                }
+            };
+            if all_root {
+                let rw = (3 * root.width) as usize;
+                let src_h = (row2 - row1) as usize;
+                let off = row1 as usize * rw;
+                let mut out = vec![0u8; dw];
+                {
+                    let root_data = root.data.borrow();
+                    let Some(end) = off.checked_add(src_h * rw) else {
+                        return;
+                    };
+                    if end > root_data.len() {
+                        return;
+                    }
+                    scale_buffer(
+                        &root_data[off..end],
+                        root.width as usize,
+                        src_h,
+                        &mut out,
+                        self.width as usize,
+                        1,
+                        self.gamma,
+                    );
+                }
+                let dst = sr1 as usize * dw;
+                self.data.borrow_mut()[dst..dst + dw].copy_from_slice(&out);
+                self.copied_rows.borrow_mut().set_bit(sr1 as usize);
+            }
+        }
     }
 
     /// `scaleRowSimple` — nearest-neighbor verbatim (sr1
@@ -334,9 +539,8 @@ fn excessive_image_dimensions(width: u32, height: u32) -> bool {
 }
 
 /// Face `dw::core::Imgbuf` (≙ `FltkImgbuf`). `scaleMode` amont =
-/// `BEAUTIFUL_GAMMA` — ici `SIMPLE` (déviation documentée :
-/// pixels scalés non gamma-corrigés ; `BEAUTIFUL` arrivera avec
-/// `fltkimgbuf` complet en phase platform).
+/// `BEAUTIFUL_GAMMA` — porté verbatim (`scaleRowBeautiful` +
+/// `scaleBuffer` gamma-corrigé).
 /// Casts u32↔i32 bornés par `MAX_DIM` (0x8000).
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 impl DwImgbuf for Imgbuf {
@@ -547,5 +751,84 @@ mod tests {
     fn rgb_passthrough() {
         let line = rgb_line(&[1, 2, 3, 4, 5, 6], ImgType::Rgb, None, 2);
         assert_eq!(line, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    /// Fils scalé enregistré sur la racine (≙ `getScaledBuf` +
+    /// `scaledBuffers` amont, sans passer par le trait `DwImgbuf`).
+    fn scaled_child(root: &Rc<Imgbuf>, w: u32, h: u32) -> Rc<Imgbuf> {
+        let child = Rc::new(Imgbuf::with_root(
+            ImgbufType::Rgb,
+            w,
+            h,
+            root.gamma,
+            Some(Rc::clone(root)),
+        ));
+        root.children.borrow_mut().push(Rc::downgrade(&child));
+        child
+    }
+
+    /// A09-D8 — `scaleBuffer` box-average : 4→1 px large, gamma=1
+    /// (tables identité) → moyenne arithmétique du footprint.
+    #[test]
+    fn scaled_downscale_box_average() {
+        let root = Imgbuf::new(ImgbufType::Rgb, 4, 1, 1.0);
+        let child = scaled_child(&root, 2, 1);
+        root.copy_row(0, &[10, 0, 0, 20, 0, 0, 30, 0, 0, 40, 0, 0]);
+        let d = child.data.borrow();
+        // [10,20] → 15 ; [30,40] → 35 (moyenne entière amont `v/n`).
+        assert_eq!(&d[..6], &[15, 0, 0, 35, 0, 0]);
+    }
+
+    /// A09-D8 — `BEAUTIFUL_GAMMA` : `map2=pow(1/gamma)` linéarise,
+    /// `map1=pow(gamma)` ré-encode. gamma=2.0, source {0,255} :
+    /// `v/n = (0+255)/2 = 127`, `map1[127] = 255*(127/255)² = 63`
+    /// — ≠ moyenne naïve 127 (déviation pixel visible).
+    #[test]
+    fn scaled_gamma_corrected_average() {
+        let root = Imgbuf::new(ImgbufType::Rgb, 2, 1, 2.0);
+        let child = scaled_child(&root, 1, 1);
+        root.copy_row(0, &[0, 0, 0, 255, 255, 255]);
+        assert_eq!(&child.data.borrow()[..3], &[63, 63, 63]);
+    }
+
+    /// A09-D8 — réduction verticale : une ligne dest n'est produite
+    /// que quand TOUTES les lignes racine de sa bande
+    /// `[backscaledY(sr1), backscaledY(sr1+1))` sont arrivées
+    /// (`allRootRows` amont) — progressive scanline préservé.
+    #[test]
+    fn scaled_downscale_waits_for_all_source_rows() {
+        let root = Imgbuf::new(ImgbufType::Rgb, 1, 4, 1.0);
+        let child = scaled_child(&root, 1, 2);
+        root.copy_row(0, &[10, 10, 10]);
+        // Ligne 1 racine manquante → bande incomplète → gris init 222.
+        assert_eq!(&child.data.borrow()[..3], &[222, 222, 222]);
+        root.copy_row(1, &[30, 30, 30]);
+        // Bande [0,2) complète → moyenne (10+30)/2 = 20.
+        assert_eq!(&child.data.borrow()[..3], &[20, 20, 20]);
+    }
+
+    /// A09-D8 — agrandissement : `scaleBuffer(srcH=1)` réplique la
+    /// ligne source sur `sr2-sr1` lignes dest (pas d'interpolation).
+    #[test]
+    fn scaled_upscale_replicates_rows() {
+        let root = Imgbuf::new(ImgbufType::Rgb, 1, 1, 1.0);
+        let child = scaled_child(&root, 1, 3);
+        root.copy_row(0, &[7, 8, 9]);
+        assert_eq!(&child.data.borrow()[..], &[7, 8, 9, 7, 8, 9, 7, 8, 9]);
+    }
+
+    /// `copiedRows[sr1]` — ligne dest déjà produite → pas de rescale
+    /// (verbatim : le no-op `scaleRow` sur ligne déjà copiée).
+    #[test]
+    fn scaled_row_not_rescaled() {
+        let root = Imgbuf::new(ImgbufType::Rgb, 1, 4, 1.0);
+        let child = scaled_child(&root, 1, 2);
+        root.copy_row(0, &[10, 10, 10]);
+        root.copy_row(1, &[30, 30, 30]);
+        assert_eq!(&child.data.borrow()[..3], &[20, 20, 20]);
+        // Réécriture de la ligne racine 0 : `copiedRows[0]` fils déjà
+        // posé → scale_row retourne sans toucher la ligne dest.
+        root.copy_row(0, &[200, 200, 200]);
+        assert_eq!(&child.data.borrow()[..3], &[20, 20, 20]);
     }
 }

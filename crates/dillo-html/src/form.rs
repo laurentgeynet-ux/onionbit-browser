@@ -315,14 +315,16 @@ impl HtmlInput {
         input
     }
 
-    /// `getResource` — `None` ≙ `NULL`.
+    /// `getResource` — `None` ≙ `NULL`. Lookup direct sur l'arène :
+    /// `layout` peut être `borrow_mut` quand un receiver tourne sous
+    /// le dispatch d'événement widget (A03 passe-2 D7).
     #[must_use]
     pub fn get_resource(&self) -> Option<Rc<dyn Resource>> {
         let embed = self.embed?;
         self.shared
             .upgrade()?
             .borrow()
-            .layout
+            .arena
             .borrow()
             .embed_resource(embed)
     }

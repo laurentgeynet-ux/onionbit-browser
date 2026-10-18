@@ -149,3 +149,31 @@ audités (ci-dessus).
 - D4 création `cookiesrc` 0600 + `DEFAULT DENY\n` — corrigé.
 - D5 strip ASCII vs `trim()` — corrigé dans `dillo-net` ;
   **D9 passe-2** est la resurface dans le jar dpi.
+
+## Résultat
+
+Passe `apply` consolidée exécutée dans le worktree
+`C:/Projet/wt/dillorust-p2` — les 10 déviations passe-2 corrigées
+(démon/jar `dpi/cookies.c`) :
+
+- **D6** corrigé — `validate_domain` : domaine <3 chars rejeté sans
+  panic (borne ≙ `i<strlen-1` amont).
+- **D7** corrigé — `control_init` DENY-only → `disabled` + sortie
+  **avant** ouverture de `cookies.txt` (ordre amont restauré).
+- **D8** corrigé — `fgets_lines` (dillo-net, rendu `pub`) borne
+  `load`/`control_init` à 4095 octets ≙ `LINE_MAXLEN`.
+- **D9** corrigé — strip/split ASCII C-locale partout (jar).
+- **D10** corrigé — expiry `strtol`-préfixe + borne `int`
+  `tm_min + secs/60` ≙ `mktime`-1 → expiré sans overflow.
+- **D11** corrigé — nom vide accepté (champ présent ≙ non-NULL).
+- **D12** corrigé — `Max-Age` préfixe toléré.
+- **D13** corrigé — boucle suffixes ≙ `domain_str++` (pas de
+  suffixe nu en double sur `a..com`).
+- **D14** corrigé — `cookies.txt` créé `0600` + `CLOEXEC` (unix).
+- **D15** corrigé — échec `write_str` de `get_cookie` propagé →
+  exit(1) ≙ amont.
+
+Divergence assumée maintenue : pas de lock `fcntl` sur
+`cookies.txt`/`cookiesrc` (mono-instance via dpid — documenté).
+
+Tests : 15/15 `cookies` verts (8 nouveaux tests de régression).

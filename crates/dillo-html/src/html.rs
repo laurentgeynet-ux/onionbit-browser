@@ -27,7 +27,7 @@ use dillo_css::styleengine::StyleEngine;
 use dillo_dw::WidgetId;
 use dillo_dw::events::{EventButton, button_state};
 use dillo_dw::image::ImageMapsList;
-use dillo_dw::layout::{Layout, LinkReceiver};
+use dillo_dw::layout::{Arena, Layout, LinkReceiver};
 use dillo_dw::style::Style;
 use dillo_net::capi;
 use dillo_net::url::{self, DilloUrl};
@@ -52,6 +52,10 @@ pub struct HtmlShared {
     /// `bw->render_layout` ≙ `HT2LT` — toutes les ops widget
     /// (`tb_*`, `tbl_*`, `widget_*`, `embed_*`) vivent dessus.
     pub layout: Rc<RefCell<Layout>>,
+    /// Clone du `Rc` d'arène du layout — permet `embed_resource`
+    /// pendant que `layout` est `borrow_mut` (dispatch d'événement
+    /// widget → receiver formulaire ; A03 passe-2 D7).
+    pub arena: Rc<RefCell<Arena>>,
     /// `page_url`.
     pub page_url: DilloUrl,
     /// `base_url` — mutée par `<base href>` (verbatim).
@@ -378,6 +382,7 @@ impl<'p> DilloHtml<'p> {
         // content_type/charset, stack[0], StyleEngine::new.
         let shared = Rc::new(RefCell::new(HtmlShared {
             sink: Rc::clone(&sink),
+            arena: layout.borrow().arena().clone(),
             layout: Rc::clone(&layout),
             page_url: url.clone(),
             base_url: url.clone(),

@@ -233,3 +233,21 @@ Test : image scalée pixel-à-pixel vs un golden généré amont.
 Globalement conforme ; **D8** à ranger dans l'apply consolidé
 (pixel-visible). D1–D3 (progressivité), D4 (gAMA 16-bit), D5
 restant (rasterizer ≠) reconduits comme dette documentée.
+
+## Résultat
+
+Passe `apply` consolidée exécutée dans le worktree
+`C:/Projet/wt/dillorust-p2` :
+
+- **D8** corrigé — `SCALE_MODE = BEAUTIFUL_GAMMA` verbatim :
+  `scaleRowBeautiful` (attente `allRootRows` en réduction,
+  `scaleBuffer(srcH=1)` en agrandissement, court-circuit
+  `copiedRows[sr1]`) et `scaleBuffer` (box-average footprint int,
+  gamma `map1/table(γ)` + `map2/table(1/γ)`, cache
+  `thread_local` ≙ `gammaCorrectionTables`) portés dans
+  `imgbuf.rs`. 5 tests pixel ajoutés (moyenne, correction gamma
+  chiffrée, attente progressive des lignes, réplication upscale,
+  non-rescale).
+- D1–D4 restent des déviations structurelles documentées (pas de
+  push-API pure Rust équivalente aux libs C incrémentales) —
+  réévaluer si un décodeur push apparaît.

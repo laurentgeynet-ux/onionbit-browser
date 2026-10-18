@@ -103,6 +103,18 @@ impl Arena {
             pending_resizes: Vec::new(),
         }
     }
+
+    /// `Embed::getResource` — lookup direct sur l'arène, sans passer
+    /// par `Layout` : appelable pendant que `layout` est
+    /// `borrow_mut` (dispatch d'événement widget → receiver, ex.
+    /// formulaire `get_resource` ; A03-D7). `None` ≙ `NULL`.
+    #[must_use]
+    pub fn embed_resource(&self, w: WidgetId) -> Option<Rc<dyn crate::ui::Resource>> {
+        match &self.nodes[w].kind {
+            crate::widget::WidgetKind::Embed { res } => Some(res.clone()),
+            _ => None,
+        }
+    }
 }
 
 // ------------------------------------------------------------------

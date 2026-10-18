@@ -39,6 +39,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **audits passe 2 — apply consolidé (A02/A03/A09)** :
+  - **démon cookies** (`dillo-dpi`) : panic `validate_domain` sur
+    domaine d'un caractère ; `cookiesrc` tout-DENY activait le démon
+    (amont `exit(1)` avant d'ouvrir `cookies.txt`) ; borne
+    `fgets`/`LINE_MAXLEN` 4095 restaurée ; strip/split ASCII C-locale
+    (U+00A0 non stripé) ; expirations et `Max-Age` parsés ≙ `strtol`
+    (préfixe toléré, overflow → expiré comme `mktime`-1) ; nom de
+    cookie vide accepté ; suffixes sans doublon sur hôte à `..` ;
+    `cookies.txt` créé 0600+`FD_CLOEXEC` ; échec `dsh_write_str` →
+    exit(1) ≙ redémarrage dpid.
+  - **panic `RefCell` formulaires** : `HtmlInput::get_resource`
+    n'emprunte plus le `Layout` (lookup via l'`Arena` partagée) —
+    clic/activate sur `<input>` ne panique plus sous `borrow_mut`.
+  - **scaling d'images `BEAUTIFUL_GAMMA`** : buffers scalés portés
+    verbatim (box-average gamma-corrigé, footprint int, attente des
+    lignes racine en réduction, réplication en agrandissement) —
+    remplace le nearest-neighbor provisoire ; tests pixel ajoutés.
 - **phase 9 — test live, 2ᵉ passe (clics liens, popups, saisie)** :
   - **clic sur lien figeait le navigateur** : `SkiaPlatform::
     next_glyph` renvoyait `end_of_char(i)` (dernier octet du

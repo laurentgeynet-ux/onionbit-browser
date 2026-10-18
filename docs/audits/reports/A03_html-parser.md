@@ -226,3 +226,16 @@ tests `dillo-html` 29 verts, golden suite verte.
 - `form_send` réseau réel : encodage couvert, l'émission via
   `capi_open_url` (sink réel) reste non exercée en test.
 - Fuzz différentiel vs binaire C : smoke runner interne seul.
+
+## Résultat
+
+Passe `apply` consolidée exécutée dans le worktree
+`C:/Projet/wt/dillorust-p2` :
+
+- **D7** corrigé — `HtmlShared` retient un clone du
+  `Rc<RefCell<Arena>>` du layout ; `HtmlInput::get_resource`
+  résout via `Arena::embed_resource` (lookup direct ≙ pointeur
+  `getResource` amont) sans emprunter `Layout` — fini le panic
+  `RefCell` sous `borrow_mut` sur les événements de contrôle de
+  formulaire. Régression épinglée par
+  `form_input_get_resource_under_layout_borrow_mut`.
