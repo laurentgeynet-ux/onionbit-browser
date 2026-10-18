@@ -4,9 +4,30 @@ A **semantically faithful port of the [Dillo](https://dillo-browser.github.io/)
 web browser to 100% native Rust** — no C/C++ dependency in the default
 build, `unsafe` forbidden in all first-party crates.
 
-Distributed as the standalone product **OnionBit-Browser** (also embedded
-in the [OnionBit](../Tribler-Rust-Torrent) privacy suite as its `.onion`
-reader). The cargo package keeps the upstream-faithful name `dillo`.
+## Origin — born for OnionBit
+
+This project exists because of **[OnionBit](../Tribler-Rust-Torrent)**,
+a portable, anonymous, encrypted "swiss army knife" for nomadic users:
+file sharing over a multi-hop IPv8 overlay, end-to-end encrypted
+messaging, portable identity, encrypted vault and database, `.onion`
+services — a suite designed to leave no trace.
+
+OnionBit needed a browser to complete it: a **minimal `.onion`
+document/service reader** that could ship inside a portable bundle,
+connect through Tor without ever leaking, and hold its own on modest
+hardware. Mainstream browsers were out of the question — hundreds of
+megabytes, gigantic attack surface, impossible to audit line-by-line.
+So instead of embedding someone else's monster, OnionBit spawned its
+own browser: a faithful Rust port of Dillo, the smallest real browser
+there is — audited module by module until the whole engine was
+reproduced.
+
+The result stands on its own: a complete, working, standalone browser
+anyone can use. But its DNA is OnionBit's — small footprint, no
+JavaScript, a confinable network path, and security properties that
+were *measured*, not asserted.
+
+The cargo package keeps the upstream-faithful name `dillo`.
 
 ## What it is (and is not)
 
