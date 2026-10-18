@@ -22,6 +22,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `#RRGGBB`/12&16 bits/canal, `#None`→transparent, ressources
   embarquées réelles).
 
+- **phase 9 — fuzzing** : crate `fuzz/` hors workspace, 6 cibles
+  `fuzz_target!` (html pipeline réelle, css, decode chunked/
+  gzip/deflate/br/charset, dpip wire, fichiers cookiesrc/hsts/
+  domainrc, url) + runner `smoke` stable mutateur seedé
+  (libFuzzer non linkable sous MSVC — cibles prêtes pour CI/Linux).
+  Documentation `docs/fuzzing.md`.
+
 ### Fixed
 
 - **phase 9 — bugs réels trouvés par le golden harness** :
@@ -43,6 +50,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   borné à 0 avant cast `usize` (verbatim `textWidth` `len>0`).
   `dillo-browser::ui` : `xpm_rgb` ajouté (couleurs XPM `#RGB`,
   12/16 bits par canal — `ui.cc`).
+
+- **phase 9 — bugs réels trouvés par le fuzzing** : `dillo-html` —
+  `DilloHtml::write` clampe `start_ofs` à `buf.len()` (un buffer
+  plus court que l'offset cumulatif paniquait en slice).
+  `dillo-platform` — `sanitize_shape_text` avant tout
+  `Buffer::set_text` : les séparateurs bidi classe B (FS/GS/RS, NEL,
+  LS/PS…) que le splitter de lignes cosmic-text ignore créaient des
+  paragraphes multi-directions dans une ligne → assert `shape.rs`
+  (`fl_width` amont n'a pas cette notion). `dillo-net::decode` —
+  `charset_process` ne saute plus un octet de plus après `Malformed`
+  (`read` encoding_rs l'inclut déjà) : `drain(..pos)` dépassait la
+  longueur du leftover → panic. Régression
+  `charset_malformed_tail_no_panic`.
 
 - **phases 7+8 — DPI complet** : `dillo-net::dpi` (verbatim
   `src/IO/dpi.c` — `Dpi_blocking_start_dpid`, auth, `dpi_ccc`

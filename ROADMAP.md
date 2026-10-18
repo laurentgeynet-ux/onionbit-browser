@@ -235,7 +235,12 @@ prototype phase 0).
       (`margin-auto`, `max-width-html`, `span-padding`,
       `table-td-width-percent`) + `svg-current-color` (AA du
       rasterizer resvg ≠ nanosvg, sémantique `currentColor` ok)
-- [ ] Fuzzing (html, css, decode, dpi, cookies files)
+- [x] Fuzzing (html, css, decode, dpi, cookies files) —
+      `fuzz/` : 6 cibles `fuzz_target!` (libFuzzer, Linux/CI) +
+      runner `smoke` stable (mutateur seedé, catch_unwind,
+      artifacts) — cf. `docs/fuzzing.md`. 3 bugs trouvés et fixés
+      (`html.rs` write clamp, `cosmic-text` classe bidi B,
+      `decode.rs` charset drain). Campagne 30k×6 clean
 - [ ] Parity sign-off : all audits `apply` merged, PORTING.md 100%
       resolved
 - [ ] Packaging (Windows/Linux), perf pass vs upstream baseline

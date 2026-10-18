@@ -560,9 +560,10 @@ fn charset_process(
             DecoderResult::InputEmpty => break,
             DecoderResult::OutputFull => {}
             DecoderResult::Malformed(_, _) => {
-                // EILSEQ : U+FFFD puis un seul octet sauté (inPtr++ amont)
+                // EILSEQ : U+FFFD — le skip `inPtr++` amont est déjà
+                // compté dans `read` (encoding_rs consomme la séquence
+                // malformée).
                 output.extend_from_slice("\u{FFFD}".as_bytes());
-                pos += 1;
             }
         }
         if pos >= leftover.len() {
@@ -761,7 +762,21 @@ mod tests {
     #[test]
     fn charset_iso_8859_1() {
         let mut d = Decode::charset_init(Some("iso-8859-1")).unwrap();
-        assert_eq!(d.process(&[0xE9]), "é".as_bytes());
+        let out = d.process(&[0xE9]);
+        assert_eq!(out, "é".as_bytes());
+    }
+
+    /// Régression fuzz : séquence malformée en fin d'entrée — `read`
+    /// inclut déjà les octets malformés, `pos` ne doit pas dépasser
+    /// `leftover.len()` au `drain` final.
+    #[test]
+    fn charset_malformed_tail_no_panic() {
+        for cs in ["windows-1251", "utf-8", "koi8-r", "us-ascii"] {
+            let Some(mut d) = Decode::charset_init(Some(cs)) else {
+                continue;
+            };
+            let _ = d.process(b"\xff\xfe bad utf8 \xc3\x28|\x0a\x06V\x067\x02\x14\x22g\x81\xa3?\xa6(\x8eu\xe8'vShG\xb8\xdd");
+        }
     }
 
     #[test]

@@ -35,6 +35,27 @@ use dillo_dw::view::View;
 
 use crate::ui::SkiaResourceFactory;
 
+/// Remplace les séparateurs de paragraphe bidi (classe B de
+/// `unicode-bidi` : LF, VT, FF, CR, FS/GS/RS, NEL, LS, PS) par des
+/// espaces avant `Buffer::set_text` — le splitter de lignes de
+/// `cosmic-text` ne connaît pas toute la classe B alors que
+/// `BidiInfo` si : un FS/GS/RS dans une ligne y crée deux
+/// paragraphes de directions potentiellement distinctes, ce que
+/// `shape.rs` asserte (panic). Panique absente amont : `fl_width`/
+/// `fl_draw` n'ont pas de notion de paragraphe.
+#[must_use]
+pub fn sanitize_shape_text(s: &str) -> std::borrow::Cow<'_, str> {
+    const SEPARATORS: [char; 10] = [
+        '\u{000A}', '\u{000B}', '\u{000C}', '\u{000D}', '\u{001C}', '\u{001D}', '\u{001E}',
+        '\u{0085}', '\u{2028}', '\u{2029}',
+    ];
+    if s.contains(SEPARATORS) {
+        std::borrow::Cow::Owned(s.replace(SEPARATORS, " "))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 /// `FltkPlatform` — plateforme concrète winit/skia.
 ///
 /// Mutabilité intérieure : les ressources/fabriques gardent un
@@ -281,6 +302,7 @@ impl SkiaPlatform {
             return 0.0;
         }
         let s = String::from_utf8_lossy(text);
+        let s = sanitize_shape_text(&s);
         let mut fs = self.font_system.borrow_mut();
         let metrics = Metrics::new(size.max(1) as f32, size.max(1) as f32);
         let mut buf = Buffer::new(&mut fs, metrics);

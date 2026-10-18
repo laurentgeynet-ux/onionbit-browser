@@ -1,0 +1,75 @@
+[package]
+name = "dillo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Détecté du workspace racine — le harness n'est pas dans `members`.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[lib]
+name = "dillo_fuzz"
+path = "src/lib.rs"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dillo-common = { path = "../crates/dillo-common" }
+dillo-net = { path = "../crates/dillo-net" }
+dillo-css = { path = "../crates/dillo-css" }
+dillo-html = { path = "../crates/dillo-html" }
+dillo-dw = { path = "../crates/dillo-dw" }
+dillo-images = { path = "../crates/dillo-images" }
+dillo-platform = { path = "../crates/dillo-platform" }
+dillo-browser = { path = "../crates/dillo-browser" }
+
+[[bin]]
+name = "fuzz_html"
+path = "fuzz_targets/fuzz_html.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_css"
+path = "fuzz_targets/fuzz_css.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_decode"
+path = "fuzz_targets/fuzz_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dpip"
+path = "fuzz_targets/fuzz_dpip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_files"
+path = "fuzz_targets/fuzz_files.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_url"
+path = "fuzz_targets/fuzz_url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_images"
+path = "fuzz_targets/fuzz_images.rs"
+test = false
+doc = false
+bench = false

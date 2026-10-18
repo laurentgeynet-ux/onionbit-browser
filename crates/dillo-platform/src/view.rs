@@ -450,7 +450,8 @@ impl Canvas {
         let mut fs = p.font_system.borrow_mut();
         let mut sw = p.swash.borrow_mut();
         let mut buf = cosmic_text::Buffer::new(&mut fs, cosmic_text::Metrics::new(size, size));
-        buf.set_text(&mut fs, text, attrs, cosmic_text::Shaping::Advanced);
+        let text = crate::platform::sanitize_shape_text(text);
+        buf.set_text(&mut fs, &text, attrs, cosmic_text::Shaping::Advanced);
         buf.shape_until_scroll(&mut fs, true);
         let w: f32 = buf.layout_runs().map(|r| r.line_w).sum();
         let cc = cosmic_text::Color::rgba(
@@ -850,6 +851,7 @@ impl Canvas {
         let mut sw = p.swash.borrow_mut();
         let mut buf = cosmic_text::Buffer::new(&mut fs, cosmic_text::Metrics::new(size, size));
         buf.set_size(&mut fs, Some(w.max(1) as f32), Some(h.max(1) as f32));
+        let s = crate::platform::sanitize_shape_text(&s);
         buf.set_text(&mut fs, &s, attrs, cosmic_text::Shaping::Advanced);
         buf.shape_until_scroll(&mut fs, true);
         let cc = cosmic_text::Color::rgba(

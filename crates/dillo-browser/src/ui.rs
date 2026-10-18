@@ -3239,7 +3239,8 @@ fn pm_text(
     let size = px.max(1) as f32;
     let mut buf = Buffer::new(fs, Metrics::new(size, size * 1.2));
     buf.set_size(fs, Some(r.w.max(1) as f32), Some(r.h.max(1) as f32));
-    buf.set_text(fs, text, Attrs::new(), Shaping::Advanced);
+    let text = dillo_platform::platform::sanitize_shape_text(text);
+    buf.set_text(fs, &text, Attrs::new(), Shaping::Advanced);
     buf.shape_until_scroll(fs, true);
     // Hauteur de ligne pour centrage vertical.
     let lh = buf

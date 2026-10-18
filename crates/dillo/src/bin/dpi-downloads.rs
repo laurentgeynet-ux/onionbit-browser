@@ -107,7 +107,8 @@ fn text(
     use dillo_platform::cosmic_text::Color as CColor;
     let mut buf = Buffer::new(fs, Metrics::new(12.0, 14.0));
     buf.set_size(fs, Some(w.max(1) as f32), Some(h.max(1) as f32));
-    buf.set_text(fs, s, Attrs::new(), Shaping::Advanced);
+    let s = dillo_platform::platform::sanitize_shape_text(s);
+    buf.set_text(fs, &s, Attrs::new(), Shaping::Advanced);
     buf.shape_until_scroll(fs, true);
     let tw = buf.layout_runs().map(|r| r.line_w).fold(0.0f32, f32::max);
     let ox = if left {

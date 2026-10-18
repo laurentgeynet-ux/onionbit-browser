@@ -535,8 +535,10 @@ impl<'p> DilloHtml<'p> {
         if self.core.dw.is_none() || self.core.stop_parser {
             return;
         }
-        let base = self.core.start_ofs;
-        let bufsize = buf.len().saturating_sub(base);
+        // `Client->Buf` est cumulatif amont ; un appelant qui passerait
+        // un buffer plus court que `start_ofs` ne doit pas paniquer.
+        let base = self.core.start_ofs.min(buf.len());
+        let bufsize = buf.len() - base;
         let token_start = self.write_raw(&buf[base..base + bufsize], bufsize, eof);
         self.core.start_ofs += token_start;
     }
