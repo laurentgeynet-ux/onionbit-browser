@@ -87,7 +87,6 @@ fn make_wget_argv(url: &str) -> Vec<String> {
 #[cfg(unix)]
 fn try_ftp_transfer(sh: &mut dillo_dpi::dpip::Dsh<'_>, url: &str) -> i64 {
     use std::io::Read;
-    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
     const MIN_SZ: usize = 256;
@@ -95,19 +94,18 @@ fn try_ftp_transfer(sh: &mut dillo_dpi::dpip::Dsh<'_>, url: &str) -> i64 {
 
     let argv = make_wget_argv(url);
     // verbatim fork + dup2(pipe,1) + execvp — via Command stdout pipé.
-    let mut child = match Command::new(&argv[0])
+    // verbatim pipe() fail → 0
+    let Ok(mut child) = Command::new(&argv[0])
         .args(&argv[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return 0, // verbatim pipe() fail → 0
+    else {
+        return 0;
     };
-    let mut stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => return 0,
+    let Some(mut stdout) = child.stdout.take() else {
+        return 0;
     };
 
     let mut nb: i64 = 0;
@@ -220,12 +218,11 @@ fn run() -> i32 {
         t2
     };
     let tag = String::from_utf8_lossy(&tag).into_owned();
-    let url = match (
+    let (Some(_), Some(url)) = (
         dillo_net::dpip::get_attr(&tag, "cmd"),
         dillo_net::dpip::get_attr(&tag, "url"),
-    ) {
-        (Some(_), Some(u)) => u,
-        _ => return 1,
+    ) else {
+        return 1;
     };
 
     let mut st = try_ftp_transfer(&mut sh, &url);

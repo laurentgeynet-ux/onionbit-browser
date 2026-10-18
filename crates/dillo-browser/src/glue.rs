@@ -1309,8 +1309,7 @@ impl Glue {
                     Ok(Some(io)) => {
                         self.ctl.borrow_mut().accept(Box::new(io));
                     }
-                    Ok(None) => break,
-                    Err(_) => break,
+                    Ok(None) | Err(_) => break,
                 }
             }
         }
