@@ -596,6 +596,7 @@ pub fn register_service(service: &str) -> Option<DpAttr> {
 ///   `dup2(sock,STDOUT)` de la variante filtre seulement si besoin —
 ///   verbatim serveur : stdin uniquement).
 #[cfg(unix)]
+#[must_use]
 pub fn spawn_plugin(path: &std::path::Path, io: PluginStdio) -> Option<Child> {
     use std::os::unix::io::OwnedFd;
     let (stdin, stdout): (std::process::Stdio, std::process::Stdio) = match io {
