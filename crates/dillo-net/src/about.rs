@@ -86,7 +86,10 @@ Cette page est embarqu&eacute;e dans le navigateur — saisissez une adresse\n\
 <code>.onion</code> ci-dessus pour naviguer.</p>\n\
 \n\
 <ul>\n\
-  <li><a href=\"http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/\">DuckDuckGo (.onion)</a></li>\n\
+  <li><a href=\"https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/lite/\">DuckDuckGo Lite (.onion)</a>\n\
+  — HTML search, stays on onion. The bare <code>.onion/</code> root\n\
+  is a JS app + <code>noscript</code> redirect to clearnet, which the\n\
+  default onion-only policy refuses.</li>\n\
   <li><a href=\"about:keys\">Keyboard shortcuts</a></li>\n\
 </ul>\n\
 \n\
