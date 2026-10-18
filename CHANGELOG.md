@@ -7,6 +7,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`http_proxypass`** (extension OnionBit) : pref `dillorc` donnant le
+  mot de passe proxy — amont n'expose que `http_proxyuser` et lit le
+  passwd via un dialog (`a_UIcmd_get_passwd`), impossible en spawn
+  headless par un daemon. La cellule partagée `proxy_passwd` est semée
+  depuis le pref avant la factory de moteurs : les `HttpEngine` partent
+  authentifiés, le dialog saute si la valeur est renseignée. Clé
+  tolérée/absorbée par le parseur amont-compatible ; déviation
+  documentée dans `docs/PORTING.md`.
 - **phase 9 — golden render harness** : `dillo/tests/render_ref.rs`
   rejoue les 39 paires `test/html/render/*.html`/`.ref.html` via la
   vraie pipeline (`DilloHtml`→`StyleEngine`→`Layout`→`SkiaView`→

@@ -378,6 +378,13 @@ fn main() -> std::process::ExitCode {
     let proxy_passwd: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     {
         let p = prefs_rc.borrow();
+        // `http_proxypass` (extension OnionBit) : le mot de passe proxy
+        // vient du dillorc — pas de dialog possible en spawn headless.
+        // Sème la cellule partagée avant la factory : les `HttpEngine`
+        // partent authentifiés et le bloc dialog ci-dessous saute.
+        if let Some(pw) = p.http_proxypass.as_deref() {
+            *proxy_passwd.borrow_mut() = Some(String::from_utf8_lossy(pw).into_owned());
+        }
         let cfg = HttpConfig {
             http_language: p
                 .http_language
