@@ -6,7 +6,8 @@ build, `unsafe` forbidden in all first-party crates.
 
 ## Origin — born for OnionBit
 
-This project exists because of **[OnionBit](../Tribler-Rust-Torrent)**,
+This project exists because of
+**[OnionBit](https://github.com/laurentgeynet-ux/OnionBit)**,
 a portable, anonymous, encrypted "swiss army knife" for nomadic users:
 file sharing over a multi-hop IPv8 overlay, end-to-end encrypted
 messaging, portable identity, encrypted vault and database, `.onion`

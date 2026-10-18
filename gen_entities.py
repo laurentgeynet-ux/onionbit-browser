@@ -1,8 +1,12 @@
 """Genere crates/dillo-html/src/entities_table.rs depuis
-D:/Projet/dillo/src/html_charrefs.h (verbatim — meme ordre bsearch)."""
-import io, re
+<upstream>/src/html_charrefs.h (verbatim — meme ordre bsearch).
 
-src = io.open('D:/Projet/dillo/src/html_charrefs.h', encoding='utf-8').read()
+Usage : python gen_entities.py [chemin_vers_html_charrefs.h]
+Defaut : ../dillo/src/html_charrefs.h (checkout upstream frere)."""
+import io, re, sys
+
+path = sys.argv[1] if len(sys.argv) > 1 else '../dillo/src/html_charrefs.h'
+src = io.open(path, encoding='utf-8').read()
 entries = re.findall(r'\{"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)"|NULL,\s*("(?:[^"\\]|\\.)*"|NULL)\},?', src)
 # le regex ci-dessus est fragile — parse ligne a ligne a la place
 entries = []
@@ -31,7 +35,7 @@ lines = []
 lines.append('//! `html_charrefs.h` — table `Charrefs` generee verbatim')
 lines.append('//! (ordre identique → `binary_search` = `bsearch` amont).')
 lines.append('//!')
-lines.append('//! Regeneree par extraction de `D:/Projet/dillo/src/html_charrefs.h`.')
+lines.append('//! Regeneree par extraction de `src/html_charrefs.h` (upstream).')
 lines.append('//! Ne pas editer a la main.')
 lines.append('')
 lines.append('/// `Charref_t` — verbatim.')

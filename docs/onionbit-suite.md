@@ -2,7 +2,8 @@
 
 **Statut** : note de contexte, **pas un ordre de travail**. La
 référence est l'ADR-0030 du projet OnionBit
-(`../Tribler-Rust-Torrent\docs\architecture\decisions\0030-navigateur-onion-dillorust-proxy-tor.md`),
+(<https://github.com/laurentgeynet-ux/OnionBit> —
+`docs/architecture/decisions/0030-navigateur-onion-dillorust-proxy-tor.md`),
 actuellement **Proposée** — ses questions §8 ne sont pas arbitrées.
 Ne rien figer au-delà de ce qui suit.
 

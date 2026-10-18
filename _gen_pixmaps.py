@@ -1,6 +1,8 @@
-import re
+import re, sys
 
-src = open(r"D:\Projet\dillo\src\pixmaps.h", encoding="utf-8").read()
+# Usage : python _gen_pixmaps.py [chemin_vers_pixmaps.h]
+path = sys.argv[1] if len(sys.argv) > 1 else "../dillo/src/pixmaps.h"
+src = open(path, encoding="utf-8").read()
 blocks = re.findall(r"static const char \*const (\w+)\[\] = \{(.*?)\};", src, re.S)
 
 out = []

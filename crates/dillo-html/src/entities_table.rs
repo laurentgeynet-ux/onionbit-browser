@@ -1,7 +1,7 @@
 //! `html_charrefs.h` — table `Charrefs` generee verbatim
 //! (ordre identique → `binary_search` = `bsearch` amont).
 //!
-//! Regeneree par extraction de `D:/Projet/dillo/src/html_charrefs.h`.
+//! Regeneree par extraction de `src/html_charrefs.h` (upstream).
 //! Ne pas editer a la main.
 #![allow(clippy::cast_possible_truncation)] // `int`/`float` amont.
 #![allow(clippy::cast_possible_wrap)]
