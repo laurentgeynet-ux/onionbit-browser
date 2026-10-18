@@ -1,167 +1,151 @@
 # Audit A02 — URL, cookies, domaines, auth & HSTS
 
-Date : après commit `110cb6b` (lot B pré-requis `cache.c`/`capi.c`).
-Mode : `rapport`.
-Périmètre couvert : `src/{url.c,url.h,domain.c,cookies.c,cookies.h,
-auth.c,auth.h,digest.c,digest.h,hsts.c,hsts.h,history.c,history.h}` +
-`dpip/dpip.c` (helpers) → `crates/dillo-net/src/{url,domain,cookies,
-auth,digest,hsts,history,dpip}.rs` (3 503 lignes).
-Note chemin : le skill attendait `[browser]::{cookies,domain,auth,
-digest,hsts}` — placés dans `dillo-net` car leurs seules dépendances
-sont `url`/`dlib`/`dpip` (graphe descendant conservé).
+Passe 2 — après merge A01-p2 (`5ebb518`). Mode : `rapport`.
+Passe 1 : commit `5aacbcd` (apply) — verdicts + D1–D5 conservés
+ci-dessous en section « passe 1 ».
 
-Hors périmètre porté à ce jour : jar cookies (`dpi/cookies.c` —
-parsing `Set-Cookie`, fichier `~/.dillo/cookies.txt`, éviction 20) →
-phase DPI / A12 ; transport `a_Dpi_send_blocking_cmd` + `dsh_*` +
-`a_Dpip_check_auth` → phase DPI ; consommateurs `cache.c`/`nav`/`uicmd`
-→ lot C.
+**Nouveau périmètre auditable depuis la passe 1** : jar cookies
+`dpi/cookies.c` → `crates/dillo-dpi/src/cookies.rs` + démon
+`crates/dillo-dpi/src/bin/cookies.rs`, transport
+`a_Dpi_send_blocking_cmd`/`dsh_*`/`a_Dpip_check_auth` →
+`crates/dillo-net/src/dpi.rs` + `crates/dillo-dpi/src/dpip.rs`,
+glue `cookies_get_query`/`cookies_set` → `dillo-net/src/cookies.rs`.
+Les fichiers de la passe 1 (`url/domain/cookies(net)/auth/digest/
+hsts/history/dpip`) sont inchangés depuis `5aacbcd` — les fixes
+D1–D5 sont revérifiés en place (`decode_hex_octet` tolérant,
+`frag_eq` NULL≡"", `fgets_lines` utilisé par `net::cookies`/`hsts`,
+création `cookiesrc` 0600 côté `main.rs`, strip ASCII).
 
-## Verdicts checklist
+## Verdicts checklist (passe 2 — nouveau périmètre)
 
-- **`a_Url_new` lenient** : `conforme` — strip `URL:`/`<…>`/chars
-  illégaux, schéma absent→http, espaces supprimés (pas terminateur),
-  champs vides vs absents préservés (`Option<Vec<u8>>`), hostname
-  lazy ≙ `a_Url_hostname`, heuristique `isalpha+'.'`→dns — `url.rs`
-  vs `src/url.c:96-560`. Tests : batterie RFC-3986 complète +
-  quirks (18 tests). L1/L5.
-- **Résolution relative** : `conforme` — `resolve_relative`
-  RFC-3986-à-la-Dillo : dot-segments, `//`, `?` seul (query remplace),
-  `#` seul, `base` sans scheme — `url.rs` vs `src/url.c` (batterie
-  du vecteur `Test_url_resolve`). Pas de crate stricte. L5.
-- **`a_Url_str`** : `conforme` — sérialisation verbatim : `scheme:`,
-  `//authority`, `/` inséré si authority + path non-`/` (`url.c:81`),
-  `?query`, `#fragment` — `url.rs:165-190` vs `url.c:65-90`. L5.
-- **Cookies — `cookiesrc`** : `conforme` — `Cookie_control_init` :
-  `dStrstrip`, `#`/vide skip, domain=run non-espace, rule=run suivant,
-  `ACCEPT|ACCEPT_SESSION|DENY` ci, `DEFAULT`→`default_action`, insertion
-  longest-first, `enabled` ssi une règle non-DENY (y compris DEFAULT),
-  code retour 0/1/2 — `cookies.rs:85-140` vs `cookies.c:242-330`. L1/L2.
-- **Cookies — politique** : `conforme` — `control_check_domain` :
-  `.dom` → suffixe `diff>=0` SANS match apex (différence volontaire
-  vs `domain.c`), sinon exact ci, premier match = plus spécifique,
-  défaut sinon ; `DENY`→drop ; requester cross-org non-racine→`""`
-  (`same_organization` + `is_root_url`) — `cookies.rs:143-243` vs
-  `cookies.c:150-227`. Commandes dpip `set_cookie`/`get_cookie`
-  octet-exactes (test golden `get_query_builds_dpip_cmd` :
-  `<cmd='get_cookie' scheme='http' host='h.tld' path='/dir/x' '>`).
+- **`Set-Cookie` parsing** : `conforme` — `parse_attr`/`parse_value`/
+  `eat_value`, `first_attr` nameless→rejet, défaut « +1 an »
+  (`gmtime`+`tm_year++`→`mktime`, fallback `future_time`),
+  `Max-Age` >1an clamp / `<0`→0 / ignore `Expires` post-Max-Age,
+  `Secure`/`HttpOnly`/inconnu → `eat_value`, `session_only =
+  !expires` — `cookies.rs(dpi):604-921` vs `dpi/cookies.c:799-1010`.
+  L1/L5. Un écart : D12.
+- **Dates `Expires`** : `conforme` — `get_timefield` 1-2 digits,
+  `get_month` 3 lettres ci, `get_year` 2-4 digits + pivot 70 +
+  rejet 5e digit, `date_delim` verbatim, `server_timediff` =
+  `now − mktime(server)` ajouté aux secondes — vs `cookies.c:460-651`.
+  L1. Tests : `parse_dates` (RFC 850/asctime/1123/rejet).
+- **`Cookies_get` matching** : `conforme` — ordre verbatim
+  `.host`(domain) → `host`(host_only) → `host`(domain) → suffixes
+  `.x`/x en marchant les dots ; tri par path long d'abord stable ;
+  purge expirés au passage ; `Cookie: a=b; c=d\r\n` ; compteur
+  incrémenté seulement si chaîne non vide — `cookies.rs:414-509` vs
+  `cookies.c:1256-1405`. L5. Edge : D13.
+- **`Cookies_add_cookie` caps** : `conforme` — remplacement
+  (name,path,host_only) avant test d'expiration, rejet expiré,
+  `MAX_DOMAIN_COOKIES=20` → `rm_expired(node)` puis LRU, `>=20`
+  retirés → re-find (nœud pu être détruit), `MAX_TOTAL=1200` idem,
+  re-find du nœud post-purge, suppression du nœud vide en fin —
+  `cookies.rs:263-383` vs `cookies.c:656-794`. L3.
+- **`cookiesrc` (jar)** : `conforme` — longest-first, `DEFAULT` →
+  `default_action` non insérée, règle inconnue → skip, `enabled`
+  ssi une action non-DENY (y compris DEFAULT), retour 0/1/2 —
+  `cookies.rs:172-229` vs `cookies.c:1419-1537`. L2. Écarts :
+  D8/D9 (borne de ligne + whitespace ASCII).
+- **`cookies.txt` round-trip** : `conforme` — en-tête verbatim,
+  `domain\tF/T?\tpath\tT/F?\tsecs-depuis-epoch-local\tname\tvalue`
+  octet-exact, tri domaines, session_only exclus, ligne ≥4096
+  ignorée, relecture `F`→host_only / `T`→secure / contrôle
+  `cookiesrc` appliqué au chargement — `cookies.rs:514-592` vs
+  `cookies.c:248-329,390-455`. L5. Écarts : D8/D9/D10/D11.
+- **Transport `send_blocking_cmd`/`check_auth`/`dsh`** : `conforme`
+  — start_dpid → connect → write → read, réponse dpip ou `None` ;
+  `check_auth` = `cmd=auth` + clé `dpid_comm_keys` (parsing strtol
+  + queue hex verbatim) — `dpi.rs:724-735`, `dpi/dpip.rs:479-494`.
   L4/L5.
-- **`domain.c`** : `conforme` (audité lot A) — `domainrc` strtok,
-  texte surnuméraire = warn mais règle ajoutée, `Domain_match` :
-  `*`, exact ci, `.suffixe` frontière (`diff==-1` = avec le point),
-  `permit` short-circuit `data:`/host vide, match inverse
-  `default_deny` — `domain.rs` vs `domain.c`. L1/L2.
-- **Auth — parse challenges** : `conforme` — `Auth_parse_token_value`
-  verbatim : cb-0 n'interrompt que le token courant (retourne 1 →
-  les tokens suivants SONT lus — `auth.c:218-225`), token-run +
-  LWS + `=`, `stale`/`algorithm` non-quotés (`expect_quoted` vs
-  `(*auth)[-1]=='"'` ≙ `was_quoted`), `Auth_unquote_value` avec
-  `\x` escape (`value[1]` falsy si NUL ≙ `v[i+1]!=0`), `realm` ci
-  / autres tokens cs (`strcmp` amont), offset `Digest `=7/`Basic `=6,
-  exigences finales realm (Basic) / realm+nonce (Digest) —
-  `auth.rs:95-330` vs `auth.c:104-351`. L1/L2.
-- **Auth — arbre realms** : `conforme` — `AuthHost` (scheme+authority
-  ci) → `AuthRealm` ; `realm_add_path` stocke `URL_PATH` **complet**
-  (fichier inclus — les frères `/dir/x` ne matchent PAS `/dir/page` ;
-  test `basic_flow_end_to_end` prouve), trailing-`/` strippé,
-  chemins couverts supprimés, `path_is_inside` = préfixe+frontière
-  `/`, longest-path via `realm_idx_by_path` ; `stale`→refresh nonce
-  sans dialog ; Digest avant Basic ; dialog injecté `AuthDialog` ≙
-  `a_Dialog_user_password` ; `dStrshred` du password (move+fill(0) —
-  safe) — `auth.rs:390-590` vs `auth.c:353-686`. L3/L5.
-- **Digest** : `conforme` — MD5 via `md-5` (≙ `md5.c` vendu, jamais
-  porté), cnonce 32-hex `fastrand` ≙ `rand()%16`, A1/A2/response
-  verbatim (`MD5`/`MD5-sess`/`auth`/`auth-int` tous calculés —
-  l'activation reste filtrée côté challenge), ordre de champs IE
-  verbatim (`username,realm,nonce,uri,[cnonce,nc=%08x],[algorithm],
-  response,[opaque],[qop]`, `algorithm` non-quoté, `qop` **quoté**),
-  `nonce_count` incrémenté en place avant usage, `opaque`
-  `Option<String>` ≙ NULL-vs-"" (`auth.c:194`), `POST` selon
-  `URL_Post`, `URL_DATA` entité — `digest.rs` vs `digest.c`. Test :
-  vecteur RFC 2617 §3.5 (`response="6629fae4…"`). L5.
-- **HSTS** : `conforme` — `a_Hsts_set` : `cert_clean` injecté ≙
-  `a_Tls_certificate_is_clean` (refus si warnings), attrs
-  `max-age`/`includeSubDomains`/`preload`(ignoré)/inconnu(warn+eat),
-  `strtol`+ERANGE→`INT_MAX` ≙ `strtol10`, `dIsdigit(*value)` requis,
-  `max-age=0`→`remove_policy`, expiry `now > expires_at`, marche des
-  domaines parents `strchr(host+1,'.')`+`subdomains`,
-  `latest_representable=INT_MAX` ≙ mktime(2038) — `hsts.rs:100-199`
-  vs `hsts.c:200-306`. Preload `domain true|false` → `ONE_YEAR`,
-  `dStrstrip`≙trim — `hsts.rs:202-220` vs `hsts.c:308-353`. L1/L4.
-- **History** : `conforme` (1 déviation, D2) — dedup `url_cmp`==0 +
-  fragment, `get_title`/`_by_url` (`force`→`URL_STR` — de l'url
-  passée, verbatim), `set_title_by_url` scan inverse + `MSG_ERR` —
-  `history.rs` vs `history.c`. L3.
-- **DPIP helpers** : `conforme` — `build_cmd` : `%s`→`'arg'` stuffing
-  `'`→`''`, `'` dans format→NULL, EOT ` '>'` ; `get_attr_l` : machine
-  `SEEK_NAME→MATCH_NAME→SKIP_VALUE/SKIP_QUOTE→FOUND` verbatim (y
-  compris l'itération `FOUND` qui avance `i` de 2 — `start=i+1`),
-  destuff à la copie, quote de fin suivie d'espace requise —
-  `dpip.rs` vs `dpip.c:60-186`. Tests goldens. L1/L5.
-- **Punycode/IDN** : `N-A` — amont ne fait pas d'IDN (pas de libidn
-  dans le build — grep `libidn|idna|punycode` vide) ; comportement
-  identique par construction.
-- **`Set-Cookie` + `cookies.txt` jar** : `N-A` — vit dans
-  `dpi/cookies.c` (plugin, phase DPI) ; `test/unit/cookies.c` amont =
-  test d'intégration **live** (fork/exec dpid + sockets — toomany
-  éviction 20, maxage ±, expires vs server_date) → tests A12.
-- **Écriture fichiers** : `N-A` à cette couche — `Cookies_fopen`
-  (0600, `O_CREAT|O_TRUNC`, `init_str="DEFAULT DENY\n"`, `FD_CLOEXEC`)
-  = glue fichier que le caller devra reproduire (cookies `init`
-  reçoit `Option<&str>` ≙ `!stream`→code 2) — voir D4.
+- **`srv_parse_tok`** : `conforme` — auth d'abord, `DpiBye`→exit(0),
+  `set_cookie`→`set_cookie_answer ok|not set`+close(2),
+  `get_cookie`→answer+close(2), inconnu→1 — `bin/cookies.rs:41-89`
+  vs `cookies.c:1546-1614`. Écart mineur : D15 (write-fail).
+- **Cycle de vie démon** : `déviation` — D7 (disabled inversé) +
+  D14 (permissions création) + D16 documentée (EOF→continue vs
+  exit(1) amont, choix porté).
 
-## Déviations relevées
+## Déviations (passe 2)
 
 | # | Déviation | Lentille | Sévérité | Preuves |
 |---|-----------|----------|----------|---------|
-| D1 | `decode_hex_str` : amont `Url_decode_hex_octet` = `strtol(hex,…,16)` sur buffer 2 chars → accepte signe/espace/`0x` : `%+f`→`0x0f`, `% f`→`0x0f` (et `%-f`→`-15`→littéral car `val<0`). Le port exige 2 `is_ascii_hexdigit` stricts → ces `%` restent littéraux. Divergence wire-visible sur URLs malformées (Location, liens). | L1/L5 | mineure | `src/url.c:567-602` vs `url.rs` `decode_hex_str` |
-| D2 | `history::frag_eq` : amont `URL_FRAGMENT`= `NPTR2STR` → `NULL`≡`""` → `a_History_add_url` déduplique `x` et `x#` (fragment absent vs vide). Le port compare `Option` bruts → doublon possible. | L3 | mineure | `src/history.c:50-52` + `url.h:53-54` vs `history.rs:37-39` |
-| D3 | `LINE_MAXLEN=4096` non reproduit : amont `fgets` coupe les lignes >4095 octets → le reste est re-parsé comme une « ligne » (cookiesrc, hsts preload). Le port itère `content.lines()` sans borne. | L1 | cosmétique | `cookies.c:50,263`, `hsts.c:310,320` vs `cookies.rs` `init`, `hsts.rs` `preload` |
-| D4 | `Cookies_fopen` : création du `cookiesrc` (0600, `O_CREAT|O_TRUNC`, contenu `DEFAULT DENY\n`, `FD_CLOEXEC`) reportée sur le caller (seam injectée). À honorer dans la glue browser — sinon pas de création auto + permissions non conformes. | L3/L5 | à l'interconnexion | `cookies.c:80-111,253-254` vs `cookies.rs` `init` (seam `Option<&str>`) |
-| D5 | `dStrstrip` = `isspace()` ASCII ; le port `str::trim()` = whitespace Unicode — une ligne commençant par U+00A0 est strippée chez nous, pas amont (cookiesrc + preload). | L1 | cosmétique | `cookies.c:272`, `hsts.c:328` vs `.trim()` |
+| D6 | `validate_domain` : `cookie.domain[1..len-1]` via `saturating_sub` — domaine de 1 caractère (`Domain=x` depuis host `x`, ou `Domain=.` etc.) → range `1..0` → **panic du démon** (toutes les cookies mortes). Amont `for i=1; i<strlen-1` → 0 itérations → rejet propre. | L1 | **fonctionnelle** | `cookies.c:1195-1199` vs `cookies.rs:1009` |
+| D7 | `bin/cookies.rs` : `if enabled != 2 && txt.is_some() { jar.disabled = false }` — amont `Cookie_control_init()!=0` → `disabled=TRUE` → `exit(1)` **avant** d'ouvrir `cookies.txt`. Ici `1` (cookiesrc tout-DENY — le fichier auto-créé « DEFAULT DENY » !) active quand même le démon : il répond `not set`/`""` au lieu de sortir, et crée `cookies.txt` inutilement. | L3/L5 | **fonctionnelle** | `cookies.c:349-364,1662-1663` vs `bin/cookies.rs:138-169` |
+| D8 | `LINE_MAXLEN=4096` non reproduit dans le jar : `load`/`control_init` itèrent `contents.lines()` sans borne — amont `fgets` coupe la ligne et re-parse le reste comme ligne suivante. (Même classe que D3 passe-1, corrigée côté `net` via `fgets_lines` — pas propagée au crate dpi.) | L1 | mineure | `cookies.c:250,1424,1440` vs `cookies.rs:174,515` |
+| D9 | `trim()`/`split_whitespace` Unicode vs `dStrstrip`/`dIsspace` ASCII (C locale) dans `load` et `control_init` — U+00A0 strippé chez nous, pas amont. (D5 passe-1 resurface dans le jar.) | L1 | cosmétique | `cookies.c:264,1448` vs `cookies.rs:175,179,516` |
+| D10 | `load` : `epoch_time + secs` sur `i64::MAX` parsé → overflow (panic debug / wrap release → négatif = expiré). Amont `strtol`→LONG_MAX → `tm_min += secs/60` → `mktime` → `(time_t)-1` → cookie expiré, sans UB. De plus `parse::<i64>` strict vs `strtol` tolérant-préfixe (`"99abc"`→99 amont, −1 chez nous — même issue « expiré » ici). Fix : `saturating_add` + parse préfixe. | L1 | mineure | `cookies.c:291-304` vs `cookies.rs:525-528` |
+| D11 | `load` : amont n'exige que `name`/`value` **non-NULL** (champ vide accepté — `dStrdup("")`), ligne `dom\tF\t/\tF\t99\t\tv` → cookie `""=v` stocké. Le port exige `!name.is_empty()` → ligne droppée. Wire-visible marginal. | L5 | mineure | `cookies.c:305-313` vs `cookies.rs:529-539` |
+| D12 | `Max-Age` : `v.parse::<i64>()` strict → `Max-Age=3600abc` échoue → `i64::MAX` → clamp 1 an ; amont `strtol` → 3600. | L5 | mineure | `cookies.c:939-961` vs `cookies.rs:863-881` |
+| D13 | `Cookies_get` boucle de suffixes : sur hôte à dots consécutifs (`a..com`), le port émet `.com` en double **et** `com` nu (recherche du '.' suivant à partir de `p+1` alors qu'amont repart après `domain_str++`, soit `p+2`). Domaines suffixes matchés en trop sur hôte malformé. | L1/L5 | mineure | `cookies.c:1367-1381` vs `cookies.rs:483-494` |
+| D14 | `cookies_fopen` : amont crée `0600` (`S_IRUSR|S_IWUSR`) + `FD_CLOEXEC` ; le port `File::create` → permissions umask (0666&umask — `cookies.txt` potentiellement lisible-groupe/autres). | L3/L5 | wire-visible | `cookies.c:191-223` vs `bin/cookies.rs:93-112` |
+| D15 | `get_cookie` : `a_Dpip_dsh_write_str` en échec → amont `ret=1` → exit(1) ; le port ignore le résultat → ret 2 (dégradation silencieuse au lieu de redémarrage via dpid). | L3 | mineure | `cookies.c:1603-1608` vs `bin/cookies.rs:80-85` |
 
-## Analyse des gaps de test
+## Invariants de frontière
 
-- `decode_hex_str` : pas de test sur `%+f`/`% f` — la déviation D1
-  passerait inaperçue ; un golden `assert_eq!(decode_hex_str(b"%+f"),
-  b"\x0f")` documentera le comportement amont au moment du fix.
-- `history` : pas de test fragment `""`-vs-`None`.
-- `cookies`/`hsts` : pas de test ligne >4095.
-- Digest : vecteur RFC 2617 présent ✓ ; pas de test `stale`→refresh
-  sans dialog (comportement amont couvert par lecture, à goldenner
-  avec le fix).
-- DPIP : goldens stuffing/destuff présents ✓.
+- `CookieJar` reste mono-état global du démon — `Rc<RefCell<Cookie>>`
+  partagé entre `all_cookies` et nœuds domaine ≙ pointeurs amont
+  entre les deux Dlist (mutation `last_used` visible des deux côtés).
+- Persistance = `String` produit par `save()`, écrite par le caller
+  (truncate+write) — ≙ `rewind`+`ftruncate`+`fprintf` amont ; le
+  lock POSIX (`fcntl F_SETLK`, disable si concurrent) **non porté** :
+  documenté dans `bin/cookies.rs` (risque = 2 instances, dpid n'en
+  lance qu'une) — divergence assumée, à réévaluer si double instance.
+- `epoch_time`/`future_time` = `mktime` **heure locale** via `time`
+  crate — DST approximé (`current_local_offset` au moment de
+  l'appel) : ≙ mais pas bit-exact pour dates traversant un
+  changement d'heure ; observable seulement sur expirations à la
+  frontière DST.
+- Le reste de la passe 1 reste la frontière : consommation
+  `Cookie:`/`WWW-Authenticate` → A11 ; protocole/dpid/dsh → A12.
 
-## Frontière avec les audits suivants
+## Fichiers du fix (apply ciblé)
 
-- `a_Dpi_send_blocking_cmd`, sockets dpi, `dsh_*`, `a_Dpip_check_auth`,
-  jar `dpi/cookies.c` (parsing `Set-Cookie`, `cookies.txt` byte-exact,
-  éviction, `max-age`/`expires` vs `server_date`) → **A12-dpi**.
-- Consommation des en-têtes `Cookie`/`Authorization`/`WWW-Authenticate`
-  dans la réponse → lot C (`cache.c`/`capi.c`/`web.cc`) → **A11**.
-- `timeout.cc` (`Auth`-retry notamment) → lot C.
+- `crates/dillo-dpi/src/cookies.rs` — D6 (borne `[1..len-1]`),
+  D8 (`fgets_lines` 4095 ou helper partagé), D9 (strip ASCII),
+  D10 (`saturating_add` + strtol-préfixe), D11 (name vide),
+  D12 (strtol-préfixe Max-Age), D13 (repartir de `p+2`).
+- `crates/dillo-dpi/src/bin/cookies.rs` — D7 (`enabled == 0`
+  requis + return avant création txt), D14 (mode 0600 unix),
+  D15 (write-fail → 1).
+- `dillo-net/src/lib.rs::fgets_lines` — à rendre `pub` ou déplacer
+  vers `dillo-common` pour usage cross-crate (D8).
 
-## Recommandation apply
+## Non-bugs tranchés (passe 2)
 
-Attendre le lot C (`cache.c`/`capi`/`web`) — D4 ne devient testable
-qu'avec la glue fichier navigateur ; D1/D2/D3/D5 sont locaux et
-bornés (≤ ~20 lignes + goldens). Coût de dérive : faible (preuves
-`fichier:ligne`).
+- `dList_remove_fast(all_cookies)` vs `retain` : l'ordre de
+  `all_cookies` n'est observable ni dans LRU (min by key) ni dans
+  `save` (itère les nœuds triés) — pas un bug.
+- Re-find `node_idx` inconditionnel après purge totale vs
+  `else if (domain_cookies)` amont : quand `domain_cookies` était
+  NULL le find retourne aussi None — même résultat.
+- `srv_parse_tok` EOF→`break` (démon survit) vs `exit(1)` amont :
+  choix porté documenté `bin/cookies.rs:190-195` — amont tue le
+  démon à chaque déconnexion prématurée et dpid le relance ; ici le
+  démon persiste. Divergence d'ops, pas de protocole.
+- `Max-Age=-5abc` → '-' → age 0 des deux côtés ; `Max-Age=` vide →
+  ignoré des deux côtés (`dIsdigit(0)`=faux ≙ `starts_with` faux).
+- `value` des lignes `cookies.txt` peut contenir `\t` (splitn(7)
+  ≙ `line_marker` résiduel incluant tabs amont) — conforme.
 
-## Apply — résolution
+## Passe 1 (conservée)
 
-Appliqué directement sur `main` (passe groupée A01+A02+A11) :
+### Verdicts
 
-- **D1** corrigé — `url.rs` : `decode_hex_octet` reproduit la
-  tolérance `strtol` (`tail-hex==2`) — `%+f`/`% f` acceptés,
-  `%-f`/`%f `/`%0x` littéraux.
-- **D2** corrigé — `history.rs` : `frag_eq` = `NPTR2STR` →
-  fragment absent ≡ `""` (`x` ≡ `x#`).
-- **D3** corrigé — `lib.rs::fgets_lines` partagé : borne 4095
-  octets par ligne + reparse du reste (`cookies.rs`, `hsts.rs`).
-- **D4** corrigé — `dillo/src/main.rs` : `cookiesrc` absent →
-  créé `O_WRONLY|O_CREAT|O_TRUNC` (0600 unix) + `DEFAULT DENY\n`.
-- **D5** corrigé — strip `isspace()` C (ASCII + `\v`) dans
-  `cookies.rs`/`hsts.rs` au lieu de `trim()` Unicode.
+`a_Url_new` lenient, résolution relative RFC-à-la-Dillo,
+`a_Url_str`, `cookiesrc` (net), politique cookies, `domain.c`,
+auth challenges + arbre realms, digest (MD5/md-5, RFC 2617 golden),
+HSTS (+preload), history, dpip helpers — tous `conforme`
+(preuves dans l'historique du rapport, commit `5aacbcd`).
+`Set-Cookie`/jar/écriture fichiers : étaient `N-A` → désormais
+audités (ci-dessus).
 
-Tests : cas `strtol` lenient (`decode_*`), `frag_eq` NULL≡"",
-`cookiesrc_line_maxlen_and_c_strip` (>4095 + U+00A0 non strippé).
+### Apply passe 1
+
+- D1 `decode_hex_octet` tolérance `strtol` (`%+f`,`% f`) — corrigé.
+- D2 `frag_eq` fragment absent ≡ `""` — corrigé.
+- D3 `fgets_lines` borne 4095 (net::cookies/hsts) — corrigé ;
+  **D8 passe-2** est la même borne manquante côté jar dpi.
+- D4 création `cookiesrc` 0600 + `DEFAULT DENY\n` — corrigé.
+- D5 strip ASCII vs `trim()` — corrigé dans `dillo-net` ;
+  **D9 passe-2** est la resurface dans le jar dpi.
