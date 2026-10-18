@@ -116,3 +116,54 @@ réel (seam testée, pas de chargeur réseau ici), `x-link`/
 `x-colspan`/`x-rowspan` (propriétés internes consommées par
 `html.cc` — couverture en phase 2), re-style après mutation
 dynamique (frontière html).
+
+---
+
+# Passe 2 (après merge A01-p2)
+
+## Delta code
+
+`dillo-css/src` **inchangé** depuis la passe 1 (un mock de test
+`Platform::add_idle` dans `styleengine.rs`, `f9aa4c8`). Verdicts
+passés 1 reconduits tels quels — cette passe se concentre sur les
+quatre « points d'attention » devenus auditables (glue réelle).
+
+## Points d'attention — maintenant vérifiés
+
+| Point passé 1 | État passe 2 |
+|---|---|
+| `TagIndex` réel | **Conforme** — `HtmlTagIndex` injecté à `StyleEngine::init`/`parse` (`html.rs:2503`), verbatim `a_Html_tag_index` (D3 résorbée en pratique). |
+| `restyle` déclenché | **Conforme** — appelé dans `Html_tag_open_body` après les hints `bgcolor`/`text` (`html.rs:2106` ≙ `html.cc:1842`), et après chargement des feuilles via `GlueOp::Repush`. |
+| `prefs`/`dillorc` | **Conforme** — `html_prefs()` mappe `Prefs`→`StyleEnginePrefs` verbatim (`glue.rs:225-239`), feuille user `~/.dillo/style.css` ≙ `buildUserStyle` (`styleengine.rs:1574`, `styleengine.cc:1083`). |
+| `StyleEngineSink` réel | **Conforme** — `DocSink::start_background_image_load` verbatim (`doc.rs:758-784` ≙ `styleengine.cc:762`) ; déviation notée : `StyleImageDeletionReceiver` non porté (stop client à la destruction du style) — cas rare, documenté. |
+
+## Mécanisme stylesheet réseau — re-vérifié de bout en bout
+
+Cycle verbatim amont : `<link rel=stylesheet>` non caché →
+`sink.load_stylesheet` → `a_Web_new`/`WEB_STYLESHEET`/
+`capi_open_url` + `NumPendingStyleSheets++` ; à EOF le callback
+`--` le compteur et pose `GlueOp::Repush` à 0 ≙
+`Html_css_load_callback` → `a_UIcmd_repush` → `Nav_repush` =
+**re-navigation `RELOAD_FROM_CACHE`** (`nav.rs:400`) → le `<link>`
+est re-rencontré → `load_stylesheet` prend la branche cache et
+parse inline, y compris le sniffing `@charset` ≤ 51 octets
+verbatim (`html.cc:3272-3286` ≙ `html.rs:2488-2500`).
+`formNew` respecte `NumPendingStyleSheets==0` (formulaire
+désactivé pendant le re-push ≙ `html.cc:671`).
+
+## Oracle visuel
+
+La golden suite (`render_ref`, 38 paires `test/html/render` amont,
+pixel-identique modulo `ALLOWED`) exerce désormais la cascade
+complète bout-en-bout (UA + author + hints non-CSS → `Style`
+dw). Gap « golden computed-style » partiellement fermé : reste
+un dump comparatif de computed styles vs Dillo compilé pour les
+props sans effet pixel direct.
+
+## Verdict passe 2
+
+**Conforme.** Aucune déviation nouvelle dans `dillo-css` ; les
+quatre seams en attente sont câblés verbatim. Restes (gaps, non
+bugs) : `@import` récursif réseau (seam testée), dump
+computed-style comparatif, `StyleImageDeletionReceiver` (cas
+rare documenté).
