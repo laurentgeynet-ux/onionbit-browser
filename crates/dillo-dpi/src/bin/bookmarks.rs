@@ -288,10 +288,7 @@ fn run() -> i32 {
             sh.close();
             return 1;
         }
-        loop {
-            let Some(tag) = sh.read_token(true) else {
-                break;
-            };
+        while let Some(tag) = sh.read_token(true) {
             let tag = String::from_utf8_lossy(&tag).into_owned();
             let code = parse_token(&mut sh, &mut st, &tag);
             if code == 3 {

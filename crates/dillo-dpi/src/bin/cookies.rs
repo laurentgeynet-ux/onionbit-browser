@@ -127,7 +127,7 @@ fn cookies_fopen(path: &std::path::Path, init: Option<&str>) -> Option<std::fs::
 #[cfg(unix)]
 fn run() -> i32 {
     use dillo_dpi::dpip::{DpIoTcp, Dsh};
-    use std::io::{Read, Seek, Write};
+    use std::io::Read;
 
     // verbatim : signaux → exit (atexit → save). Flag consulté dans
     // la boucle ; la sauvegarde se fait avant exit.
@@ -204,13 +204,10 @@ fn run() -> i32 {
             8 * 1024,
         );
         let mut authed = false;
-        loop {
-            let Some(tag) = sh.read_token(true) else {
-                // verbatim : EOF → exit(1) — mais amont boucle sur
-                // code=1 → exit(1). Ici : client suivant si EOF sans
-                // erreur, sinon sortie.
-                break;
-            };
+        // verbatim : EOF → exit(1) — mais amont boucle sur
+        // code=1 → exit(1). Ici : client suivant si EOF sans
+        // erreur, sinon sortie.
+        while let Some(tag) = sh.read_token(true) {
             let tag = String::from_utf8_lossy(&tag).into_owned();
             let code = srv_parse_tok(&mut sh, &mut authed, &mut jar, &tag);
             if code == 1 {
