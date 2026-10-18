@@ -378,3 +378,40 @@ queueResize unattached, émission `resizeQueued`) ; fixture
 fmt / clippy `-D warnings` / `cargo test --workspace` (tous verts,
 dont 122 `dillo-dw`) / `cargo doc` clean.
 Changelog : `docs/audits/changelog/A05.md` ; `PORTING.md` annoté.
+
+---
+
+# Passe 2 (post-apply `a1751e2`, commits dw `f8e1fe7`…`0b9756d`)
+
+## Delta code — relecture des 4 commits post-apply
+
+| Commit | Changement | Verdict |
+|---|---|---|
+| `f8e1fe7` | `Layout::draw` pendant `scrollIdle` : re-queue `view.queue_draw(area)` — adaptation documentée du modèle de damage FLTK (`damage()` persistant ≙ `take_damage` consommateur) ; clamp `textWidth len<0→0` verbatim. | **Conforme** — équivalent observable, test de régression dédié. |
+| `a20dc55` | Overrides textblock rappellent les impls de **base** `Widget::*` (`w_*_base`) ≙ liaison statique C++ amont — corrige la récursion infinie sur `Resized`. | **Conforme** — restaure la sémantique de dispatch amont. |
+| `f9aa4c8` | Idles tagués par `layout_id` ≙ file privée `FltkPlatform` par onglet ; `BadnessAndPenalty` en `wrapping_*` ≙ wrap `int` C (incl. `ratio³` wrap amont) ; `tb_dump` diagnostic `#[doc(hidden)]`. | **Conforme** — `idle_callbacks_route_to_owning_layout` épingle le routage. |
+| `0b9756d` | Gardes de progression `next_glyph` dans les boucles hit-test (amont s'en remet au NUL terminal ; nos slices n'ont pas de sentinelle → la garde est l'équivalent défensif fidèle). | **Conforme** — guards non observables sur chemins contractuels. |
+
+## Oracle visuel activé
+
+La golden suite `render_ref` (38 paires amont, pipeline complète)
+est un oracle **pixel** direct pour ce périmètre : allocations,
+damage, borders (y compris le fix `double` D1), `space_width`,
+weights. Verdict L5 passé de « parité par lecture » à **parité
+mesurée** sur le corpus amont.
+
+## Statut des déviations passé 1
+
+- D1–D5 : corrigées en `a1751e2`, reconduites (aucune régression
+  dans les diffs relus).
+- **D6** (`Color` identité → `ptr::eq` toujours faux) : **toujours
+  ouverte**, toujours perf-only / pixel marginal en
+  `SHADING_INVERSE` — reporter à l'apply consolidé.
+- D7 (files différées modèle D) : design documenté, inchangé.
+
+## Verdict passe 2
+
+**Conforme.** Aucune déviation nouvelle dans le périmètre dw-core.
+Le seul reste est D6 (perf-only, différé par décision passé 1) et
+les gaps déjà documentés (drivers `test/dw/` non convertis — la
+golden suite couvre partiellement ce rôle).
