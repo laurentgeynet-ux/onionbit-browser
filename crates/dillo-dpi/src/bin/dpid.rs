@@ -96,7 +96,7 @@ fn run() {
     // amont qui cleanup+_exit — différé de ≤50 ms ici).
     #[cfg(unix)]
     let term = {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
         let t = Arc::new(AtomicBool::new(false));
         for sig in [
