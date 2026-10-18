@@ -146,7 +146,9 @@ fn get_cmd_option<'a>(args: &'a [String], idx: &mut usize, opt_args: &mut Vec<&'
 /// `a_Version_print_info` ≙ version.cc (`dillo --version`).
 fn print_version() {
     println!("OnionBit-Browser {}", env!("CARGO_PKG_VERSION"));
-    println!("  (port Rust — stack winit/softbuffer/tiny-skia/cosmic-text, rustls)");
+    println!(
+        "  (port Rust de Dillo 3.3.0-rc1 — stack winit/softbuffer/tiny-skia/cosmic-text, rustls)"
+    );
 }
 
 /// `makeStartUrl` verbatim — fichier local (`F_OK`) ou URL.

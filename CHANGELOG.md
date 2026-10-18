@@ -64,7 +64,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **renommage produit → OnionBit-Browser** : binaire `dillo` →
-  `onionbit-browser` (`[[bin]]`), titres de fenêtre/dialogs
+  `onionbit-browser` (`[[bin]]`), version `0.0.0` → `0.1.0-alpha`
+  (`--version` affiche la parité amont Dillo 3.3.0-rc1), titres de
+  fenêtre/dialogs
   (`"Dillo: …"` → `"OnionBit-Browser: …"`), messages console,
   `about:splash` (« Welcome to OnionBit-Browser (a Rust port of
   Dillo 3.3.0-rc1) »), titres de pages internes (`about:cache`,

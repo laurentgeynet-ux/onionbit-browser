@@ -13,7 +13,7 @@ sont des ordres de grandeur publiés (binaire ~1-3 Mo, RSS ~10-30 Mo).
 | `dpi-downloads.exe` | 2,6 Mo (embarque tiny-skia pour le rendu liste) |
 | `dillo-dpid`/`dpidc`, `dilloc`, `dpi-*` (7 autres) | 0,1-0,25 Mo chacun |
 
-Package `dist/onionbit-browser-0.0.0-windows-x86_64.zip` ≈ 14 Mo décompressé,
+Package `dist/onionbit-browser-0.1.0-alpha-windows-x86_64.zip` ≈ 14 Mo décompressé,
 tous binaires + `dillorc` + `dpidrc` gabarits.
 
 ## Démarrage
