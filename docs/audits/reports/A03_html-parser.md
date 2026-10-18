@@ -182,3 +182,47 @@ table/form/plain fidèles, quirks amont reproduits et documentés.
 borrow ordering, D3 bool inversion). 28 tests `dillo-html` verts ;
 workspace/clippy/doc/fmt verts. Reste : golden renders (A10) et
 câblage `HtmlSink` réel (phase 7).
+
+---
+
+# Passe 2 (après merge A01-p2, commit `5ebb518`+)
+
+## Ce qui a changé depuis la passe 1
+
+- Fuzz phase 9 (`99ca279`) : `DilloHtml::write` clamp `start_ofs`
+  (fix verbatim — le contrat `Client->Buf` cumulatif reste) ;
+  campagne 30k×6 + 10k×7 clean sur la pipeline html.
+- Golden suite (`f9aa4c8`) : **38/38 paires amont** `test/html/
+  render` rejouées pixel-identiques via la pipeline réelle
+  (parser→style→dw→tiny-skia, dicache réel) — `ALLOWED` = les 4
+  XFAIL amont + `svg-current-color` (AA rasterizer resvg). Le gap
+  « oracle visuel » de la passe 1 est fermé côté harnais.
+- `arm_widget_delete` (`0b9756d`) : cycle de vie corrigé — le
+  widget toplevel possède le `Rc<DilloHtml>` ≙ `setDeleteCallback
+  (Html_free, this)` ; fini les `Weak` morts sur clics liens/forms.
+- `HtmlSink` réel câblé : `dillo-browser::doc::DocSink` —
+  `load_image`/`load_stylesheet` verbatim (`WEB_IMAGE`/`WEB_
+  STYLESHEET` → `capi_open_url` → `add_client`/`add_url`,
+  repush à compteur 0), navigation/dialogs via `GlueOp` (queue
+  ≙ synchronicité amont, évite les réentrance RefCell). D6 passe-1
+  → **conforme**.
+
+## Déviations (passe 2)
+
+| # | Déviation | Lentille | Sévérité | Preuves |
+|---|-----------|----------|----------|---------|
+| D7 | `HtmlInput::get_resource` emprunte `layout.borrow()` — invoqué depuis les receivers `clicked`/`activate` qui tournent **sous** `layout.borrow_mut()` (dispatch `Layout::button_event` → `process_mouse_event_button` → `event_handler`) → **panic `RefCell`** sur tout événement de contrôle de formulaire. Signalé « connu » dans `0b9756d`, toujours ouvert. Fix sketch : même traitement que `GlueOp::LinkVisited` — extraire le `Rc<dyn Resource>` hors emprunt (l'id `embed` suffit à la récupération différée) ou résoudre le resource avant dispatch. | L3/L1 | **fonctionnelle** | `form.rs:318-328,576-578` vs `form.cc` (`getResource` = pointeur direct) ; `layout.rs:1356-1376` |
+
+## Re-vérification passe 1
+
+Code parser quasi inchangé depuis `12e0ccb` (fuzz clamp +
+`arm_widget_delete` seulement) — verdicts passés 1 reconduits ;
+tests `dillo-html` 29 verts, golden suite verte.
+
+## Test gaps résiduels
+
+- Foster-parenting/iframe/frameset et hit-testing `<map>`/`<area>`
+  : toujours sans fixture end-to-end (ni amont ni ici).
+- `form_send` réseau réel : encodage couvert, l'émission via
+  `capi_open_url` (sink réel) reste non exercée en test.
+- Fuzz différentiel vs binaire C : smoke runner interne seul.
