@@ -1301,6 +1301,35 @@ impl Ui {
         self.focus = Focus::Main;
     }
 
+    /// ≙ `Fl::focus()` unique : la page de cet onglet détient le
+    /// clavier seulement quand ni le chrome (location ≙ `CustInput`,
+    /// findbar ≙ `MyInput`) ni un popup modal (≙ grab `Fl_Menu`) ne
+    /// le détiennent. Le focus in-page vit sur le canvas de
+    /// [`Ui::view`] (partagé avec le `Layout` via `SharedView`).
+    /// Quand le chrome possède le focus, `set_focused_resource(None)`
+    /// ≙ `FL_UNFOCUS` de l'enfant (caret retiré + damage) ; un popup
+    /// seul détourne les touches mais conserve le caret (≙ fenêtre
+    /// de menu au-dessus — `Fl::focus` inchangé amont). Retourne la
+    /// ressource focusée + la vue porteuse de son damage.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn page_focus_of(
+        u: &Ui,
+        popup_open: bool,
+    ) -> Option<(Rc<dyn dillo_dw::ui::Resource>, Rc<RefCell<SkiaView>>)> {
+        let owns_focus = u.focus != Focus::Main || u.findbar_state.input_focused;
+        if owns_focus {
+            u.view.borrow_mut().set_focused_resource(None);
+        }
+        if owns_focus || popup_open {
+            None
+        } else {
+            u.view
+                .borrow()
+                .focused_resource()
+                .map(|r| (r, Rc::clone(&u.view)))
+        }
+    }
+
     /// `UI::set_status`.
     pub fn set_status(&mut self, s: &str) {
         if let Some(i) = self.status_bar.find(WId::StatusOut) {
@@ -4580,6 +4609,38 @@ mod tests {
     }
 
     // -- xpm_decode ---------------------------------------------------------
+
+    /// `Ui::page_focus_of` ≙ `Fl::focus` unique : la ressource
+    /// in-page focusée est retournée tant que `focus == Main` ;
+    /// `Location`/findbar → `None` + caret retiré (≙ `FL_UNFOCUS`
+    /// de l'enfant quand `Fl::focus` part au chrome) ; popup →
+    /// `None` mais caret conservé (≙ grab `Fl_Menu`).
+    #[test]
+    fn page_focus_respects_chrome_focus() {
+        use dillo_dw::platform::Platform as _;
+        let prefs = Prefs::default();
+        let mut u = ui(&prefs);
+        let p = platform();
+        let factory = p.borrow_mut().get_resource_factory().expect("factory");
+        let res: Rc<dyn dillo_dw::ui::Resource> = factory.create_entry_resource(10, false, "", "");
+        u.view
+            .borrow_mut()
+            .set_focused_resource(Some(Rc::clone(&res)));
+
+        // Main + page focusée → ressource + sa vue (canvas du damage).
+        let (r, v) = Ui::page_focus_of(&u, false).expect("page focusée");
+        assert!(Rc::ptr_eq(&r, &res));
+        assert!(Rc::ptr_eq(&v, &u.view));
+
+        // Popup ouvert → touches au menu, caret conservé.
+        assert!(Ui::page_focus_of(&u, true).is_none());
+        assert!(u.view.borrow().focused_resource().is_some());
+
+        // Location focusée → page défocalisée (caret retiré).
+        u.focus = Focus::Location;
+        assert!(Ui::page_focus_of(&u, false).is_none());
+        assert!(u.view.borrow().focused_resource().is_none());
+    }
 
     #[test]
     fn xpm_decode_ok_and_none() {

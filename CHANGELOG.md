@@ -48,7 +48,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   activation du formulaire (≙ `FL_WHEN_ENTER_KEY_ALWAYS` →
   submit), Ctrl+V ≙ `Fl::paste`, clic hors contrôle → défocus,
   boutons/check/radio déclenchés au release ≙ `FL_WHEN_RELEASE`
-  (toggle + exclusion de groupe radio + `emitClicked`).
+  (toggle + exclusion de groupe radio + `emitClicked`) ; focus
+  unique ≙ `Fl::focus` arbitré entre chrome et page (barre
+  d'adresse/findbar reprennent le clavier, caret in-page retiré ;
+  clic consommé dans la page ≙ `Fl::focus(this)` rend le focus au
+  contenu — `fltkviewbase.cc:307`).
 - **vestiges de page / zones non repeintes (damage model)** :
   - `pending_draws` stocke les coords **canvas figées à
     l'émission** (≙ `queueDraw` immédiat amont) au lieu de les

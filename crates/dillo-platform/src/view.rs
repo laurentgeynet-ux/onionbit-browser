@@ -1363,7 +1363,12 @@ impl SkiaView {
     /// Ressource de formulaire focusée (≙ `Fl::focus()`) — lue
     /// par `app.rs` pour router les touches. `None` si le `Weak`
     /// est mort (page naviguée — la ressource est tombée).
-    pub(crate) fn focused_resource(&self) -> Option<Rc<dyn dillo_dw::ui::Resource>> {
+    /// Ressource de formulaire tenant le focus clavier sur ce
+    /// canvas (≙ `Fl::focus()` == enfant du viewport) — `None` si
+    /// aucun ou si le `Weak` est mort (widget détruit/navigation).
+    /// Consommé par le shell (`page_focus`) pour le routage clavier.
+    #[must_use]
+    pub fn focused_resource(&self) -> Option<Rc<dyn dillo_dw::ui::Resource>> {
         self.canvas
             .borrow()
             .focused

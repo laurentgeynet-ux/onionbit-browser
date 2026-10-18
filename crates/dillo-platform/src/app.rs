@@ -440,6 +440,20 @@ pub trait ShellGlue {
     fn wants_exit(&mut self) -> bool {
         false
     }
+    /// ≙ `Fl::focus()` resté sur un contrôle de formulaire in-page
+    /// de l'onglet actif : `Some((res, view))` = la page détient le
+    /// clavier (saisie à router à `res` avant le chrome ; `view` =
+    /// la vue de l'onglet — son canvas porte le damage du caret,
+    /// distinct du back-buffer fenêtre). `None` quand le chrome
+    /// détient le clavier (location/findbar ≙ `CustInput`,
+    /// popup ≙ grab `Fl_Menu`) ou qu'aucun contrôle n'a le focus —
+    /// la défocalisation du caret in-page est alors faite par
+    /// l'impl (≙ `FL_UNFOCUS` de l'enfant quand `Fl::focus` part
+    /// vers un widget du chrome).
+    #[allow(clippy::type_complexity)]
+    fn page_focus(&mut self, _win: usize) -> Option<(Rc<dyn Resource>, Rc<RefCell<SkiaView>>)> {
+        None
+    }
     /// Réveil demandé ≙ le `timeout` de `Fl::wait(t)` — `Some(d)`
     /// → `ControlFlow::WaitUntil(now+d)` (réseau/timers actifs) ;
     /// `None` → `Wait` (boucle endormie, verbatim amont idle).
@@ -1196,12 +1210,23 @@ impl ApplicationHandler for DwApp {
                 // ≙ FLTK : la touche va d'abord au widget enfant
                 // focusé (`Fl::focus()` ≙ contrôle de formulaire
                 // in-page) puis remonte au parent si non consommée.
+                // En mode chrome le focus vit sur le canvas de la
+                // vue de l'onglet actif (`u.view`, partagé avec le
+                // layout via `SharedView`) — le shell le résout et
+                // retire le caret si le chrome détient le clavier
+                // (≙ `Fl::focus` unique). Standalone : la vue de la
+                // fenêtre partage le canvas du layout.
                 // `state` = masque FLTK brut (verbatim `keys.cc` lit
                 // `Fl::event_state()`).
-                let focused = self.wins[wi].view.borrow().focused_resource();
+                let focused = if let Some(g) = self.shell.clone() {
+                    g.borrow_mut().page_focus(wi)
+                } else {
+                    let res = self.wins[wi].view.borrow().focused_resource();
+                    res.map(|r| (r, Rc::clone(&self.wins[wi].view)))
+                };
                 let consumed = focused
                     .as_ref()
-                    .is_some_and(|r| self.dispatch_text_key(wi, r, &event));
+                    .is_some_and(|(r, v)| self.dispatch_text_key(wi, r, v, &event));
                 if !consumed {
                     let st = self.wins[wi].fl_state();
                     let consumed = self.shell_event(&ShellEv::Key {
@@ -1266,9 +1291,17 @@ impl ApplicationHandler for DwApp {
 impl DwApp {
     /// Délivre une touche au contrôle de formulaire focusé —
     /// adaptation : amont le widget FLTK enfant la reçoit de
-    /// `Fl::handle` (`Fl_Input`/`Fl_Text_Editor`). `true` =
-    /// consommé (≙ `handle` retourne 1, pas de remontée au shell).
-    fn dispatch_text_key(&mut self, wi: usize, res: &Rc<dyn Resource>, event: &KeyEvent) -> bool {
+    /// `Fl::handle` (`Fl_Input`/`Fl_Text_Editor`). `view` = vue du
+    /// contrôle (canvas du damage — onglet actif en mode chrome,
+    /// ≠ back-buffer fenêtre). `true` = consommé (≙ `handle`
+    /// retourne 1, pas de remontée au shell).
+    fn dispatch_text_key(
+        &mut self,
+        wi: usize,
+        res: &Rc<dyn Resource>,
+        view: &Rc<RefCell<SkiaView>>,
+        event: &KeyEvent,
+    ) -> bool {
         let Some(tr) = res.as_text_resource() else {
             return false;
         };
@@ -1318,7 +1351,7 @@ impl DwApp {
             // Damage de la zone du contrôle (≙ redraw() du widget
             // enfant après édition/déplacement du caret).
             if let Some(a) = res.allocation() {
-                self.wins[wi].view.borrow_mut().queue_draw(&Rectangle {
+                view.borrow_mut().queue_draw(&Rectangle {
                     x: a.x,
                     y: a.y,
                     width: a.width,

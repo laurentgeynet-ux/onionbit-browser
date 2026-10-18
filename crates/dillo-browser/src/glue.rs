@@ -47,6 +47,7 @@ use dillo_net::url::url_new;
 use dillo_net::{capi, history, timeout};
 use dillo_platform::app::{DwApp, ShellEv, ShellGlue};
 use dillo_platform::platform::SkiaPlatform;
+use dillo_platform::view::SkiaView;
 use dillo_platform::winit::dpi::LogicalSize;
 use dillo_platform::winit::event::{ElementState, KeyEvent};
 use dillo_platform::winit::keyboard::{Key, NamedKey};
@@ -459,7 +460,7 @@ impl Glue {
                     let v = view.borrow();
                     (v.to_canvas_x(vx), v.to_canvas_y(vy))
                 };
-                if let Some(l) = self.chrome.layout_of(ui) {
+                let processed = self.chrome.layout_of(ui).is_some_and(|l| {
                     l.borrow_mut().button_event(
                         ButtonEventType::ButtonPress,
                         clicks,
@@ -467,7 +468,17 @@ impl Glue {
                         cy,
                         state,
                         button,
-                    );
+                    )
+                });
+                // verbatim fltkviewbase.cc:307 : press consommé par
+                // le contenu → `Fl::focus(this)` — le viewport
+                // reprend le focus (Location ≙ `CustInput` défocalisée
+                // au clic dans la page). Sauf clic droit (`!=
+                // FL_RIGHT_MOUSE` — verbatim).
+                if processed && button != MOUSE_RIGHT {
+                    if let Some(u) = self.active_ui_mut(win) {
+                        u.focus = Focus::Main;
+                    }
                 }
                 app.request_redraw(win);
                 true
@@ -1019,7 +1030,14 @@ impl ShellGlue for Glue {
                 button,
                 clicks,
                 state,
-            } => self.press(app, win, x, y, button, clicks, state),
+            } => {
+                let consumed = self.press(app, win, x, y, button, clicks, state);
+                // ≙ `Fl::focus` unique : si le chrome a pris le
+                // clavier (location/findbar), le caret in-page
+                // est retiré (≙ `FL_UNFOCUS` de l'enfant).
+                let _ = self.page_focus(win);
+                consumed
+            }
             ShellEv::Release {
                 win,
                 x,
@@ -1147,6 +1165,25 @@ impl ShellGlue for Glue {
         } else {
             due
         }
+    }
+
+    /// ≙ `Fl::focus()` : la page détient le clavier seulement quand
+    /// le focus n'est pas sur un widget du chrome (location ≙
+    /// `CustInput`, findbar ≙ `MyInput`) ni sur un popup modal
+    /// (≙ grab `Fl_Menu` — les touches vont au menu). Le focus vit
+    /// sur le canvas de la vue de l'onglet actif (`u.view`, partagé
+    /// avec le `Layout` via `SharedView`). Quand le chrome possède
+    /// le focus, `set_focused_resource(None)` ≙ `FL_UNFOCUS` de
+    /// l'enfant (caret retiré + damage de sa zone) ; un popup seul
+    /// détourne les touches mais conserve le caret (≙ fenêtre de
+    /// menu au-dessus — `Fl::focus` inchangé amont).
+    fn page_focus(
+        &mut self,
+        win: usize,
+    ) -> Option<(Rc<dyn dillo_dw::ui::Resource>, Rc<RefCell<SkiaView>>)> {
+        let ui = self.active_ui(win)?;
+        let u = self.chrome.ui(ui)?;
+        Ui::page_focus_of(u, self.chrome.popup.is_some())
     }
 }
 
