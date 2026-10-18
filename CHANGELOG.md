@@ -17,6 +17,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   les 4 XFAIL amont (`margin-auto`, `max-width-html`, `span-padding`,
   `table-td-width-percent` — non-supports assumés par Dillo) +
   `svg-current-color` (AA de bords resvg ≠ nanosvg seulement).
+- **phase 9 — packaging + perf pass** : `packaging/package.{sh,ps1}`
+  assemblent l'archive autonome (layout dpid verbatim —
+  `dpi/<service>/<service>.dpi`, `dillo-dpid` renommé `dpid` pour
+  `Dpi_start_dpid`), `packaging/dillorc` = gabarit amont. Bench
+  `render_bench` (10× par fixture, médianes) + mesure RSS idle dans
+  `docs/perf.md` : ~60 ms démarrage, ~40 Mo WS, ~34 ms/page médiane.
+- **TLS** : provider crypto `ring` (ADR-0003) au lieu de `aws-lc-rs`
+  (défaut rustls) — plus de compilation C BoringSSL dans l'arbre.
 
 - `dillo-browser` : test `icon_probe` (décodage XPM `#RGB`/
   `#RRGGBB`/12&16 bits/canal, `#None`→transparent, ressources

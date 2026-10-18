@@ -243,4 +243,6 @@ prototype phase 0).
       `decode.rs` charset drain). Campagne 30k×6 clean
 - [ ] Parity sign-off : all audits `apply` merged, PORTING.md 100%
       resolved
-- [ ] Packaging (Windows/Linux), perf pass vs upstream baseline
+- [x] Packaging (Windows/Linux — `packaging/package.{sh,ps1}`, layout
+      dpid verbatim) + perf pass (`docs/perf.md` : 60 ms startup,
+      ~40 Mo RSS idle, corpus golden ~34 ms/page médiane)

@@ -352,3 +352,38 @@ fn render_pairs_pixel_identical() {
         failures.join("\n")
     );
 }
+
+/// Bench de rendu — `cargo test --release --test render_ref render_bench
+/// -- --ignored --nocapture`. Rend chaque fixture `N` fois (pipeline
+/// complète parse→style→layout→draw), rapporte médiane par fichier
+/// et total corpus. Non mesuré en `#[test]` normal : durée volatile.
+#[test]
+#[ignore = "bench manuel — `cargo test --release -- --ignored`"]
+fn render_bench() {
+    const N: u32 = 10;
+    let ps = pairs();
+    assert!(!ps.is_empty(), "aucune paire trouvée");
+
+    let mut total = std::time::Duration::ZERO;
+    for stem in &ps {
+        let mut stems = vec![format!("{stem}.html")];
+        stems.push(format!("{stem}.ref.html"));
+        for file in &stems {
+            let doc = std::fs::read(data_dir().join(file)).unwrap();
+            let mut times = Vec::with_capacity(N as usize);
+            for _ in 0..N {
+                let t = std::time::Instant::now();
+                let _r = render(&doc);
+                times.push(t.elapsed());
+            }
+            times.sort();
+            let med = times[N as usize / 2];
+            total += med;
+            println!("{file:50} median {med:>9.2?}  min {:>9.2?}", times[0]);
+        }
+    }
+    println!(
+        "=== corpus ({}) médianes additionnées : {total:?} ===",
+        ps.len()
+    );
+}
