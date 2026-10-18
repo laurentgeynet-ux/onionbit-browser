@@ -22,6 +22,7 @@
 //! - `tls_mbedtls.c` : sémantique cert portée ici (ci-dessus) ;
 //!   `tls_openssl.c` → won't port (backend alternatif amont).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::rc::Rc;
@@ -60,6 +61,31 @@ pub const CERT_STATUS_USER_ACCEPTED: i32 = 4;
 #[derive(Debug, Default)]
 struct TlsServer {
     cert_status: i32,
+}
+
+/// `Tls_servers` amont : état cert **partagé entre connexions** —
+/// global amont, ici `Rc` cloné dans chaque `TlsEngine` (une 2e
+/// connexion au même serveur attend le verdict de la 1re via
+/// `connect_ready` → `NOT_YET`). C'est aussi la seam
+/// `a_Tls_certificate_is_clean` pour HSTS
+/// (`crate::cache::cache_set_cert_clean`).
+/// `Tls_servers` amont — map (host-ci, port) → statut cert.
+type ServerMap = Vec<((String, u16), TlsServer)>;
+
+#[derive(Clone, Default)]
+pub struct CertRegistry(Rc<RefCell<ServerMap>>);
+
+impl CertRegistry {
+    /// `a_Tls_certificate_is_clean` ≙ `cert_status ==
+    /// CERT_STATUS_CLEAN` pour le (host, port) de `url`.
+    #[must_use]
+    pub fn certificate_is_clean(&self, url: &mut DilloUrl) -> bool {
+        let key = server_key(url);
+        self.0
+            .borrow()
+            .iter()
+            .any(|(k, s)| *k == key && s.cert_status == CERT_STATUS_CLEAN)
+    }
 }
 
 /// Warning de certificat ≙ bits de `mbedtls_ssl_get_verify_result`.
@@ -376,8 +402,9 @@ struct TlsConnEntry {
 pub struct TlsEngine {
     config: Arc<ClientConfig>,
     verifier: Arc<DilloVerifier>,
-    /// `servers` amont (find/insert « sorted » → Vec triée à l'insert).
-    servers: Vec<((String, u16), TlsServer)>,
+    /// `servers` amont (find/insert « sorted » → Vec triée à
+    /// l'insert) — partagée entre engines (≙ `Tls_servers` global).
+    servers: CertRegistry,
     /// `conn_list` amont : `sock_id` → entrée connexion.
     connections: HashMap<i32, TlsConnEntry>,
     /// `a_Dialog_choice` injecté.
@@ -390,7 +417,7 @@ pub struct TlsEngine {
 impl std::fmt::Debug for TlsEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TlsEngine")
-            .field("servers", &self.servers.len())
+            .field("servers", &self.servers.0.borrow().len())
             .finish_non_exhaustive()
     }
 }
@@ -450,12 +477,27 @@ impl TlsEngine {
     /// # Errors
     /// Cf. [`TlsEngine::new`].
     pub fn with_dialog(rt: tokio::runtime::Handle, dialog: CertDialog) -> io::Result<Self> {
+        Self::with_shared(rt, dialog, CertRegistry::default())
+    }
+
+    /// `a_Tls_init` avec `a_Dialog_choice` + `Tls_servers` partagé —
+    /// le binaire crée un [`CertRegistry`] unique et le clone dans
+    /// chaque `TlsEngine` (≙ le global amont) pour l'injecter aussi
+    /// dans `crate::cache::cache_set_cert_clean` (HSTS).
+    ///
+    /// # Errors
+    /// Cf. [`TlsEngine::new`].
+    pub fn with_shared(
+        rt: tokio::runtime::Handle,
+        dialog: CertDialog,
+        certs: CertRegistry,
+    ) -> io::Result<Self> {
         let verifier = make_verifier(native_roots())?;
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         Ok(Self {
             config: build_config(&verifier),
             verifier,
-            servers: Vec::new(),
+            servers: certs,
             connections: HashMap::new(),
             dialog,
             rt,
@@ -492,8 +534,9 @@ impl TlsEngine {
     /// obtenir le cert (RECEIVING), les suivantes attendent le verdict.
     pub fn connect_ready(&mut self, url: &mut DilloUrl) -> i32 {
         let key = server_key(url);
-        if let Some(pos) = self.servers.iter().position(|(k, _)| *k == key) {
-            let s = self.servers[pos].1.cert_status;
+        let mut servers = self.servers.0.borrow_mut();
+        if let Some(pos) = servers.iter().position(|(k, _)| *k == key) {
+            let s = servers[pos].1.cert_status;
             let ret = if s == CERT_STATUS_RECEIVING {
                 TLS_CONNECT_NOT_YET
             } else if s == CERT_STATUS_BAD {
@@ -502,11 +545,11 @@ impl TlsEngine {
                 TLS_CONNECT_READY
             };
             if s == CERT_STATUS_NONE {
-                self.servers[pos].1.cert_status = CERT_STATUS_RECEIVING;
+                servers[pos].1.cert_status = CERT_STATUS_RECEIVING;
             }
             ret
         } else {
-            self.servers.push((
+            servers.push((
                 key,
                 TlsServer {
                     cert_status: CERT_STATUS_RECEIVING,
@@ -521,6 +564,8 @@ impl TlsEngine {
     pub fn cert_status(&self, url: &mut DilloUrl) -> i32 {
         let key = server_key(url);
         self.servers
+            .0
+            .borrow()
             .iter()
             .find(|(k, _)| *k == key)
             .map_or(CERT_STATUS_NONE, |(_, s)| s.cert_status)
@@ -536,7 +581,8 @@ impl TlsEngine {
     /// connexion est morte avant réception du cert).
     pub fn reset_server_state(&mut self, url: &mut DilloUrl) {
         let key = server_key(url);
-        if let Some((_, s)) = self.servers.iter_mut().find(|(k, _)| *k == key) {
+        let mut servers = self.servers.0.borrow_mut();
+        if let Some((_, s)) = servers.iter_mut().find(|(k, _)| *k == key) {
             if s.cert_status == CERT_STATUS_RECEIVING {
                 s.cert_status = CERT_STATUS_NONE;
             }
@@ -642,7 +688,8 @@ impl TlsEngine {
 
     /// `a_Tls_reset_server_state` par clé serveur (usage `close_by_fd`).
     fn reset_server_state_by_key(&mut self, key: &(String, u16)) {
-        if let Some((_, s)) = self.servers.iter_mut().find(|(k, _)| k == key) {
+        let mut servers = self.servers.0.borrow_mut();
+        if let Some((_, s)) = servers.iter_mut().find(|(k, _)| k == key) {
             if s.cert_status == CERT_STATUS_RECEIVING {
                 s.cert_status = CERT_STATUS_NONE;
             }
@@ -681,7 +728,8 @@ impl TlsEngine {
         };
 
         let key = server_key(url);
-        if let Some((_, s)) = self.servers.iter_mut().find(|(k, _)| *k == key) {
+        let mut servers = self.servers.0.borrow_mut();
+        if let Some((_, s)) = servers.iter_mut().find(|(k, _)| *k == key) {
             s.cert_status = if choice == -1 {
                 CERT_STATUS_CLEAN
             } else if choice == 1 {
@@ -883,7 +931,8 @@ mod tests {
         // BAD → NEVER
         {
             let key = server_key(&mut u);
-            if let Some((_, s)) = eng.servers.iter_mut().find(|(k, _)| *k == key) {
+            let mut servers = eng.servers.0.borrow_mut();
+            if let Some((_, s)) = servers.iter_mut().find(|(k, _)| *k == key) {
                 s.cert_status = CERT_STATUS_BAD;
             }
         }
@@ -891,6 +940,45 @@ mod tests {
         // autre port → serveur distinct ; host insensible casse
         let mut u2 = url("https://EXAMPLE.com:444/");
         assert_eq!(eng.connect_ready(&mut u2), TLS_CONNECT_READY);
+    }
+
+    /// A01-D7 : `Tls_servers` est un état partagé entre connexions
+    /// (global amont) — le statut posé par une connexion pilote les
+    /// suivantes (`connect_ready` → `NOT_YET`/`NEVER`), et le registre
+    /// sert la seam `a_Tls_certificate_is_clean` (HSTS).
+    #[test]
+    fn cert_registry_shared_across_engines() {
+        let runtime = rt();
+        let certs = CertRegistry::default();
+        let mut e1 =
+            TlsEngine::with_shared(runtime.handle().clone(), Rc::new(|_, _| 2), certs.clone())
+                .unwrap();
+        let mut e2 =
+            TlsEngine::with_shared(runtime.handle().clone(), Rc::new(|_, _| 2), certs.clone())
+                .unwrap();
+        let mut u = url("https://example.com/");
+        // e1 crée l'entrée RECEIVING → e2 attend le verdict.
+        assert_eq!(e1.connect_ready(&mut u), TLS_CONNECT_READY);
+        assert_eq!(e2.connect_ready(&mut u), TLS_CONNECT_NOT_YET);
+        // e1 refuse le cert (dialog Cancel) → BAD partagé → NEVER.
+        assert!(!e1.after_handshake(&mut u, false));
+        assert_eq!(e2.connect_ready(&mut u), TLS_CONNECT_NEVER);
+        assert!(!certs.certificate_is_clean(&mut u));
+    }
+
+    /// A01-D7 : cert clean → `certificate_is_clean` reflète le
+    /// verdict (HSTS honoré) ; BAD → false.
+    #[test]
+    fn cert_registry_is_clean_after_verdict() {
+        let runtime = rt();
+        let certs = CertRegistry::default();
+        let mut eng =
+            TlsEngine::with_shared(runtime.handle().clone(), Rc::new(|_, _| 2), certs.clone())
+                .unwrap();
+        let mut u = url("https://example.com/");
+        eng.connect_ready(&mut u);
+        assert!(eng.after_handshake(&mut u, true));
+        assert!(certs.certificate_is_clean(&mut u));
     }
 
     #[test]

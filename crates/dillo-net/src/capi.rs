@@ -293,6 +293,12 @@ fn capi_ccc_fn(
     d1: ChainData,
     d2: ChainData,
 ) {
+    // `dReturn_if_fail(a_Chain_check(...))` amont — ignore les ops
+    // sur lien `Ended|Aborted` (appels directs : `conn_abort_inner`,
+    // drain `pending_abort`).
+    if !chain.check("a_Capi_ccc", op, branch, dir, info) {
+        return;
+    }
     // Profondeur pour drainer `pending_abort` à la sortie top-level.
     // Pendant OP_START le `local_key` n'est pas encore posé — amont
     // résout `conn = Data1` ; on le récupère de même depuis `d1`.
@@ -1364,6 +1370,29 @@ mod tests {
             cr2.borrow().datastr.as_deref(),
             Some(b"\xff\xfebin".as_slice())
         );
+    }
+
+    /// A01-D10 : `dReturn_if_fail(a_Chain_check)` en entrée de
+    /// `a_Capi_ccc` amont — un op direct sur un lien `Ended` est
+    /// ignoré (ici `(1,FWD,OP_ABORT)` libérerait le lien sinon).
+    #[test]
+    fn ccc_op_on_ended_link_is_noop() {
+        reset();
+        let mut ch = Chain::new();
+        let a = ch.new_link();
+        let _b = ch.link_new(a, capi_ccc(), FWD, Rc::new(|_, _, _, _, _, _, _| {}), 1, 1);
+        // `fcb(OP_END, a)` pose `CCC_ENDED` sur `a` (lien émetteur).
+        ch.fcb(OP_END, a, ChainData::None, ChainData::None);
+        capi_ccc_fn(
+            &mut ch,
+            OP_ABORT,
+            1,
+            FWD,
+            a,
+            ChainData::None,
+            ChainData::None,
+        );
+        assert!(ch.link(a).is_some(), "op traité sur lien ended");
     }
 
     /// A11-D13 : `pending_abort` posé pendant `OP_START` doit être

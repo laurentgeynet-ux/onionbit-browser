@@ -366,6 +366,9 @@ impl IoEngine {
             error!("IO_submit: FD not initialized");
             if let Some(io) = self.ios.get_mut(&key) {
                 io.stream = stream;
+                // `io->Buf` est conservé amont (données stagées
+                // survivent à un submit sans FD).
+                io.buf = staged;
             }
             return;
         }
@@ -374,6 +377,11 @@ impl IoEngine {
             return;
         };
         io.task = Some(if op == IO_READ {
+            if !staged.is_empty() {
+                // `IO_submit` ne touche pas `io->Buf` amont — les
+                // données pré-stagées (lecture) restent en place.
+                io.buf = staged;
+            }
             let (ctl_tx, ctl_rx) = mpsc::unbounded_channel();
             io.ctl_tx = Some(ctl_tx);
             self.rt.spawn(read_task(key, stream, tx, ctl_rx))

@@ -383,3 +383,43 @@ perdus.
 - Revérification passe 2 : D2–D5 toujours en place
   (`io.rs` canal borné + tests, `http.rs` check/`debug_assert`/MSG).
   D6–D13 documentées — **pas d'apply dans cette passe**.
+
+## Résultat
+
+Passe `apply` exécutée sur `audit/01-io-http` (worktree
+`C:/Projet/wt/dillorust-a01`) — les 8 déviations corrigées :
+
+- **D6** corrigé — `control.rs` : `GOT_HEADER=0x1`, `GOT_LENGTH=0x4`
+  (≙ `cache.h`) ; `load`/`rawload` distingués de nouveau.
+- **D7** corrigé — nouveau `tls::CertRegistry` (`Rc<RefCell>`
+  partagé entre `TlsEngine`s ≙ `Tls_servers` global amont) +
+  `certificate_is_clean` ; `main.rs` crée le registre, le clone
+  dans la factory d'engines (`TlsEngine::with_shared`) et le
+  branche sur `cache_set_cert_clean`. HSTS honoré sur cert clean.
+- **D8** corrigé — `socket_free` extrait l'entrée `socks` en
+  premier (≙ `a_Klist_remove`, `http.c:301`).
+- **D9** corrigé — `fd_map.insert` gardé + `warn!` « FD ENTRY
+  ALREADY FOUND » ≙ `assert` amont (deux sites : reuse, conn done).
+- **D10** corrigé — `chain.check("a_Capi_ccc"/"a_Dpi_ccc", …)` en
+  entrée de `capi_ccc_fn`/`dpi_ccc`.
+- **D11** corrigé — `wait` parsé ≙ `atof` (`dlib::strtod` —
+  préfixe numérique toléré).
+- **D12** corrigé — `poll_dns` sert chaque callback **avant**
+  retrait de l'entrée (`next_channel_call` + `queue_remove`
+  post-cb), canaux par index croissant — le re-resolve réentrant
+  partage le canal dans la même passe, succès ou échec.
+- **D13** corrigé — `io::submit` restaure `io.buf` quand aucun
+  stream/FD n'existe, et conserve le buffer stagé côté lecture.
+
+Tests de régression ajoutés : `wait_timeout_atof_prefix`
+(control), `ccc_op_on_ended_link_is_noop` (capi + dpi),
+`socket_free_extracts_entry_first` (http),
+`reentrant_resolve_shares_channel_in_same_pass` (dns),
+`cert_registry_shared_across_engines` +
+`cert_registry_is_clean_after_verdict` (tls),
+`hsts_header_registers_policy_only_when_cert_clean` (cache).
+
+Gates : `cargo fmt` clean · `clippy --workspace --all-targets
+-D warnings` clean · `cargo test --workspace` vert (175 tests
+`dillo-net`, 0 échec workspace) · `cargo doc --no-deps` sans
+warning.

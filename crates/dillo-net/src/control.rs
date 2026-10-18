@@ -21,6 +21,8 @@
 #![allow(clippy::too_many_lines)]
 #![forbid(unsafe_code)]
 
+use dillo_common::dlib;
+
 /// `enum control_req_stage` verbatim.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ReqStage {
@@ -117,15 +119,6 @@ pub trait CtlOps {
     fn by_name(&mut self, bw: u32, name: &str) -> i32;
     /// `getpid`.
     fn pid(&mut self) -> i64;
-}
-
-/// `CA_GotHeader | CA_GotLength` (verbatim `load` ≙ en-têtes
-/// synthétiques ; `rawload` ≙ 0 = en-têtes dans le corps).
-pub mod ca_flags {
-    /// `CA_GotHeader`.
-    pub const GOT_HEADER: u32 = 0x10;
-    /// `CA_GotLength`.
-    pub const GOT_LENGTH: u32 = 0x20;
 }
 
 /// Serveur de requêtes — ≙ les globaux `bw_waiting`/
@@ -393,7 +386,14 @@ impl Control {
             }
         } else if cmd == "load" {
             let url = bw.map_or_else(String::new, |b| ops.location_text(b));
-            if ops.entry_inject(&url, &req.body, ca_flags::GOT_HEADER | ca_flags::GOT_LENGTH) {
+            // `load` ≙ en-têtes synthétiques (`CA_GotHeader |
+            // CA_GotLength` amont — constantes de `cache`, pas de
+            // valeurs locales).
+            if ops.entry_inject(
+                &url,
+                &req.body,
+                crate::cache::ca_flags::GOT_HEADER | crate::cache::ca_flags::GOT_LENGTH,
+            ) {
                 if let Some(b) = bw {
                     ops.repush(b);
                 }
@@ -418,9 +418,10 @@ impl Control {
             let ret = bw.map_or(1, |b| ops.by_name(b, name));
             out(r, if ret == 0 { "0\n" } else { "1\n" });
         } else if cmd == "wait" || cmd.starts_with("wait ") {
-            // `atof(&cmd[5])` verbatim — 60.0 par défaut, ≤0 = infini.
+            // `atof(&cmd[5])` verbatim — préfixe numérique (`5abc`→5),
+            // 60.0 par défaut, ≤0 ou sans préfixe = infini.
             let timeout: f64 = if cmd.as_bytes().get(4) == Some(&b' ') {
-                cmd[5..].trim().parse().unwrap_or(0.0)
+                dlib::strtod(&cmd.as_bytes()[5..]).0
             } else {
                 60.0
             };
@@ -837,9 +838,12 @@ mod tests {
             ops.injected,
             [(
                 "https://cur/".to_string(),
-                ca_flags::GOT_HEADER | ca_flags::GOT_LENGTH
+                // `CA_GotHeader|CA_GotLength` amont (0x1|0x4) —
+                // régression A01-D6 : le module local portait 0x10/0x20.
+                crate::cache::ca_flags::GOT_HEADER | crate::cache::ca_flags::GOT_LENGTH
             )]
         );
+        assert_eq!(ops.injected[0].1, 0x5);
         // rawload : flags 0 verbatim.
         assert_eq!(run(b"rawload\nHTTP/1.0 200\n\nx", &mut ops), b"0\n");
         assert_eq!(ops.injected[1].1, 0);
@@ -910,6 +914,25 @@ mod tests {
         c.on_readable(id2, &mut ops);
         while c.on_writable(id2) {}
         assert_eq!(*w2.borrow(), b"1\nalready waiting\n");
+    }
+
+    /// A01-D11 : `atof(&cmd[5])` amont consomme le préfixe numérique —
+    /// `wait 5abc` → 5 s, pas attente infinie.
+    #[test]
+    fn wait_timeout_atof_prefix() {
+        let mut c = Control::new();
+        let mut ops = FakeOps::default();
+        let (io, _w) = FakeIo::new(b"wait 5abc\n");
+        let id = c.accept(Box::new(io));
+        c.on_readable(id, &mut ops);
+        assert_eq!(c.take_wait_timeout(), Some(5.0));
+        // Sans préfixe numérique → 0 → infini (verbatim) — `Control`
+        // frais (un seul `wait` en vol par instance amont).
+        let mut c2 = Control::new();
+        let (io2, _w2) = FakeIo::new(b"wait zzz\n");
+        let id2 = c2.accept(Box::new(io2));
+        c2.on_readable(id2, &mut ops);
+        assert_eq!(c2.take_wait_timeout(), None);
     }
 
     #[test]
