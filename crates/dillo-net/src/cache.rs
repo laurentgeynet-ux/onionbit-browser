@@ -2079,6 +2079,44 @@ mod tests {
         assert!(cache_get_flags(&url) & ca::GOT_HEADER != 0);
     }
 
+    /// A01-D7 : `Strict-Transport-Security` honoré quand la seam
+    /// `cert_clean` est câblée (≙ `a_Tls_certificate_is_clean` amont,
+    /// `hsts.c:208`) — ignorée sinon.
+    #[test]
+    fn hsts_header_registers_policy_only_when_cert_clean() {
+        reset();
+        crate::hsts::hsts_freeall();
+        crate::hsts::hsts_init(true, None);
+        cache_set_prefs(false, true);
+        // Seam absente → clean=false → STS ignoré (comme amont sur
+        // connexion non TLS-clean).
+        let url = u("https://sts.example/");
+        cache_open_url(web(&url, WEB_ROOT_URL), Some(Box::new(|_, _| {})));
+        process_dbuf(
+            IO_READ,
+            &resp(
+                "HTTP/1.1 200 OK\nStrict-Transport-Security: max-age=100\nContent-Length: 1",
+                "x",
+            ),
+            &url,
+        );
+        assert!(!crate::hsts::hsts_require_https("sts.example"));
+        // Seam câblée → politique enregistrée.
+        cache_set_cert_clean(Box::new(|_| true));
+        let url2 = u("https://sts2.example/");
+        cache_open_url(web(&url2, WEB_ROOT_URL), Some(Box::new(|_, _| {})));
+        process_dbuf(
+            IO_READ,
+            &resp(
+                "HTTP/1.1 200 OK\nStrict-Transport-Security: max-age=100\nContent-Length: 1",
+                "x",
+            ),
+            &url2,
+        );
+        assert!(crate::hsts::hsts_require_https("sts2.example"));
+        CACHE.with(|c| c.borrow_mut().cert_clean = None);
+    }
+
     #[test]
     fn folded_header_is_unfolded_and_crs_stripped() {
         reset();

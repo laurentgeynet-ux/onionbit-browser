@@ -242,31 +242,28 @@ impl Dns {
         self.cache.push((hostname, addrs));
     }
 
-    /// `Dns_serve_channel` — collecte tous les callbacks du canal dans
-    /// `calls` (invocation différée hors emprunt du module — les
-    /// callbacks peuvent toucher `Chain`).
-    fn serve_channel(
+    /// `Dns_serve_channel`, un pas : extrait le callback du premier
+    /// client non servi du canal. L'entrée RESTE en file pendant
+    /// l'invocation — amont fait `cb_func` **puis** `Dns_queue_remove`
+    /// (`dns.c:408-413`), donc un `a_Dns_resolve` réentrant du même
+    /// hostname pendant le callback trouve l'entrée, partage ce canal
+    /// et reçoit le même résultat dans la même passe. Le pilote
+    /// ([`poll_dns`]) invoque puis retire via `queue_remove(idx)`.
+    fn next_channel_call(
         &mut self,
         channel: usize,
-        result: &Result<Vec<IpAddr>, i32>,
-        calls: &mut Vec<DnsCall>,
-    ) {
-        let (status, addrs) = match result {
-            Ok(v) => (0, Some(v.clone())),
-            Err(e) => (*e, None),
-        };
-        let mut i = 0;
-        while i < self.queue.len() {
-            if self.queue[i].channel == i32::try_from(channel).unwrap_or_default() {
-                let cb = self.queue[i].cb.take();
-                self.queue_remove(i);
-                if let Some(cb) = cb {
-                    calls.push((cb, status, addrs.clone()));
-                }
-            } else {
-                i += 1;
-            }
-        }
+        status: i32,
+        addrs: Option<&[IpAddr]>,
+    ) -> Option<(usize, DnsCall)> {
+        let ch = i32::try_from(channel).unwrap_or_default();
+        let i = self
+            .queue
+            .iter()
+            .position(|e| e.channel == ch && e.cb.is_some())?;
+        self.queue[i]
+            .cb
+            .take()
+            .map(|cb| (i, (cb, status, addrs.map(<[IpAddr]>::to_vec))))
     }
 
     /// `Dns_assign_channels` — canaux libres → file `−2` (FIFO, partage
@@ -291,14 +288,9 @@ impl Dns {
         }
     }
 
-    /// `Dns_timeout_client` — à appeler depuis la boucle d'événements :
-    /// vide le canal de notification, sert les canaux résolus, réassigne.
-    /// Retourne les callbacks collectés (invoqués par [`poll_dns`]).
-    ///
-    /// En mode sync, joue aussi les résolutions en attente (`poll` sert
-    /// de point de progression, comme le pipe amont sert de wakeup).
-    fn poll(&mut self) -> Vec<DnsCall> {
-        let mut calls = Vec::new();
+    /// Vide `done_rx` (+ `sync_done` en mode `!D_DNS_THREADED`).
+    /// Amont itère les canaux RESOLVED par index croissant — on trie.
+    fn take_done(&mut self) -> Vec<DnsDone> {
         let mut done: Vec<DnsDone> = Vec::new();
         while let Ok(d) = self.done_rx.try_recv() {
             done.push(d);
@@ -306,17 +298,8 @@ impl Dns {
         while let Some(d) = self.sync_done.pop_front() {
             done.push(d);
         }
-        for d in done {
-            let ch = d.channel;
-            if let Ok(addrs) = &d.result {
-                self.cache_add(d.hostname.clone(), addrs.clone());
-            }
-            self.serve_channel(ch, &d.result, &mut calls);
-            self.servers[ch].state = ServerState::Idle;
-            debug!(channel = ch, host = %d.hostname, "dns resolved");
-        }
-        self.assign_channels();
-        calls
+        done.sort_by_key(|d| d.channel);
+        done
     }
 }
 
@@ -331,14 +314,42 @@ pub fn dns_resolve(chain: &mut Chain, hostname: &str, cb: DnsCallback) {
     }
 }
 
-/// `Dns_timeout_client` — draine les résolutions et invoque les
-/// callbacks avec `&mut Chain` (thread principal, single-writer).
+/// `Dns_timeout_client` — draine les résolutions et sert chaque canal
+/// sur le thread principal : `Dns_cache_add` d'abord (succès), puis
+/// chaque callback **invoqué avant le retrait de son entrée** (amont
+/// `dns.c:408-413` — un `a_Dns_resolve` réentrant pendant le cb
+/// partage le canal et reçoit le même résultat dans la passe),
+/// canal → IDLE, et `Dns_assign_channels` une fois à la fin.
 pub fn poll_dns(chain: &mut Chain) {
-    let calls = chain
+    let done = chain
         .module_mut::<Dns>()
-        .map_or_else(Vec::new, |dns| dns.poll());
-    for (cb, status, addrs) in calls {
-        cb(chain, status, addrs);
+        .map_or_else(Vec::new, Dns::take_done);
+    for d in done {
+        let (status, addrs) = match &d.result {
+            Ok(v) => (0, Some(v.clone())),
+            Err(e) => (*e, None),
+        };
+        if addrs.is_some() {
+            if let Some(dns) = chain.module_mut::<Dns>() {
+                dns.cache_add(d.hostname.clone(), addrs.clone().unwrap_or_default());
+            }
+        }
+        while let Some((idx, (cb, st, al))) = chain
+            .module_mut::<Dns>()
+            .and_then(|dns| dns.next_channel_call(d.channel, status, addrs.as_deref()))
+        {
+            cb(chain, st, al);
+            if let Some(dns) = chain.module_mut::<Dns>() {
+                dns.queue_remove(idx);
+            }
+        }
+        if let Some(dns) = chain.module_mut::<Dns>() {
+            dns.servers[d.channel].state = ServerState::Idle;
+        }
+        debug!(channel = d.channel, host = %d.hostname, "dns resolved");
+    }
+    if let Some(dns) = chain.module_mut::<Dns>() {
+        dns.assign_channels();
     }
 }
 
@@ -440,5 +451,36 @@ mod tests {
         dns_resolve(&mut ch, "not a host name!!", cb);
         poll_dns(&mut ch);
         assert_eq!(*hits.borrow(), vec![None]);
+    }
+
+    /// A01-D12 : un `a_Dns_resolve` réentrant pendant le callback
+    /// partage le canal en cours de service — amont retire l'entrée
+    /// APRÈS `cb_func` (`dns.c:408-413`), donc `Dns_queue_find` voit
+    /// encore l'entrée et la nouvelle requête reçoit le même
+    /// résultat dans la même passe.
+    #[test]
+    fn reentrant_resolve_shares_channel_in_same_pass() {
+        let mut ch = dns_chain();
+        let hits = Rc::new(RefCell::new(Vec::new()));
+        let h2 = hits.clone();
+        let cb: DnsCallback = Box::new(move |chain, _st, addrs| {
+            h2.borrow_mut().push(addrs.is_some());
+            if h2.borrow().len() == 1 {
+                let h3 = h2.clone();
+                dns_resolve(
+                    chain,
+                    "not a host name!!",
+                    Box::new(move |_c, _s, a| {
+                        h3.borrow_mut().push(a.is_some());
+                    }),
+                );
+            }
+        });
+        dns_resolve(&mut ch, "not a host name!!", cb);
+        poll_dns(&mut ch);
+        // les 2 callbacks servis dans la même passe, même échec —
+        // sans nouvelle requête sur un autre canal.
+        assert_eq!(*hits.borrow(), vec![false, false]);
+        assert!(ch.module_mut::<Dns>().unwrap().queue.is_empty());
     }
 }

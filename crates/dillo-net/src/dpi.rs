@@ -579,6 +579,10 @@ fn dpi_ccc(
     d1: ChainData,
     d2: ChainData,
 ) {
+    // `dReturn_if_fail(a_Chain_check("a_Dpi_ccc", ...))` amont.
+    if !chain.check("a_Dpi_ccc", op, branch, dir, info) {
+        return;
+    }
     match (branch, dir, op) {
         // ------- branche 1 BCK : commandes vers le serveur -------
         (1, BCK, OP_START) => {
@@ -733,6 +737,29 @@ pub fn send_blocking_cmd(server_name: &str, cmd: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chain::{Chain, FWD};
+
+    /// A01-D10 : `a_Chain_check` en entrée de `a_Dpi_ccc` amont —
+    /// un op direct sur un lien `Ended` est ignoré (ici `(1,FWD,
+    /// OP_ABORT)` libérerait le lien sinon).
+    #[test]
+    fn ccc_op_on_ended_link_is_noop() {
+        let mut ch = Chain::new();
+        let a = ch.new_link();
+        let _d = ch.link_new(a, dpi_ccb(), FWD, Rc::new(|_, _, _, _, _, _, _| {}), 1, 1);
+        // `fcb(OP_END, a)` pose `CCC_ENDED` sur `a` (lien émetteur).
+        ch.fcb(OP_END, a, ChainData::None, ChainData::None);
+        dpi_ccc(
+            &mut ch,
+            OP_ABORT,
+            1,
+            FWD,
+            a,
+            ChainData::None,
+            ChainData::None,
+        );
+        assert!(ch.link(a).is_some(), "op traité sur lien ended");
+    }
 
     fn conn(buf: &[u8]) -> DpiConn {
         let c = conn_new(0);

@@ -733,7 +733,10 @@ fn socket_free(chain: &mut Chain, skey: i32) {
         let Some(eng) = chain.module_mut::<HttpEngine>() else {
             return;
         };
-        let Some(sd) = eng.socks.get_mut(&skey) else {
+        // `a_Klist_remove(ValidSocks, SKey)` **en premier** amont
+        // (http.c:301) : une réentrance pendant le cleanup trouve
+        // l'entrée absente → no-op (pas de double `active_conns--`).
+        let Some(mut sd) = eng.socks.remove(&skey) else {
             return;
         };
         if sd.flags & HTTP_SOCKET_IOWATCH_ACTIVE != 0 {
@@ -746,6 +749,8 @@ fn socket_free(chain: &mut Chain, skey: i32) {
         if sd.flags & HTTP_SOCKET_QUEUED != 0 {
             sd.flags |= HTTP_SOCKET_TO_BE_FREED;
             sd.url = None;
+            // Le zombie reste en table : la file le balaiera (dFree).
+            eng.socks.insert(skey, sd);
             Tail::Zombie
         } else {
             if sd.sock_id != -1 {
@@ -806,10 +811,8 @@ fn socket_free(chain: &mut Chain, skey: i32) {
         }
         connect_queued_sockets(chain, &srv_key);
     }
-    // `a_Url_free(S->url); dFree(S)` — retrait de ValidSocks
-    if let Some(eng) = chain.module_mut::<HttpEngine>() {
-        eng.socks.remove(&skey);
-    }
+    // `a_Url_free(S->url); dFree(S)` — la sd a été extraite en tête
+    // (≙ `a_Klist_remove` amont) ; son drop ici la libère.
 }
 
 /// `Http_server_remove` — vide la file (zombies → `dFree`) + retrait.
@@ -1465,7 +1468,12 @@ fn socket_reuse(chain: &mut Chain, skey: i32) {
         let Some(eng) = chain.module_mut::<HttpEngine>() else {
             return;
         };
-        eng.fd_map.insert(old_sock, new_skey); // fd_map_add_entry(new)
+        // `Http_fd_map_add_entry` — doublon ≙ MSG_ERR+assert amont
+        // (release : réécriture, plus sûr que le doublon amont).
+        if eng.fd_map.insert(old_sock, new_skey).is_some() {
+            warn!("FD ENTRY ALREADY FOUND FOR {old_sock}");
+            debug_assert!(false, "fd_map entry already exists for {old_sock}");
+        }
     }
     debug!(fd = old_sock, "Reusing fd");
     connect_done(chain, old_sock, true);
@@ -1502,7 +1510,11 @@ fn on_connected(chain: &mut Chain, skey: i32, stream: TcpStream) {
         sd.flags &= !HTTP_SOCKET_IOWATCH_ACTIVE;
         sd.connect_abort = None;
         sd.sock_id = sock_id;
-        eng.fd_map.insert(sock_id, skey); // Http_fd_map_add_entry
+        // `Http_fd_map_add_entry` — doublon ≙ MSG_ERR+assert amont.
+        if eng.fd_map.insert(sock_id, skey).is_some() {
+            warn!("FD ENTRY ALREADY FOUND FOR {sock_id}");
+            debug_assert!(false, "fd_map entry already exists for {sock_id}");
+        }
         (sd.info, sd.flags & HTTP_SOCKET_TLS != 0)
     };
     if is_tls {
@@ -2136,6 +2148,43 @@ mod tests {
         let e = ch.module_mut::<HttpEngine>().expect("e");
         assert!(!e.socks.contains_key(&k));
         assert!(!e.servers.contains_key(&srv_key));
+    }
+
+    /// A01-D8 : `socket_free` retire l'entrée de `socks` **avant** le
+    /// cleanup (≙ `a_Klist_remove` en tête, http.c:301) — un appel
+    /// réentrant/répété est un no-op, pas une double décrémentation.
+    #[test]
+    fn socket_free_extracts_entry_first() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        let mut ch = chain_with_eng(rt.handle());
+        let k = ch.module_mut::<HttpEngine>().expect("e").sock_new();
+        mk_sock(&mut ch, k, WEB_ROOT_URL, true);
+        {
+            let e = ch.module_mut::<HttpEngine>().expect("e");
+            let srv = e.server_get("h.local", 80, false);
+            srv.active_conns = 1;
+            let sd = e.socks.get_mut(&k).expect("sd");
+            sd.sock_id = 42;
+            sd.connected_to = Some("h.local".into());
+            sd.connect_port = 80;
+            e.fd_map.insert(42, k);
+        }
+        socket_free(&mut ch, k);
+        {
+            let e = ch.module_mut::<HttpEngine>().expect("e");
+            assert!(!e.socks.contains_key(&k), "entrée retirée");
+            assert!(!e.fd_map.contains_key(&42), "fd_map purgé");
+            // serveur balayé quand active_conns retombe à 0.
+            assert!(!e.servers.contains_key(&("h.local".to_string(), 80, false)));
+        }
+        // Appel répété : no-op — pas de double décrémentation.
+        socket_free(&mut ch, k);
+        let e = ch.module_mut::<HttpEngine>().expect("e");
+        assert!(!e.socks.contains_key(&k));
+        assert!(!e.servers.contains_key(&("h.local".to_string(), 80, false)));
     }
 
     #[test]

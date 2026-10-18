@@ -409,6 +409,12 @@ fn main() -> std::process::ExitCode {
         let rt2 = handle.clone();
         let passwd = Rc::clone(&proxy_passwd);
         let dialogs = Rc::clone(&glue.dialogs);
+        // `Tls_servers` amont est un global : registre cert partagé
+        // entre toutes les connexions (verdict d'une connexion pilote
+        // les suivantes) — et seam `a_Tls_certificate_is_clean` vers
+        // le cache pour HSTS.
+        let tls_certs = dillo_net::tls::CertRegistry::default();
+        let certs = tls_certs.clone();
         capi::capi_set_engine_factory(Rc::new(move |chain| {
             chain.set_module(IoEngine::new(rt2.clone()));
             chain.set_module(Dns::new(rt2.clone()));
@@ -438,10 +444,11 @@ fn main() -> std::process::ExitCode {
                     None => 2,
                 }
             });
-            if let Ok(tls) = TlsEngine::with_dialog(rt2.clone(), dialog) {
+            if let Ok(tls) = TlsEngine::with_shared(rt2.clone(), dialog, certs.clone()) {
                 chain.set_module(tls);
             }
         }));
+        cache::cache_set_cert_clean(Box::new(move |url| tls_certs.certificate_is_clean(url)));
     }
 
     // --- première BrowserWindow (verbatim) -------------------------------
