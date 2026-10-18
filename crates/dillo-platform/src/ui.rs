@@ -399,7 +399,10 @@ pub struct SkiaEntryResource {
     label_w: Cell<i32>,
     /// `placeholder` — dessiné quand `text` vide.
     placeholder: Option<String>,
-    /// `editable` — verbatim flag (init `false`).
+    /// `editable` — verbatim flag (init `false`) **inerte** :
+    /// amont `isEditable` n'a aucun appelant et `setEditable(false)`
+    /// (readonly) n'altère pas le `Fl_Input` — quirk conservé,
+    /// le gate réel est `enabled` (≙ `deactivate`).
     editable: Cell<bool>,
     /// `focused` — ≙ `Fl::focus() == input` (caret affiché).
     focused: Cell<bool>,
@@ -512,8 +515,9 @@ impl Resource for SkiaEntryResource {
             baseline,
             shown.as_bytes(),
         );
-        // Caret ≙ `input->position()` du widget enfant focusé.
-        if self.focused.get() && self.editable.get() {
+        // Caret ≙ `input->position()` du widget enfant focusé
+        // (`editable` inerte amont — readonly affiche le caret).
+        if self.focused.get() {
             let cur = clamp_boundary(&text, self.cursor.get());
             let prefix: String = if self.password {
                 "*".repeat(text[..cur].chars().count())
@@ -591,11 +595,16 @@ impl TextResource for SkiaEntryResource {
         self.focused.get()
     }
 
-    /// `keyEvent` ≙ `Fl_Input::handle(FL_KEYBOARD)` : déplacement
-    /// toujours, édition si `editable` (input read-only amont
-    /// garde navigation/sélection), Enter → `emitActivate`
-    /// (`FL_WHEN_ENTER_KEY_ALWAYS`).
+    /// `keyEvent` ≙ `Fl_Input::handle(FL_KEYBOARD)` : déplacements
+    /// du caret et édition, Enter → `emitActivate`
+    /// (`FL_WHEN_ENTER_KEY_ALWAYS`). Le flag `editable` est inerte
+    /// amont (`isEditable` sans appelant — readonly reste
+    /// saisissable, quirk verbatim) ; inactif ≙ `deactivate` : le
+    /// widget n'a pas de clavier → non consommé (bulle au shell).
     fn key_event(&self, key: TextKey) -> bool {
+        if !self.core.enabled.get() {
+            return false;
+        }
         if key == TextKey::Enter {
             self.emit_activate();
             return true;
@@ -604,14 +613,14 @@ impl TextResource for SkiaEntryResource {
         let mut cur = clamp_boundary(&t, self.cursor.get());
         match key {
             TextKey::Backspace => {
-                if self.editable.get() && cur > 0 {
+                if cur > 0 {
                     let prev = t[..cur].char_indices().next_back().map_or(0, |(i, _)| i);
                     t.drain(prev..cur);
                     cur = prev;
                 }
             }
             TextKey::Delete => {
-                if self.editable.get() && cur < t.len() {
+                if cur < t.len() {
                     let next = cur + t[cur..].chars().next().map_or(1, char::len_utf8);
                     t.drain(cur..next);
                 }
@@ -636,8 +645,9 @@ impl TextResource for SkiaEntryResource {
 
     /// `insertText` ≙ saisie/paste — mono-ligne : `\r`/`\n`
     /// ignorés (≙ `Fl_Input`), `maxLength` borné en chars.
+    /// Inactif ≙ `deactivate` : rien n'arrive au widget.
     fn insert_text(&self, s: &str) {
-        if !self.editable.get() {
+        if !self.core.enabled.get() {
             return;
         }
         let mut t = self.text.borrow_mut();
@@ -685,7 +695,8 @@ pub struct SkiaMultiLineTextResource {
     num_rows: i32,
     /// `placeholder`.
     placeholder: Option<String>,
-    /// `editable` — verbatim (init `false`).
+    /// `editable` — verbatim (init `false`) **inerte** ≙ amont
+    /// (`isEditable` sans appelant — readonly reste saisissable).
     editable: Cell<bool>,
     /// `focused` — ≙ `Fl::focus() == editor` (caret affiché).
     focused: Cell<bool>,
@@ -761,8 +772,9 @@ impl Resource for SkiaMultiLineTextResource {
         );
         // Caret ≙ `editor->insert_position()` (ligne/colonne sur
         // les `\n` — le wrap visuel n'est pas pris en compte,
-        // approximation documentée).
-        if self.focused.get() && self.editable.get() {
+        // approximation documentée). `editable` inerte amont —
+        // readonly affiche le caret.
+        if self.focused.get() {
             let cur = clamp_boundary(&text, self.cursor.get());
             let before = &text[..cur];
             let line = before.matches('\n').count() as i32;
@@ -840,9 +852,14 @@ impl TextResource for SkiaMultiLineTextResource {
     }
 
     /// `keyEvent` ≙ `Fl_Text_Editor::handle(FL_KEYBOARD)` — Enter
-    /// insère `\n` (pas d'activate pour l'éditeur amont).
+    /// insère `\n` (pas d'activate pour l'éditeur amont). `editable`
+    /// inerte amont (verbatim) ; inactif ≙ `deactivate` → non
+    /// consommé (bulle au shell).
     fn key_event(&self, key: TextKey) -> bool {
-        if key == TextKey::Enter && self.editable.get() {
+        if !self.core.enabled.get() {
+            return false;
+        }
+        if key == TextKey::Enter {
             self.insert_text("\n");
             return true;
         }
@@ -850,14 +867,14 @@ impl TextResource for SkiaMultiLineTextResource {
         let mut cur = clamp_boundary(&t, self.cursor.get());
         match key {
             TextKey::Backspace => {
-                if self.editable.get() && cur > 0 {
+                if cur > 0 {
                     let prev = t[..cur].char_indices().next_back().map_or(0, |(i, _)| i);
                     t.drain(prev..cur);
                     cur = prev;
                 }
             }
             TextKey::Delete => {
-                if self.editable.get() && cur < t.len() {
+                if cur < t.len() {
                     let next = cur + t[cur..].chars().next().map_or(1, char::len_utf8);
                     t.drain(cur..next);
                 }
@@ -886,9 +903,10 @@ impl TextResource for SkiaMultiLineTextResource {
     }
 
     /// `insertText` ≙ saisie/paste dans le `Fl_Text_Editor`
-    /// (newlines conservés).
+    /// (newlines conservés). Inactif ≙ `deactivate` : rien
+    /// n'arrive au widget.
     fn insert_text(&self, s: &str) {
-        if !self.editable.get() {
+        if !self.core.enabled.get() {
             return;
         }
         let mut t = self.text.borrow_mut();
@@ -2198,14 +2216,25 @@ mod input_tests {
         assert_eq!(rec.borrow().log.borrow().as_slice(), &["a"]);
     }
 
-    /// Entrée non éditable : saisie ignorée (≙ read-only `Fl_Input`)
-    /// mais les flèches restent consommées.
+    /// Quirk verbatim : `setEditable(false)` (readonly) pose un
+    /// flag **inerte** amont (`isEditable` sans appelant — le
+    /// `Fl_Input` reste `FL_NORMAL_INPUT`) : l'entrée reste
+    /// saisissable. Le vrai gate est `enabled` ≙ `deactivate`.
     #[test]
-    fn entry_readonly_ignores_edits() {
+    fn entry_readonly_stays_editable_verbatim() {
         let res = SkiaEntryResource::new(10, false, "", "");
+        res.set_editable(false);
+        assert!(!res.is_editable());
         res.insert_text("x");
+        assert_eq!(res.get_text(), "x");
+        assert!(res.key_event(TextKey::Backspace));
         assert_eq!(res.get_text(), "");
-        assert!(res.key_event(TextKey::Backspace)); // consommé
+
+        // `setEnabled(false)` ≙ `deactivate` : clavier ignoré
+        // (non consommé → remonte ≙ bulle FLTK).
+        res.set_enabled(false);
+        assert!(!res.key_event(TextKey::Backspace));
+        res.insert_text("y");
         assert_eq!(res.get_text(), "");
     }
 

@@ -2523,29 +2523,29 @@ impl Layout {
         if self.node(w, |n| matches!(&n.kind, WidgetKind::Image { .. })) {
             return self.img_button_press_impl(w, event);
         }
-        // `Embed::buttonPressImpl` — verbatim ui.cc:113 :
+        // `Embed::buttonPressImpl` — verbatim ui.cc:116 :
         // bouton 3 → `resource->emitClicked`, `handled = true`.
         if let Some(res) = self.embed_resource(w) {
             if event.button == 3 {
                 res.emit_clicked(event);
-                // L'enfant FLTK aurait aussi pris le focus.
-                if let Some(tr) = res.as_text_resource() {
-                    if tr.is_editable() {
-                        if let Some(v) = self.view_mut() {
-                            v.set_focused_resource(Some(res.clone()));
-                        }
-                    }
-                }
                 return true;
             }
-            // Adaptation : amont le contrôle est un vrai widget
-            // FLTK enfant qui reçoit le clic nativement — press sur
-            // une entrée texte ≙ `take_focus` du `Fl_Input`.
-            if let Some(tr) = res.as_text_resource() {
-                if tr.is_editable() {
-                    if let Some(v) = self.view_mut() {
-                        v.set_focused_resource(Some(res.clone()));
-                    }
+            // Adaptation enfant FLTK : amont `Fl_Group::handle`
+            // donne le press à l'enfant sous le curseur AVANT
+            // `FltkViewBase::handle` — un contrôle inactif
+            // (`deactivate` ≙ `setEnabled(false)` amont) n'en
+            // reçoit pas → `Embed` retourne `false` verbatim et
+            // l'event bulle (sélection textblock).
+            if !res.is_enabled() {
+                return false;
+            }
+            // Entrée texte ≙ `Fl_Input`/`Fl_Text_Editor` enfant :
+            // le press prend le focus (`take_focus`) et consomme.
+            // NB `editable` est un flag **inerte** amont (jamais
+            // lu — readonly reste saisissable, quirk verbatim).
+            if res.as_text_resource().is_some() {
+                if let Some(v) = self.view_mut() {
+                    v.set_focused_resource(Some(res.clone()));
                 }
                 return true;
             }
@@ -2568,9 +2568,13 @@ impl Layout {
         }
         // Adaptation : `FL_RELEASE` sur le widget enfant ≙
         // `FL_WHEN_RELEASE`/`FL_WHEN_CHANGED` (clicked, toggle).
+        // Inactif ≙ `deactivate` : pas d'event → non consommé.
         // Consommé → `queueDraw` : le handler a pu muter le contrôle
         // (toggle, `setText` via reset — ≙ `widget->redraw` amont).
         if let Some(res) = self.embed_resource(w) {
+            if !res.is_enabled() {
+                return false;
+            }
             let handled = res.ui_button(event, false);
             if handled {
                 self.widget_queue_draw(w);

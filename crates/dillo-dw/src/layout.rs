@@ -2204,8 +2204,9 @@ mod tests {
     struct MockText {
         /// Émetteurs verbatim.
         emitters: crate::ui::ResourceEmitters,
-        /// `editable`.
-        editable: bool,
+        /// `enabled` — ≙ `widget->active()` (le vrai gate amont ;
+        /// `editable` est un flag inerte verbatim).
+        enabled: std::cell::Cell<bool>,
         /// `set_focused` capturé.
         focused: std::cell::Cell<bool>,
         /// `ui_button` capturé `(press)`.
@@ -2214,10 +2215,10 @@ mod tests {
 
     impl MockText {
         /// Ctor.
-        fn new(editable: bool) -> Self {
+        fn new(enabled: bool) -> Self {
             Self {
                 emitters: crate::ui::ResourceEmitters::new(),
-                editable,
+                enabled: std::cell::Cell::new(enabled),
                 focused: std::cell::Cell::new(false),
                 clicks: std::cell::RefCell::new(Vec::new()),
             }
@@ -2250,9 +2251,11 @@ mod tests {
             ))
         }
         fn is_enabled(&self) -> bool {
-            true
+            self.enabled.get()
         }
-        fn set_enabled(&self, _e: bool) {}
+        fn set_enabled(&self, e: bool) {
+            self.enabled.set(e);
+        }
         /// Consommé — ≙ le widget enfant prend le clic.
         fn ui_button(&self, _e: &crate::events::EventButton, press: bool) -> bool {
             self.clicks.borrow_mut().push(press);
@@ -2269,7 +2272,7 @@ mod tests {
         }
         fn set_text(&self, _t: &str) {}
         fn is_editable(&self) -> bool {
-            self.editable
+            false
         }
         fn set_editable(&self, _e: bool) {}
         fn set_focused(&self, f: bool) {
@@ -2759,21 +2762,21 @@ mod tests {
         assert!(l.w_button_release_impl(w, &ev));
         assert_eq!(res.clicks.borrow().as_slice(), &[false]);
 
-        // Entrée non éditable : consommé mais PAS de focus
-        // (≙ read-only : le widget enfant prend l'event, le focus
-        // resterait chez lui — ici pas de take_focus).
-        let res_ro = Rc::new(MockText::new(false));
-        let res_ro_dyn: Rc<dyn crate::ui::Resource> = res_ro.clone();
-        let w2 = l.add_embed_widget(&res_ro_dyn);
-        assert!(l.w_button_press_impl(w2, &ev));
-        let rv = l
-            .view_mut()
-            .and_then(|v| v.as_any())
-            .and_then(|a| a.downcast_ref::<RecView>())
-            .expect("recview");
+        // NB `editable` est inerte amont — `is_editable` false
+        // (MockText) n'empêche pas le focus ci-dessus (verbatim).
+        // Contrôle inactif ≙ `deactivate` : l'enfant FLTK ne
+        // reçoit pas l'event → `Embed::buttonPressImpl` retourne
+        // `false` verbatim → bulle (sélection textblock).
+        let res_off = Rc::new(MockText::new(false));
+        let res_off_dyn: Rc<dyn crate::ui::Resource> = res_off.clone();
+        let w2 = l.add_embed_widget(&res_off_dyn);
         assert!(
-            rv.focused.as_ref().is_some_and(|r| Rc::ptr_eq(r, &res_dyn)),
-            "focus inchangé (pas de re-focus sur non-éditable)"
+            !l.w_button_press_impl(w2, &ev),
+            "contrôle inactif : press non consommé"
+        );
+        assert!(
+            res_off.clicks.borrow().is_empty(),
+            "ui_button jamais appelé sur inactif"
         );
     }
 
