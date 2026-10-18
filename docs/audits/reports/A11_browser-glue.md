@@ -682,4 +682,43 @@ Périmètre skill désormais couvert en entier.
   `nth(0)`/`remove_fast` amont ; les clés retirées par le callback
   d'abort (co-entrée) ne sont plus rappelées → plus de warn
   « nonexistent client » ; `NumImagesGot` bumpé par la réentrance
+
+---
+
+# Passe 2 (post-merge A01-p2 + live-test `0b9756d`)
+
+## Delta code
+
+Modules glue **inchangés** depuis les apply D1–D15 (`8def539`,
+`1988af7`) hors `b00d296` (A01 passe 2 — `cache.rs`/`capi.rs`
+déjà audités dans cette passe : seams cert-clean HSTS,
+`chain.check`, staged-io). `0b9756d` a touché `glue.rs`/`doc.rs`
+(`GlueOp::LinkVisited`, popups, saisie location) — relu en passe
+A03/A10, verbatim.
+
+## Re-vérifications
+
+- Suite `dillo-net` 175 tests + workspace verts après merge —
+  aucune régression sur les fixes D1–D15.
+- `num_pending_style_sheets`/`repush`/`Repush→RELOAD_FROM_CACHE`
+  boucle complète re-vérifiée verbatim en passe A04.
+- `DocSink` réel (`doc.rs`) relu en passe A03 : seams
+  `a_Bw_*`/`a_Nav_*`/`a_UIcmd_*` du NB passé 1 désormais câblées
+  (suites « non testables » → couvertes par la glue réelle).
+- GlueOp queue ≙ synchronicité amont (défère mutations hors
+  `borrow_mut` layout) — pattern validé sur LinkVisited ; même
+  traitement attendu pour A03-D7 (get_resource sous
+  button_event).
+
+## Restes ouverts (gaps — non bugs)
+
+- Fuzz `dillorc`/`keysrc` toujours hors corpus `files` (addendum 5
+  pt. 25) — à ajouter à la campagne fuzz.
+- Interop dpid/plugins e2e réelle — attend A12 (tests in-process).
+- `bookmark.c` format `bm.txt` — périmètre A12.
+
+## Verdict passe 2
+
+**Conforme.** Aucune déviation nouvelle ; tous les fixes passé 1
+tiennent après les merges ultérieurs.
   comme amont.
