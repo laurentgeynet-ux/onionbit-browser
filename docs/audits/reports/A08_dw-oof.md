@@ -297,3 +297,27 @@ amont `IMPL_POS=false` ; à porter si `IMPL_POS` devient actif).
 Aucune déviation appliquable trouvée — le consommateur textblock est
 verbatim, y compris les quirks (copier-coller `oofMinWidth`,
 `max` incorrect sur hauteurs, GC des positions incomplètes).
+
+---
+
+# Passe 2
+
+## Delta code
+
+`oof.rs` **inchangé** depuis le complétion-addendum (seul un mock
+`add_idle` tagué par layout dans `f9aa4c8`). Tous les verdicts de
+la passe 1 + complétion sont reconduits.
+
+## Oracle L5 activé
+
+La golden suite (`render_ref`, 38 paires amont, pixel-identique)
+exerce désormais les floats bout-en-bout (`multiple-floats`,
+`float-img-justify`, paires `clear`) — placement float, wrap
+autour, ordre de peinture in-flow→floats sont **mesurés**, pas
+seulement relus.
+
+## Verdict passe 2
+
+**Conforme.** Aucune déviation nouvelle ; seams IMPL_POS/SCM
+inchangées (mortes amont). Gap résiduel inchangé : scènes
+#f1/#f2/#f3 et `clear:both` imbriqué en golden dédié.
