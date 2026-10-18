@@ -241,8 +241,13 @@ prototype phase 0).
       artifacts) — cf. `docs/fuzzing.md`. 3 bugs trouvés et fixés
       (`html.rs` write clamp, `cosmic-text` classe bidi B,
       `decode.rs` charset drain). Campagne 30k×6 clean
-- [ ] Parity sign-off : all audits `apply` merged, PORTING.md 100%
-      resolved
+- [x] Parity sign-off : 12/12 rapports d'audit complets (A08/A11
+      complétés — plus de `_partial`), toutes les déviations
+      appliquables mergées, PORTING.md 100% resolved.
+      **Portée exacte** : parité démontrée sur le corpus golden
+      + audits sémantiques + tests portés — pas sur le web réel ;
+      une navigation vivante peut encore révéler des écarts non
+      couverts par l'échantillon (cf. `pm_text`).
 - [x] Packaging (Windows/Linux — `packaging/package.{sh,ps1}`, layout
       dpid verbatim) + perf pass (`docs/perf.md` : 60 ms startup,
       ~40 Mo RSS idle, corpus golden ~34 ms/page médiane)
