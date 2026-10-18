@@ -173,3 +173,63 @@ libjpeg/libwebp — voir gap) ; SVG D5.
 
 **Verdict** : prêt pour la couche `dw::image` — aucune correction
 bloquante ; D1–D3 = dette de design acceptée et documentée.
+
+---
+
+# Passe 2 (post-port `dw/image` + golden suite)
+
+## Nouveau périmètre audité (était hors-périmètre passé 1)
+
+`crates/dillo-dw/src/{image,imgrenderer,imgbuf}.rs` (port `c5981c5`)
+vs `dw/image.cc`, `dw/imgrenderer.cc`, `dw/fltkimgbuf.cc` :
+
+- **widget `Image`** : verbatim — `altText`/`altTextWidth` lazy,
+  `markEmpty`→bordure 1px+padding 2 alt-style, `useAltStyle`,
+  `clicking`, `linkUnderPointer`/`imageMapLink`, `draw` avec
+  clipping-view pour `drawMap`, `get_scaled_buf` requête +
+  MAX_DIM verbatim, `drawRow`/`setBuffer` différés via
+  `pending_draws`/`pending_resizes` (modèle D cohérent).
+- **`ImageMapsList`** : recherche linéaire ≙ HashTable amont (non
+  observable), `defaultLink` −1, premier shape contenant le point
+  — verbatim (`image.cc:73-87`).
+- **`Imgbuf` scaled-buffers** : arbre root→children `Weak` ≙
+  `scaledBuffers`/`detachScaledBuf`, `scaled_y`/`backscaled_y`
+  verbatim, `copied_rows` anti-multi-passes, `new_scan` reset des
+  buffers scalés seulement (quirk verbatim).
+
+## Mises à jour de statut passé 1
+
+- **D5-SVG `currentColor`** : **résolu** en `f9aa4c8` — token
+  `currentColor` substitué textuellement par `#rrggbb` (fg_color)
+  avant parse usvg ≙ `nsvgParse(str,"px",dpi,NSVG_RGB(fg))`.
+- **Golden suite** : corpus `img-aspect-ratio-*`/`float-img-*`/
+  `table-td-width-percent-img` exerce le sizing image. **Attention** :
+  le harnais compare deux documents rendus par *notre* pipeline —
+  il ne valide pas les pixels décodés/scalés contre l'amont.
+
+## Déviation nouvelle
+
+### D8 — Buffers scalés : `SIMPLE` (nearest) vs `BEAUTIFUL_GAMMA` amont
+**Sévérité : moyenne (L5 — pixels différents sur toute image
+redimensionnée).**
+
+Amont `fltkimgbuf.cc:37` : `scaleMode = BEAUTIFUL_GAMMA` en dur →
+`scaleRowBeautiful`/`scaleBuffer` (moyenne de boîte du rectangle
+source + LUT gamma `findGammaCorrectionTable(gamma)` en entrée,
+`1/gamma` en sortie). Port `imgbuf.rs:158-218` : seul
+`scale_row_simple` (nearest-neighbor + copie de ligne) est porté —
+le commentaire l'annonce « déviation documentée » mais elle
+n'était pas consignée au rapport passé 1.
+Effets : downscale et upscale rendent moins lisses/différemment
+gamma-corrigés qu'amont ; détectable sur `test/dw/dw_images_
+scaled` ou toute page avec `width`/`height` forcés ou CSS.
+Fix : porter `scaleBuffer`/`scaleRowBeautiful` + les deux LUT
+gamma (données verbatim `findGammaCorrectionTable`), dispatchées
+par un `scale_mode` ≙ `BEAUTIFUL_GAMMA`.
+Test : image scalée pixel-à-pixel vs un golden généré amont.
+
+## Verdict passe 2
+
+Globalement conforme ; **D8** à ranger dans l'apply consolidé
+(pixel-visible). D1–D3 (progressivité), D4 (gAMA 16-bit), D5
+restant (rasterizer ≠) reconduits comme dette documentée.
