@@ -520,7 +520,7 @@ fn read_cmd(req: &mut ControlReq, io: &mut dyn CtlIo) {
     };
 }
 
-/// Transport AF_UNIX ≙ la partie `socket`/`fcntl`/`accept` de
+/// Transport `AF_UNIX` ≙ la partie `socket`/`fcntl`/`accept` de
 /// `a_Control_init`/`Control_listen_cb` — présent seulement sous
 /// Unix (verbatim `#else` de `ENABLE_CONTROL_SOCKET`).
 #[cfg(unix)]
