@@ -378,6 +378,17 @@ fn main() -> std::process::ExitCode {
     let proxy_passwd: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     {
         let p = prefs_rc.borrow();
+        // `http_proxypass` (extension OnionBit) : le mot de passe proxy
+        // vient du dillorc — pas de dialog possible en spawn headless.
+        // Sème la cellule partagée avant la factory : les `HttpEngine`
+        // partent authentifiés et le bloc dialog ci-dessous saute.
+        if let Some(pw) = p.http_proxypass.as_deref() {
+            *proxy_passwd.borrow_mut() = Some(String::from_utf8_lossy(pw).into_owned());
+        }
+        // `no_dpi` (extension OnionBit) : profil confiné — aucun dpid,
+        // aucune socket dpip (le dpi `ftp:` délègue à `wget`, fuite
+        // directe hors proxy).
+        dillo_net::dpi::set_dpi_disabled(p.no_dpi);
         let cfg = HttpConfig {
             http_language: p
                 .http_language

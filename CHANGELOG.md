@@ -7,6 +7,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`no_dpi`** (extension OnionBit) : pref `dillorc` coupant tout accès
+  dpi — `blocking_start_dpid` échoue immédiatement : aucun `dpid`
+  spawné (même via `PATH`), aucune socket dpip, `send_blocking_cmd`/
+  `dpi_ccc` rendent `None`/`DpidERROR` instantanément. Motivation :
+  profil `.onion` confiné — `ftp.dpi` délègue à `wget` (connexion
+  directe hors proxy), et sans court-circuit l'absence de dpid coûte
+  3 s (12×250 ms) **par requête** via la requête cookies.
+- **`http_proxypass`** (extension OnionBit) : pref `dillorc` donnant le
+  mot de passe proxy — amont n'expose que `http_proxyuser` et lit le
+  passwd via un dialog (`a_UIcmd_get_passwd`), impossible en spawn
+  headless par un daemon. La cellule partagée `proxy_passwd` est semée
+  depuis le pref avant la factory de moteurs : les `HttpEngine` partent
+  authentifiés, le dialog saute si la valeur est renseignée. Clé
+  tolérée/absorbée par le parseur amont-compatible ; déviation
+  documentée dans `docs/PORTING.md`.
 - **phase 9 — golden render harness** : `dillo/tests/render_ref.rs`
   rejoue les 39 paires `test/html/render/*.html`/`.ref.html` via la
   vraie pipeline (`DilloHtml`→`StyleEngine`→`Layout`→`SkiaView`→
@@ -36,6 +51,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   domainrc, url) + runner `smoke` stable mutateur seedé
   (libFuzzer non linkable sous MSVC — cibles prêtes pour CI/Linux).
   Documentation `docs/fuzzing.md`.
+
+- `dillo-net` : tests filaires proxy (`http.rs`) vérifiant le contrat
+  `http_proxy` bout en bout contre un stub TCP loopback — forme
+  absolue `GET http://h/…` sans DNS de la cible (`inexistant.invalid`
+  irrésolvable), tunnel `CONNECT` suivi du `ClientHello` TLS **sur la
+  même socket** (TLS en-process, pas de contournement), bypass
+  `no_proxy` en forme origine. Le harnais émule capi amont : deux
+  liens (lecteur branche 2 + écrivain branche 1) et relais du `FD`
+  remonté par `bfcb` (`capi.c` OpStart ×2 + OpSend `"FD"`).
 
 ### Fixed
 

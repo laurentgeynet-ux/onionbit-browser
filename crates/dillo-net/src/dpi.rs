@@ -474,10 +474,28 @@ fn check_dpid(num_tries: i32) -> i32 {
     ret
 }
 
+/// Extension `OnionBit` — `no_dpi` (dillorc) : `blocking_start_dpid`
+/// échoue immédiatement, donc aucun `dpid` n'est spawné et aucune
+/// socket dpip n'est ouverte. Sans ce court-circuit, l'absence de
+/// dpid coûte 12 essais × 250 ms **par appel** (3 s par requête via
+/// `send_blocking_cmd("cookies")`) — et un `dpid` étranger trouvé
+/// dans le `PATH` pourrait être détourné.
+static DPI_DISABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Active la coupure dpi (appelé une fois au démarrage, pref
+/// `no_dpi`). Idempotent — les appels dpi rendent `None`/`DpidERROR`.
+pub fn set_dpi_disabled(disabled: bool) {
+    DPI_DISABLED.store(disabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// `Dpi_blocking_start_dpid` — `0` OK / `2` erreur (12 essais × 250 ms
 /// ≙ 3 s — la boucle UI est bloquée comme en amont).
 fn blocking_start_dpid() -> i32 {
     const N_TRIES: i32 = 12;
+    if DPI_DISABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        return 2;
+    }
     let mut try_n = 0;
     loop {
         let cst = check_dpid(N_TRIES);
@@ -843,5 +861,18 @@ mod tests {
         conn_free(&c);
         assert!(!conn_valid(&c));
         assert_eq!(c.borrow().info_recv, 7);
+    }
+
+    #[test]
+    fn no_dpi_bloque_avant_toute_socket() {
+        // Extension OnionBit : `no_dpi` court-circuite
+        // `blocking_start_dpid` — `send_blocking_cmd` rend `None`
+        // instantanément (pas de retry 12×250 ms, aucun `dpid`
+        // spawné, aucune socket dpip ouverte).
+        set_dpi_disabled(true);
+        let t = std::time::Instant::now();
+        assert!(send_blocking_cmd("cookies", "cmd=<x>").is_none());
+        assert!(t.elapsed() < std::time::Duration::from_millis(100));
+        set_dpi_disabled(false);
     }
 }

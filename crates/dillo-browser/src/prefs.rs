@@ -39,6 +39,15 @@ pub struct Prefs {
     pub http_max_conns: i32,
     pub http_proxy: Option<DilloUrl>,
     pub http_proxyuser: Option<Vec<u8>>,
+    /// Extension `OnionBit` (absente amont) : mot de passe proxy lu dans
+    /// le dillorc au lieu du dialog `a_UIcmd_get_passwd` — nécessaire
+    /// pour un spawn headless (daemon → enfant sans interaction).
+    pub http_proxypass: Option<Vec<u8>>,
+    /// Extension `OnionBit` (absente amont) : `no_dpi=yes` interdit
+    /// tout accès dpi (aucun `dpid` spawné, aucune socket dpip) —
+    /// profil confiné `.onion` : `ftp.dpi` délègue à `wget` (fuite
+    /// directe) et un `dpid` du PATH pourrait être détourné.
+    pub no_dpi: bool,
     pub http_referer: Option<Vec<u8>>,
     pub http_user_agent: Option<Vec<u8>>,
     pub no_proxy: Option<Vec<u8>>,
@@ -177,6 +186,8 @@ impl Default for Prefs {
             http_max_conns: 6,
             http_persistent_conns: true,
             http_proxyuser: None,
+            http_proxypass: None,
+            no_dpi: false,
             http_referer: Some(PREFS_HTTP_REFERER.to_vec()),
             http_strict_transport_security: true,
             http_force_https: false,
@@ -412,6 +423,7 @@ impl Prefs {
             b"http_persistent_conns" => self.http_persistent_conns = parse_bool(value),
             b"http_proxy" => self.http_proxy = url::url_new(value, None),
             b"http_proxyuser" => self.http_proxyuser = Some(value.to_vec()),
+            b"http_proxypass" => self.http_proxypass = Some(value.to_vec()),
             b"http_referer" => self.http_referer = Some(value.to_vec()),
             b"http_strict_transport_security" => {
                 self.http_strict_transport_security = parse_bool(value);
@@ -434,6 +446,7 @@ impl Prefs {
                 self.scroll_switches_tabs_reverse = parse_bool(value);
             }
             b"no_proxy" => self.no_proxy = Some(value.to_vec()),
+            b"no_dpi" => self.no_dpi = parse_bool(value),
             b"panel_size" => {
                 self.panel_size = if dlib::str_ascii_casecmp(value, b"tiny") == 0 {
                     PanelSize::Tiny
@@ -569,6 +582,8 @@ mod tests {
             panel_size=small\n\
             penalty_hyphen = 1.5\n\
             font_factor = 1.2\n\
+            http_proxyuser = onionbit\n\
+            http_proxypass = tok3n-s3ssion\n\
             unknown_key = yes\n";
         let mut p = Prefs::default();
         p.parse_dillorc(&mut Cursor::new(rc)).unwrap();
@@ -582,6 +597,23 @@ mod tests {
         assert_eq!(p.panel_size, PanelSize::Small);
         assert_eq!(p.penalty_hyphen, 150); // 1.5 × 100
         assert!((p.font_factor - 1.2).abs() < f64::EPSILON);
+        // extension OnionBit : passwd proxy lu depuis le dillorc.
+        assert_eq!(p.http_proxyuser.as_deref(), Some(b"onionbit".as_slice()));
+        assert_eq!(p.http_proxypass.as_deref(), Some(b"tok3n-s3ssion".as_slice()));
+        assert!(!p.no_dpi);
+    }
+
+    #[test]
+    fn no_dpi_pref() {
+        // extension `OnionBit` : `no_dpi=yes` coupe tout accès dpi
+        // (profil confiné .onion).
+        let mut p = Prefs::default();
+        p.parse_dillorc(&mut Cursor::new(b"no_dpi = yes\n" as &[u8]))
+            .unwrap();
+        assert!(p.no_dpi);
+        p.parse_dillorc(&mut Cursor::new(b"no_dpi = no\n" as &[u8]))
+            .unwrap();
+        assert!(!p.no_dpi);
     }
 
     #[test]
