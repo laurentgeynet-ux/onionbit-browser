@@ -230,7 +230,7 @@ tests `dillo-html` 29 verts, golden suite verte.
 ## Résultat
 
 Passe `apply` consolidée exécutée dans le worktree
-`C:/Projet/wt/dillorust-p2` :
+`../wt/dillorust-p2` :
 
 - **D7** corrigé — `HtmlShared` retient un clone du
   `Rc<RefCell<Arena>>` du layout ; `HtmlInput::get_resource`

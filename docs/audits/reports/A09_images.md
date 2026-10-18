@@ -237,7 +237,7 @@ restant (rasterizer ≠) reconduits comme dette documentée.
 ## Résultat
 
 Passe `apply` consolidée exécutée dans le worktree
-`C:/Projet/wt/dillorust-p2` :
+`../wt/dillorust-p2` :
 
 - **D8** corrigé — `SCALE_MODE = BEAUTIFUL_GAMMA` verbatim :
   `scaleRowBeautiful` (attente `allRootRows` en réduction,

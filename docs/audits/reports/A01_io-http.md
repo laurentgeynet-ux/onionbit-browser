@@ -387,7 +387,7 @@ perdus.
 ## Résultat
 
 Passe `apply` exécutée sur `audit/01-io-http` (worktree
-`C:/Projet/wt/dillorust-a01`) — les 8 déviations corrigées :
+`../wt/dillorust-a01`) — les 8 déviations corrigées :
 
 - **D6** corrigé — `control.rs` : `GOT_HEADER=0x1`, `GOT_LENGTH=0x4`
   (≙ `cache.h`) ; `load`/`rawload` distingués de nouveau.

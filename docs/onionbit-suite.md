@@ -2,11 +2,11 @@
 
 **Statut** : note de contexte, **pas un ordre de travail**. La
 référence est l'ADR-0030 du projet OnionBit
-(`D:\Projet\Tribler-Rust-Torrent\docs\architecture\decisions\0030-navigateur-onion-dillorust-proxy-tor.md`),
+(`../Tribler-Rust-Torrent\docs\architecture\decisions\0030-navigateur-onion-dillorust-proxy-tor.md`),
 actuellement **Proposée** — ses questions §8 ne sont pas arbitrées.
 Ne rien figer au-delà de ce qui suit.
 
-**Règle d'or** : le port reste fidèle à `D:\Projet\dillo` (AGENTS.md
+**Règle d'or** : le port reste fidèle à `../dillo` (AGENTS.md
 §1). Cette note ne demande **aucun** code de mode « suite » — elle
 identifie uniquement les endroits où un choix de portage fermerait
 une porte dont l'intégration aura besoin. Quand fidélité et couture

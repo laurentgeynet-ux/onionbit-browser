@@ -353,7 +353,7 @@ aux frontières lifecycle `addWidget`/`setWidget`/destruction.
 
 ## Apply — résolution
 
-Branche `audit/05-dw-core` (worktree `C:/Projet/wt/dillorust-a05`) :
+Branche `audit/05-dw-core` (worktree `../wt/dillorust-a05`) :
 
 - **D1** corrigé — `style.rs` : seconds trapèzes gauche/droit en
   `x1 + 2*w + d` / `x1 + 1 - 2*w - d` (verbatim `points[0].x ± w`) ;

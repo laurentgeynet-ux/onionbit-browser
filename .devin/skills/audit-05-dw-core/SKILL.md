@@ -18,7 +18,7 @@ rects, anchors, ordre des appels — **parité pixel exigée**.
 
 ## Fichiers
 
-- **Upstream** (`$DILLO_ROOT`→`D:/Projet/dillo`) : `dw/types.cc`,
+- **Upstream** (`$DILLO_ROOT`→`../dillo`) : `dw/types.cc`,
   `style.cc`, `widget.cc`, `layout.cc`, `iterator.cc`, `ui.cc`,
   `tools.cc`, headers associés + `devdoc/dw-*.doc` (**spec interne,
   lecture obligatoire** : `dw-overview`, `dw-grows`,
@@ -83,7 +83,7 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a05` branche `audit/05-dw-core`.
+8. Worktree `../wt/dillorust-a05` branche `audit/05-dw-core`.
 9. Fixes + tests : golden layouts minimaux (dump allocation tree
    vs amont) par déviation.
 10. Gates fmt/clippy/test/doc ; `docs/audits/changelog/A05.md` ;

@@ -1,6 +1,6 @@
 # PORTING.md — Mapping C/C++ → Rust
 
-Ground truth : `D:\Projet\dillo` (read-only). Statuts :
+Ground truth : `../dillo` (read-only). Statuts :
 `not started` → `in progress` → `ported` (compile + tests unitaires)
 → `verified` (parité comportementale/golden render) — ou
 `won't port` + raison.

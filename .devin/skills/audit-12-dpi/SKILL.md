@@ -17,7 +17,7 @@ allowed-tools:
 
 ## Fichiers
 
-- **Upstream** (`$DILLO_ROOT`→`D:/Projet/dillo`) : `dpip/dpip.{c,h}`,
+- **Upstream** (`$DILLO_ROOT`→`../dillo`) : `dpip/dpip.{c,h}`,
   `dpid/{main,dpid,dpid_common,dpi,dpi_socket_dir,dpidc,misc_new}.c`,
   `dpi/{dpiutil,bookmarks,cookies,datauri,downloads,file,ftp,hello,
   vsource}.{c,cc}`, `src/IO/dpi.c`, `src/dpiapi.c`, `devdoc/Dpid.txt`
@@ -81,7 +81,7 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a12` branche `audit/12-dpi`.
+8. Worktree `../wt/dillorust-a12` branche `audit/12-dpi`.
 9. Fixes + tests : **test d'interop obligatoire** si binaire C
    disponible, sinon vecteurs golden extraits du C.
 10. Gates fmt/clippy/test/doc ; `docs/audits/changelog/A12.md` ;

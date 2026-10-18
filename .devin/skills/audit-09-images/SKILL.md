@@ -18,7 +18,7 @@ remplacement des libs C par des crates Rust pures.
 
 ## Fichiers
 
-- **Upstream** (`$DILLO_ROOT`→`D:/Projet/dillo`) : fichiers ci-dessus,
+- **Upstream** (`$DILLO_ROOT`→`../dillo`) : fichiers ci-dessus,
   `devdoc/Images.txt`
 - **Upstream tests** : `test/dw/dw_imgbuf_mem_test.cc`,
   `dw_images_*.cc`
@@ -77,7 +77,7 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a09` branche `audit/09-images`.
+8. Worktree `../wt/dillorust-a09` branche `audit/09-images`.
 9. Fixes + tests : corpus d'images (copié data only) décodées
    pixel-à-pixel vs sortie C quand possible.
 10. Gates fmt/clippy/test/doc ; `docs/audits/changelog/A09.md` ;

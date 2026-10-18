@@ -19,7 +19,7 @@ le plus délicat de dw**.
 
 ## Fichiers
 
-- **Upstream** (`$DILLO_ROOT`→`D:/Projet/dillo`) : tous les fichiers
+- **Upstream** (`$DILLO_ROOT`→`../dillo`) : tous les fichiers
   `dw/oof*.cc` + `devdoc/dw-out-of-flow*.doc`,
   `dw-floats-01.png`, `dw-stacking-context.doc`, `dw-fixed-positions.doc`
 - **Upstream tests** : `test/dw/dw_float_test.cc`, render tests
@@ -78,7 +78,7 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a08` branche `audit/08-dw-oof`.
+8. Worktree `../wt/dillorust-a08` branche `audit/08-dw-oof`.
 9. Fixes + tests : scènes minimales floats/abs/z-index vs amont.
 10. Gates fmt/clippy/test/doc ; `docs/audits/changelog/A08.md` ;
     PORTING.md.

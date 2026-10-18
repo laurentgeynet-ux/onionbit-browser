@@ -18,7 +18,7 @@ les largeurs de colonnes.
 
 ## Fichiers
 
-- **Upstream** (`$DILLO_ROOT`→`D:/Projet/dillo`) : `dw/table.cc`
+- **Upstream** (`$DILLO_ROOT`→`../dillo`) : `dw/table.cc`
   (~2k LOC, cœur de l'algo), `tablecell.*`, `simpletablecell.*`,
   `alignedtablecell.*`, `table_iterator.cc`, `src/table.cc` (parsing
   HTML→widget)
@@ -76,7 +76,7 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a07` branche `audit/07-dw-table`.
+8. Worktree `../wt/dillorust-a07` branche `audit/07-dw-table`.
 9. Fixes + tests de régression : tables minimales (largeurs de
    colonnes attendues en dur) par déviation.
 10. Gates fmt/clippy/test/doc ; `docs/audits/changelog/A07.md` ;

@@ -1,7 +1,7 @@
 # Plan de faisabilité — Port de Dillo en Rust natif
 
-**Date** : 2026-10-16 · **Source** : `D:\Projet\dillo` · **Cible** :
-`D:\Projet\dillorust`
+**Date** : 2026-10-16 · **Source** : `../dillo` · **Cible** :
+`../dillorust`
 
 ## Verdict
 

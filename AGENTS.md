@@ -7,7 +7,7 @@ touching anything.
 
 ## 1. Mission and ground truth
 
-- **Reference implementation**: Dillo @ `D:\Projet\dillo`
+- **Reference implementation**: Dillo @ `../dillo`
   (~130 000 LOC : ~50k `src/`, ~36k `dw/`, ~6.5k `src/IO/`,
   ~4.5k `lout/`, ~1.2k `dlib/`, ~10k `dpi`/`dpid`/`dpip`).
   This checkout is the single source of truth — **read-only, never

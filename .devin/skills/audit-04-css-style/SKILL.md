@@ -18,7 +18,7 @@ UA/user/author, héritage, mapping vers `dw::core::style`) +
 
 ## Fichiers
 
-- **Upstream** (`$DILLO_ROOT`→`D:/Projet/dillo`) : `src/cssparser.cc`+
+- **Upstream** (`$DILLO_ROOT`→`../dillo`) : `src/cssparser.cc`+
   `.hh`, `src/css.cc`+`.hh`, `src/styleengine.cc`+`.hh`,
   `src/prefsparser.cc` (style-related), `dillorc` (props css)
 - **Upstream tests** : pas de suite dédiée → oracle = comportement
@@ -76,7 +76,7 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a04` branche `audit/04-css-style`.
+8. Worktree `../wt/dillorust-a04` branche `audit/04-css-style`.
 9. Fixes + tests : pour chaque déviation, feuille minimale + dump
    de computed style attendu.
 10. Gates fmt/clippy/test/doc ; `docs/audits/changelog/A04.md` ;

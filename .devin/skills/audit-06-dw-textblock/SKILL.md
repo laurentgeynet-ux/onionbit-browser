@@ -18,7 +18,7 @@ plus complexe de dw ; parité au pixel sur les coupures de ligne**.
 
 ## Fichiers
 
-- **Upstream** (`$DILLO_ROOT`→`D:/Projet/dillo`) : fichiers listés +
+- **Upstream** (`$DILLO_ROOT`→`../dillo`) : fichiers listés +
   `devdoc/dw-line-breaking.doc`, `dw-textblock-collapsing-spaces-*.png`,
   `not-so-simple-container.*`, `test/unit/unicode_test.cc`
 - **Upstream tests** : `test/dw/*` texte, `test/html/render` textes
@@ -80,7 +80,7 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a06` branche
+8. Worktree `../wt/dillorust-a06` branche
    `audit/06-dw-textblock`.
 9. Fixes + tests : cas minimaux de wrap/hyphenation par déviation ;
    dump de lignes (x,y,width) vs amont.

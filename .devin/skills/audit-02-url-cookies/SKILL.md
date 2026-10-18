@@ -17,7 +17,7 @@ HSTS + preload — **formats de fichiers byte-exacts**.
 
 ## Fichiers
 
-- **Upstream** (lecture seule, `$DILLO_ROOT`→`D:/Projet/dillo`) :
+- **Upstream** (lecture seule, `$DILLO_ROOT`→`../dillo`) :
   `src/{url.c,url.h,cookies.c,domain.c,domainrc,auth.c,digest.c,
   hsts.c,hsts_preload}`, `doc/Cookies.txt`
 - **Upstream tests** : `test/unit/cookies.c`, `test/unit/disposition.c`
@@ -70,12 +70,12 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a02` branche `audit/02-url-cookies`.
+8. Worktree `../wt/dillorust-a02` branche `audit/02-url-cookies`.
 9. Fixes + tests de régression (golden files cookies/hsts,
    vecteurs digest vs amont).
 10. Gates fmt/clippy/test/doc → fragment changelog
     `docs/audits/changelog/A02.md` + rows PORTING.md.
-11. Commit branche → `git rebase main` → `git -C D:/Projet/dillorust
+11. Commit branche → `git rebase main` → `git -C ../dillorust
     merge --no-ff` → cleanup. `## Résultat` dans le rapport.
 
 ## Pièges connus

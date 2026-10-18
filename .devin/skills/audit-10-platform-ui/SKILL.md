@@ -19,7 +19,7 @@ fonctionnelle** (pas pixel sur le chrome) ; parité métrique fontes
 
 ## Fichiers
 
-- **Upstream** (`$DILLO_ROOT`→`D:/Projet/dillo`) : `dw/fltk*.cc`,
+- **Upstream** (`$DILLO_ROOT`→`../dillo`) : `dw/fltk*.cc`,
   `dw/platform.hh`, `dw/view.hh`, `src/{ui,uicmd,keys,menu,dialog,
   findbar,tipwin,timeout}.cc`+headers, `keysrc`
 - **Upstream tests** : `test/dw/dw_ui_test.cc`, `dw_anchors_test`
@@ -85,7 +85,7 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a10` branche
+8. Worktree `../wt/dillorust-a10` branche
    `audit/10-platform-ui`.
 9. Fixes + tests : événements simulés headless (injecter events
    winit vers dw), métriques mock.

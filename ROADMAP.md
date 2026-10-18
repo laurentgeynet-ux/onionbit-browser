@@ -1,6 +1,6 @@
 # ROADMAP.md — DilloRust port phases
 
-Ground truth: `D:\Projet\dillo` (read-only). Status tracking:
+Ground truth: `../dillo` (read-only). Status tracking:
 `docs/PORTING.md`. Each phase ends with the listed audit skill(s)
 in `rapport` mode, then `apply`.
 

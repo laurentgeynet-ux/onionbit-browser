@@ -4,7 +4,7 @@
 
 ## Contexte
 
-Port de Dillo (C/C++, `D:\Projet\dillo`, ~130 k LOC) vers Rust.
+Port de Dillo (C/C++, `../dillo`, ~130 k LOC) vers Rust.
 Question : que signifie « porter » — traduction, réécriture
 fonctionnelle, ou compatibilité ?
 
@@ -19,7 +19,7 @@ fonctionnelle, ou compatibilité ?
    observable (tolérance de parsing, résultats de layout, formats de
    fichiers, wire HTTP/dpi). On écrit du Rust idiomatique ; on ne
    translittère pas le C.
-3. **Checkout amont en lecture seule** : `D:\Projet\dillo` n'est
+3. **Checkout amont en lecture seule** : `../dillo` n'est
    jamais modifié ni copié en gros ; les données de test seules sont
    copiées dans `crates/<crate>/tests/data/`.
 4. **Oracle = tests amont + golden renders** : `test/unit`,

@@ -153,7 +153,7 @@ audités (ci-dessus).
 ## Résultat
 
 Passe `apply` consolidée exécutée dans le worktree
-`C:/Projet/wt/dillorust-p2` — les 10 déviations passe-2 corrigées
+`../wt/dillorust-p2` — les 10 déviations passe-2 corrigées
 (démon/jar `dpi/cookies.c`) :
 
 - **D6** corrigé — `validate_domain` : domaine <3 chars rejeté sans

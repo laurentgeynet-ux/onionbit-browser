@@ -17,7 +17,7 @@ prefs,prefsparser,paths,actions,bitvec,klist,misc,colors,version}`
 
 ## Fichiers
 
-- **Upstream** (`$DILLO_ROOT`→`D:/Projet/dillo`) : fichiers ci-dessus
+- **Upstream** (`$DILLO_ROOT`→`../dillo`) : fichiers ci-dessus
   + `dillorc` (defaults = spec), `devdoc/{Dillo,Cache,CCCwork,
   HtmlParser}.txt`
 - **Upstream tests** : `test/unit/*` (bitvec…), usage réel
@@ -81,7 +81,7 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a11` branche
+8. Worktree `../wt/dillorust-a11` branche
    `audit/11-browser-glue`.
 9. Fixes + tests : golden files (dillorc parsed, bm round-trip,
    cookies) par déviation.

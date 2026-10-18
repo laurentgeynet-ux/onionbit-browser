@@ -18,7 +18,7 @@ diverge du parseur Dillo**.
 
 ## Fichiers
 
-- **Upstream** (`$DILLO_ROOT`→`D:/Projet/dillo`) : `src/html.cc` (~5k
+- **Upstream** (`$DILLO_ROOT`→`../dillo`) : `src/html.cc` (~5k
   LOC), `html.hh`, `html_common.hh`, `html_charrefs.h`, `doctree.hh`,
   `plain.cc`, parties parsing de `table.cc`/`form.cc`
 - **Upstream tests** : `test/html/render/*` (oracle visuel),
@@ -81,7 +81,7 @@ Défaut **`rapport`**, `apply` sur rapport relu.
 
 ### Mode `apply`
 
-8. Worktree `C:/Projet/wt/dillorust-a03` branche
+8. Worktree `../wt/dillorust-a03` branche
    `audit/03-html-parser`.
 9. Fixes + tests de régression : pour chaque déviation, un cas
    tag-soup minimal + assertion d'arbre.

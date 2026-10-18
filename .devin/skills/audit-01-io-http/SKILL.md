@@ -24,7 +24,7 @@ callbacks.
 - **Upstream tests** : `test/unit/*` relatifs, comportement via
   `dillo <url>` — pas de suite wire : la spec = le code amont + HTTP
   réel.
-- Checkout upstream : `$DILLO_ROOT` si définie → `D:/Projet/dillo`
+- Checkout upstream : `$DILLO_ROOT` si définie → `../dillo`
   (poste local).
 - **Rust** : `crates/dillo-net/src/{io,http,chain,decode,dns,tls,
   url,mime}.rs`, `crates/dillo-browser/src/cache.rs` (consommateur)
@@ -95,8 +95,8 @@ invocation séparée sur rapport commité + relu.
 
 ### Mode `apply`
 
-8. `git worktree add C:/Projet/wt/dillorust-a01 -b audit/01-io-http`
-   (worktree sur C:/SSD ; checkout principal = `D:/Projet/dillorust`)
+8. `git worktree add ../wt/dillorust-a01 -b audit/01-io-http`
+   (worktree sur C:/SSD ; checkout principal = `../dillorust`)
 9. Fixes en Rust idiomatique + **tests de régression par déviation**
 10. Gates : `cargo fmt --all` · `clippy --workspace --all-targets --
     -D warnings` · `cargo test --workspace` · `cargo doc --no-deps`
@@ -105,7 +105,7 @@ invocation séparée sur rapport commité + relu.
 12. Commit `fix(<crate>): <scope> parity — <mot-clé>` sur la branche,
     **local only** (pas de push/PR)
 13. `git rebase main` dans le worktree →
-    `git -C D:/Projet/dillorust merge --no-ff audit/01-io-http` →
+    `git -C ../dillorust merge --no-ff audit/01-io-http` →
     `git worktree remove … && git branch -d …`
 14. Section `## Résultat` dans le rapport (corrigé/tests/hash),
     commitée avant merge.
