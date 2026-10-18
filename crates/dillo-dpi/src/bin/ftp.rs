@@ -194,8 +194,8 @@ fn run() -> i32 {
     // verbatim `chdir("/tmp")` (wget écrit des fichiers temporaires).
     let _ = std::env::set_current_dir("/tmp");
 
-    let rd = DpIoSock::stdio(0, false);
-    let wr = DpIoSock::stdio(1, false);
+    let rd = DpIoSock::stdio(0, false).expect("fd0 — dup2 dpi amont");
+    let wr = DpIoSock::stdio(1, false).expect("fd1 — dup2 dpi amont");
     let mut sh = Dsh::new(Box::new(rd), Box::new(wr), 8 * 1024);
 
     let args: Vec<String> = std::env::args().collect();

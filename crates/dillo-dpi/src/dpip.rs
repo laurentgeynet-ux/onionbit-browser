@@ -130,8 +130,16 @@ impl DpIo for DpIoTcp {
 /// `close` est un no-op comme `dClose` ne doit pas tuer stdio d'un
 /// processus).
 #[cfg(unix)]
+enum DpIoStd {
+    /// fd 0 — `dup2`'d par le parent sur la socket dpi.
+    In(std::io::Stdin),
+    /// fd 1 — idem (même socket, sens écriture).
+    Out(std::io::Stdout),
+}
+
+#[cfg(unix)]
 pub struct DpIoSock {
-    fd: std::os::unix::io::RawFd,
+    io: DpIoStd,
     nb: bool,
 }
 
@@ -141,31 +149,43 @@ impl DpIoSock {
     /// `a_Dpip_dsh_new(STDIN_FILENO, STDOUT_FILENO, …)` amont).
     /// Les plugins dpi sont POSIX (dup2 sur des sockets) ; pas de
     /// fallback Windows (verbatim — amont n'en a pas non plus).
+    /// `None` hors descripteurs stdio — seul chemin `AsFd` safe
+    /// sans `unsafe` (`forbid(unsafe_code)`).
     #[must_use]
-    pub fn stdio(n: std::os::unix::io::RawFd, nb: bool) -> Self {
-        Self { fd: n, nb }
+    pub fn stdio(n: std::os::unix::io::RawFd, nb: bool) -> Option<Self> {
+        let io = match n {
+            0 => DpIoStd::In(std::io::stdin()),
+            1 => DpIoStd::Out(std::io::stdout()),
+            _ => return None,
+        };
+        Some(Self { io, nb })
     }
 
-    fn sock(&self) -> socket2::SockRef<'_> {
-        // `BorrowedFd::borrow_raw` est safe (emprunt, pas d'ownership).
-        let fd = std::os::unix::io::BorrowedFd::borrow_raw(self.fd);
-        socket2::SockRef::from(&fd)
+    fn as_fd(&self) -> std::os::unix::io::BorrowedFd<'_> {
+        use std::os::unix::io::AsFd;
+        match &self.io {
+            DpIoStd::In(s) => s.as_fd(),
+            DpIoStd::Out(s) => s.as_fd(),
+        }
     }
 }
 
 #[cfg(unix)]
 impl DpIo for DpIoSock {
     fn set_nonblocking(&mut self, nb: bool) {
-        let _ = self.sock().set_nonblocking(nb);
+        let fd = self.as_fd();
+        let _ = socket2::SockRef::from(&fd).set_nonblocking(nb);
         self.nb = nb;
     }
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let s = self.sock();
+        let fd = self.as_fd();
+        let s = socket2::SockRef::from(&fd);
         let mut r: &socket2::Socket = &s;
         r.read(buf)
     }
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let s = self.sock();
+        let fd = self.as_fd();
+        let s = socket2::SockRef::from(&fd);
         let mut w: &socket2::Socket = &s;
         w.write(buf)
     }

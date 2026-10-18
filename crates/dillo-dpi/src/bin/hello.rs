@@ -40,8 +40,8 @@ fn main() {
 
     // verbatim : STDIN_FILENO/STDOUT_FILENO — le socket accepté par
     // dpid est dup2'né sur 0/1 avant l'exec du plugin.
-    let rd = DpIoSock::stdio(0, false);
-    let wr = DpIoSock::stdio(1, false);
+    let rd = DpIoSock::stdio(0, false).expect("fd0 — dup2 dpi amont");
+    let wr = DpIoSock::stdio(1, false).expect("fd1 — dup2 dpi amont");
     let mut sh = Dsh::new(Box::new(rd), Box::new(wr), 2 * 1024);
 
     // Authentification (clé partagée ~/.dillo/dpid_comm_keys).

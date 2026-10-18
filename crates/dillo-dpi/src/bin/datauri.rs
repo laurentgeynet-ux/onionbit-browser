@@ -176,8 +176,8 @@ fn datauri_get_data(url: &str) -> Vec<u8> {
 fn run() -> i32 {
     use dillo_dpi::dpip::{check_auth, DpIoSock, Dsh};
 
-    let rd = DpIoSock::stdio(0, false);
-    let wr = DpIoSock::stdio(1, false);
+    let rd = DpIoSock::stdio(0, false).expect("fd0 — dup2 dpi amont");
+    let wr = DpIoSock::stdio(1, false).expect("fd1 — dup2 dpi amont");
     let mut sh = Dsh::new(Box::new(rd), Box::new(wr), 8 * 1024);
     // verbatim : `chdir("/tmp")` (silencieux si échec).
     let _ = std::env::set_current_dir("/tmp");

@@ -154,8 +154,8 @@ fn send_html_text(sh: &mut dillo_dpi::dpip::Dsh, url: &str, data_size: usize) {
 fn run() -> i32 {
     use dillo_dpi::dpip::{check_auth, DpIoSock, Dsh};
 
-    let rd = DpIoSock::stdio(0, false);
-    let wr = DpIoSock::stdio(1, false);
+    let rd = DpIoSock::stdio(0, false).expect("fd0 — dup2 dpi amont");
+    let wr = DpIoSock::stdio(1, false).expect("fd1 — dup2 dpi amont");
     let mut sh = Dsh::new(Box::new(rd), Box::new(wr), 2 * 1024);
 
     let tag = sh.read_token(true);
