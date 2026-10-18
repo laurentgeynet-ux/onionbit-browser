@@ -39,6 +39,37 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use dillo_common::dlib;
+
+/// `dStrstrip` sur `&str` — retire les espaces C (`dIsspace`, locale
+/// C : pas d'espace Unicode) en tête/queue.
+fn strip_c(s: &str) -> &str {
+    s.trim_matches(|c: char| c.is_ascii() && dlib::is_space(c as u8))
+}
+
+/// `strtol(s, NULL, 10)` verbatim : espaces C en tête, signe, préfixe
+/// décimal ; sans chiffre → 0 ; overflow → `±i64::MAX` ≙
+/// `±LONG_MAX`/`ERANGE` amont.
+fn strtol_prefix(s: &str) -> i64 {
+    let s = strip_c(s);
+    let (neg, rest) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    if end == 0 {
+        return 0;
+    }
+    let mag = rest[..end].parse::<i64>().unwrap_or(i64::MAX);
+    if neg {
+        mag.saturating_neg()
+    } else {
+        mag
+    }
+}
+
 /// `MAX_DOMAIN_COOKIES`.
 const MAX_DOMAIN_COOKIES: usize = 20;
 /// `MAX_TOTAL_COOKIES`.
@@ -171,12 +202,15 @@ impl CookieJar {
     /// 2 pas de fichier).
     pub fn control_init(&mut self, cookiesrc: &str) -> i32 {
         let mut enabled = false;
-        for raw in cookiesrc.lines() {
-            let line = raw.trim();
+        for raw in dillo_net::fgets_lines(cookiesrc) {
+            let line = strip_c(raw);
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let mut it = line.split_whitespace();
+            // verbatim : tokens coupés sur `dIsspace` (C locale).
+            let mut it = line
+                .split(|c: char| c.is_ascii() && dlib::is_space(c as u8))
+                .filter(|t| !t.is_empty());
             let domain = it.next().unwrap_or("");
             let rule = it.next().unwrap_or("");
             let action = if rule.eq_ignore_ascii_case("ACCEPT") {
@@ -481,7 +515,9 @@ impl CookieJar {
         if !is_ip {
             // suffixes « .example.com » puis « example.com ».
             let host = url_host;
-            let mut start = host[1..].find('.').map(|p| p + 1);
+            // verbatim `strchr(url_host+1,'.')` ; `get` ≙ borne
+            // (hôte vide ne panique pas — attribut dpip libre).
+            let mut start = host.get(1..).and_then(|s| s.find('.')).map(|p| p + 1);
             while let Some(p) = start {
                 if p >= host.len() {
                     break;
@@ -490,7 +526,12 @@ impl CookieJar {
                 if p + 1 < host.len() {
                     self.add_matching(&host[p + 1..], url_path, host_only, &mut matching, is_tls);
                 }
-                start = host[p + 1..].find('.').map(|np| np + p + 1);
+                // verbatim : amont fait `domain_str++` puis
+                // `strchr(domain_str+1)` → recherche repart de p+2.
+                start = host
+                    .get(p + 2..)
+                    .and_then(|s| s.find('.'))
+                    .map(|np| np + p + 2);
             }
         }
         if matching.is_empty() {
@@ -512,8 +553,8 @@ impl CookieJar {
     /// `cookies.txt` (tab-separated, `F`=`host_only`, `T`=secure,
     /// expiry = secondes depuis `epoch_time` local).
     pub fn load(&mut self, contents: &str) {
-        for raw in contents.lines() {
-            let line = raw.trim();
+        for raw in dillo_net::fgets_lines(contents) {
+            let line = strip_c(raw);
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -522,19 +563,31 @@ impl CookieJar {
             let host_only = pieces.next().map(|p| p.starts_with('F'));
             let path = pieces.next().unwrap_or("").to_string();
             let secure = pieces.next().map(|p| p.starts_with('T'));
-            let expires_at = pieces
-                .next()
-                .and_then(|p| p.parse::<i64>().ok())
-                .map_or(-1, |secs| self.epoch_time + secs);
-            let name = pieces.next().unwrap_or("").to_string();
+            // verbatim `strtol` + `tm.tm_min += s/60; tm.tm_sec +=
+            // s%60; mktime` : préfixe décimal tolérant ; `tm_min` est
+            // un `int` amont — `s/60` hors i32 → mktime hors bornes
+            // → `(time_t)-1` (cookie expiré).
+            let expires_at = pieces.next().map_or(-1, |p| {
+                let secs = strtol_prefix(p);
+                let mins = secs / 60;
+                if mins > i64::from(i32::MAX) || mins < i64::from(i32::MIN) {
+                    -1
+                } else {
+                    self.epoch_time.checked_add(secs).unwrap_or(-1)
+                }
+            });
+            // verbatim : `name` exigé non-NULL (champ vide `""` ok),
+            // `value` NULL → "" (`line_marker ? line_marker : ""`).
+            let Some(name) = pieces.next().map(str::to_string) else {
+                continue; // « Malformed line » verbatim.
+            };
             let value = pieces.next().unwrap_or("").to_string();
             // verbatim : domain non vide, path commence par '/',
-            // name et value présents.
+            // name et value présents (non-NULL).
             if domain.is_empty()
                 || host_only.is_none()
                 || !path.starts_with('/')
                 || secure.is_none()
-                || name.is_empty()
             {
                 continue; // « Malformed line » verbatim.
             }
@@ -861,10 +914,12 @@ fn parse(cookie_str: &str, server_date: Option<&str>, future_time: i64) -> Optio
             let (v, r) = parse_value(str_);
             str_ = r;
             if v.starts_with(|c: char| c.is_ascii_digit()) || v.starts_with('-') {
+                // verbatim `strtol` : préfixe décimal tolérant
+                // (« 3600abc » → 3600), overflow saturé ≙ ERANGE.
                 let mut age = if v.starts_with('-') {
                     0i64
                 } else {
-                    v.parse::<i64>().unwrap_or(i64::MAX)
+                    strtol_prefix(v)
                 };
                 const ONE_YEAR: i64 = 31_536_000;
                 if age > ONE_YEAR {
@@ -1006,10 +1061,16 @@ fn validate_domain(cookie: &mut Cookie, host: &str) -> bool {
     if !domain_matches(host, &cookie.domain) {
         return false;
     }
-    let internal = cookie.domain[1..cookie.domain.len().saturating_sub(1)]
-        .bytes()
-        .filter(|&c| c == b'.')
-        .count();
+    // verbatim `for (i = 1; i < strlen(domain) - 1; i++)` : domaine
+    // de ≤ 2 octets → 0 itération → 0 dot interne (pas de panic).
+    let internal = if cookie.domain.len() > 2 {
+        cookie.domain[1..cookie.domain.len() - 1]
+            .bytes()
+            .filter(|&c| c == b'.')
+            .count()
+    } else {
+        0
+    };
     if internal < internal_dots_required(host) {
         return false;
     }
@@ -1157,5 +1218,109 @@ mod tests {
             ..Cookie::new()
         };
         assert!(validate_domain(&mut ok, "a.b.site.org"));
+    }
+
+    // --- passe 2 : régressions D6-D13 ---
+
+    #[test]
+    fn validate_domain_one_char_no_panic() {
+        // A02-D6 : domaine « x » → `[1..0]` ne panique plus — amont
+        // boucle 0 itération → 0 dot interne < requis → rejet.
+        let mut c = Cookie {
+            domain: "x".into(),
+            ..Cookie::new()
+        };
+        assert!(!validate_domain(&mut c, "x"));
+        let mut c2 = Cookie {
+            domain: ".".into(),
+            ..Cookie::new()
+        };
+        assert!(!validate_domain(&mut c2, "x"));
+    }
+
+    #[test]
+    fn load_line_maxlen_splits() {
+        // A02-D8 : `fgets` borne à 4095 — le reliquat d'une ligne
+        // longue est relu comme ligne suivante.
+        let mut j = jar();
+        let pad = "x".repeat(4090);
+        // expiry = secondes depuis l'epoch 1997 → grande valeur =
+        // futur (cookie vivant au save/get).
+        let line = format!(
+            "site.org\tFALSE\t/\tFALSE\t9999999999\ta\t{pad}\nv.org\tFALSE\t/\tFALSE\t9999999999\tb\t2\n"
+        );
+        j.load(&line);
+        // La 2e ligne est parsée normalement après la coupe.
+        assert!(j.get("v.org", "/", "http").contains("b=2"));
+    }
+
+    #[test]
+    fn strip_is_c_locale() {
+        // A02-D9 : NBSP n'est PAS un espace C — le domaine garde le
+        // préfixe → ne matche pas « dom ».
+        let mut j = jar();
+        j.load("\u{00A0}dom.org\tFALSE\t/\tFALSE\t9999999999\tn\tv\n");
+        assert_eq!(j.get("dom.org", "/", "http"), "");
+        // cookiesrc : « ACCEPT\u{00A0} » est une règle inconnue →
+        // ignorée → rien n'est activé.
+        let mut j2 = CookieJar::new();
+        assert_eq!(j2.control_init("DEFAULT ACCEPT\u{00A0}\n"), 1);
+    }
+
+    #[test]
+    fn load_strtol_prefix_expiry() {
+        // A02-D10 : « 9999999999abc » → strtol=9999999999 (cookie
+        // vivant, sauvé) vs parse strict → -1 → droppé ; dépassement
+        // i64 → mktime hors bornes → -1 (expiré).
+        let mut j = jar();
+        j.load("site.org\tFALSE\t/\tFALSE\t9999999999abc\ta\t1\n");
+        let saved = j.save();
+        let exp: i64 = saved
+            .lines()
+            .find(|l| l.starts_with("site.org"))
+            .and_then(|l| l.split('\t').nth(4))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(-1);
+        assert_eq!(exp, 9999999999);
+        let mut j2 = jar();
+        j2.load("site.org\tFALSE\t/\tFALSE\t9999999999999999999999999\ta\t1\n");
+        assert!(j2.save().lines().all(|l| !l.starts_with("site.org")));
+    }
+
+    #[test]
+    fn load_empty_name_accepted() {
+        // A02-D11 : champ name vide accepté amont (non-NULL « "" »).
+        let mut j = jar();
+        j.load("site.org\tFALSE\t/\tFALSE\t9999999999\t\tv\n");
+        assert!(j.get("site.org", "/", "http").contains("=v"));
+    }
+
+    #[test]
+    fn max_age_strtol_prefix() {
+        // A02-D12 : « 3600abc » → 3600 s (pas le clamp 1 an).
+        let mut j = jar();
+        j.set("a=1; Path=/; Max-Age=3600abc", "site.org", "/", None);
+        let saved = j.save();
+        let exp: i64 = saved
+            .lines()
+            .find(|l| l.starts_with("site.org"))
+            .and_then(|l| l.split('\t').nth(4))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(-1);
+        let expected = now_unix() + 3600 - j.epoch_time;
+        assert!((exp - expected).abs() <= 2, "{exp} vs {expected}");
+    }
+
+    #[test]
+    fn get_no_bare_suffix_on_double_dot() {
+        // A02-D13 : hôte « a..com » — amont émet « ..com » et
+        // « .com » mais jamais « com » nu (recherche repart à p+2) ;
+        // « www.com » lui, émet bien « com » (domain_str++).
+        // (cookie posé via load : Domain=com serait rejeté par
+        // validate_domain — pas assez de dots, verbatim.)
+        let mut j = jar();
+        j.load("com\tTRUE\t/\tFALSE\t9999999999\tc\t1\n");
+        assert!(j.get("www.com", "/", "http").contains("c=1"));
+        assert_eq!(j.get("a..com", "/", "http"), "");
     }
 }

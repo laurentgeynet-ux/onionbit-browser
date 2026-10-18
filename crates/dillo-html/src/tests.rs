@@ -11,11 +11,13 @@ use dillo_css::styleengine::{StyleEnginePrefs, StyleEngineSink};
 use dillo_dw::style::StyleImage;
 
 use dillo_dw::imgbuf::{Imgbuf, ImgbufType};
+use dillo_dw::iterator::{DwIterator, EmptyIterator};
 use dillo_dw::layout::Layout;
 use dillo_dw::platform::{IdleCallback, Platform};
 use dillo_dw::style::{Color, Font, FontAttrs, Tooltip};
 use dillo_dw::types::Rectangle;
-use dillo_dw::ui::ResourceFactory;
+use dillo_dw::types::Requisition;
+use dillo_dw::ui::{Resource, ResourceEmitters, ResourceFactory};
 use dillo_dw::view::View;
 use dillo_net::url::{self, DilloUrl};
 
@@ -152,6 +154,52 @@ impl Imgbuf for NullImgbuf {
     fn is_referred(&self) -> bool {
         self.refs.get() > 0
     }
+}
+
+/// `Resource` minimal pour les tests de widgets embeddés.
+struct MockRes {
+    embed: Cell<Option<dillo_dw::WidgetId>>,
+    emitters: ResourceEmitters,
+}
+
+impl MockRes {
+    fn new() -> Self {
+        MockRes {
+            embed: Cell::new(None),
+            emitters: ResourceEmitters::new(),
+        }
+    }
+}
+
+impl Resource for MockRes {
+    fn as_resource(&self) -> &dyn Resource {
+        self
+    }
+    fn embed(&self) -> Option<dillo_dw::WidgetId> {
+        self.embed.get()
+    }
+    fn set_embed(&self, e: Option<dillo_dw::WidgetId>) {
+        self.embed.set(e);
+    }
+    fn emitters(&self) -> &ResourceEmitters {
+        &self.emitters
+    }
+    fn size_request(&self, _l: &mut Layout, r: &mut Requisition) {
+        r.width = 10;
+        r.ascent = 10;
+        r.descent = 2;
+    }
+    fn iterator(&self, mask: i16, at_end: bool) -> Box<dyn DwIterator> {
+        Box::new(EmptyIterator::new(
+            self.embed.get().unwrap_or(0),
+            mask,
+            at_end,
+        ))
+    }
+    fn is_enabled(&self) -> bool {
+        true
+    }
+    fn set_enabled(&self, _e: bool) {}
 }
 
 /// `HtmlSink` mock — enregistre `bug_message`/`set_page_title`/
@@ -331,6 +379,45 @@ fn widget_delete_callback_owns_doc() {
     layout.borrow_mut().widget_delete(dw);
     assert_eq!(sink.borrow().removed, 1);
     assert!(weak_shared.upgrade().is_none());
+}
+
+/// Régression A03 passe-2 D7 — `HtmlInput::get_resource` empruntait
+/// `layout.borrow()` ; invoqué depuis un receiver qui tourne sous
+/// `layout.borrow_mut()` (dispatch `button_event`) → panic `RefCell`.
+/// Le lookup passe désormais par l'`Arena` partagée — aucun emprunt
+/// du `Layout` n'est requis.
+#[test]
+fn form_input_get_resource_under_layout_borrow_mut() {
+    let (_sink, mut h) = make_html();
+    let doc = Rc::new(b"<form><input type=text name=x value=v></form>".to_vec());
+    h.write(&doc, true);
+    h.finish_parsing(0);
+    // MockPlatform n'a pas de ResourceFactory → l'input n'est pas
+    // créé par le tag ; on pose le contrôle directement (≙
+    // `Html_add_input` hors `<form>` → `inputs_outside_form`).
+    let res: Rc<dyn Resource> = Rc::new(MockRes::new());
+    let embed = h
+        .core
+        .shared
+        .borrow()
+        .layout
+        .borrow_mut()
+        .add_embed_widget(&res);
+    crate::form::add_input(
+        &mut h,
+        crate::form::InputType::Text,
+        Some(embed),
+        Some(b"x".to_vec()),
+        None,
+        false,
+        true,
+    );
+    let input = h.core.inputs_outside_form[0].clone();
+    let layout = h.core.shared.borrow().layout.clone();
+    // Simule le dispatch `Layout::button_event` : le RefCell du
+    // layout est mut-emprunté pendant toute la durée du receiver.
+    let _guard = layout.borrow_mut();
+    assert!(input.borrow().get_resource().is_some());
 }
 
 fn with_ctx<R>(bugs: &mut Vec<String>, f: impl FnOnce(&mut EntityCtx) -> R) -> R {
